@@ -38,7 +38,18 @@ Mounting takes about 0.1 s and a full INI scan about 0.35 s (release build).
   while duplicate `Object`s parse on top of each other. To be decided in M1 whether to
   keep the error or downgrade it to a warning.
 
-## M1. Data layer (next)
+## M1. Data layer (in progress)
+
+Done:
+- `ih-schemagen` extracts the schema from the C++ source into
+  `crates/ih-ini/src/schema/generated.rs`: 285 field tables, 3,093 field definitions,
+  223 module names resolved through class inheritance, 104 name lists, 12 lookup lists.
+  Regenerate with `cargo run -p ih-schemagen -- reference/ea-zh/GeneralsMD/Code crates/ih-ini/src/schema/generated.rs`.
+- Schema validation in `ih-tools scan`: every field in stock (387,233) and Contra X
+  (848,055) data resolves to its exact C++ definition, with no unknown fields or modules.
+- `ih-tools scan --parsers` lists the value parsers the data uses (about 190).
+
+Remaining:
 
 - Load-order manifest: exactly which files `GameEngine::init` and each subsystem load,
   in order (Default, then main file, then folder), plus `map.ini` overrides.

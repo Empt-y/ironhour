@@ -44,6 +44,9 @@ enum Cmd {
         /// Also print the most used module class names.
         #[arg(long)]
         modules: bool,
+        /// Also print how many fields use each C++ value parser.
+        #[arg(long)]
+        parsers: bool,
     },
 }
 
@@ -150,12 +153,12 @@ fn main() -> Result<()> {
             let bytes = vfs.read(path)?.with_context(|| format!("{path}: not found"))?;
             print!("{}", String::from_utf8_lossy(&bytes));
         }
-        Cmd::Scan { dirs, modules } => scan(&mount(&cli)?, dirs, *modules)?,
+        Cmd::Scan { dirs, modules, parsers } => scan(&mount(&cli)?, dirs, *modules, *parsers)?,
     }
     Ok(())
 }
 
-fn scan(vfs: &Vfs, dirs: &[String], show_modules: bool) -> Result<()> {
+fn scan(vfs: &Vfs, dirs: &[String], show_modules: bool, show_parsers: bool) -> Result<()> {
     use std::collections::BTreeMap;
 
     // Files shipped in the archives that no code path in the original loads.
@@ -177,10 +180,12 @@ fn scan(vfs: &Vfs, dirs: &[String], show_modules: bool) -> Result<()> {
     let mut nested: BTreeMap<String, usize> = BTreeMap::new();
     let mut module_classes: BTreeMap<String, usize> = BTreeMap::new();
     let (mut lines, mut fields, mut problems, mut bad_files) = (0u64, 0u64, 0usize, 0usize);
+    let mut report = ih_ini::validate::Report::default();
 
     for f in &files {
         let Some(bytes) = vfs.read(f)? else { continue };
         let doc = ih_ini::parse(&bytes);
+        report.validate(f, &doc);
         lines += u64::from(doc.line_count);
         if !doc.diagnostics.is_empty() {
             bad_files += 1;
@@ -228,6 +233,31 @@ fn scan(vfs: &Vfs, dirs: &[String], show_modules: bool) -> Result<()> {
         println!("structure: OK, no problems");
     } else {
         println!("structure: {problems} problems in {bad_files} files");
+    }
+
+    // Schema check.
+    let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
+    for (file, issue) in &report.issues {
+        let kind = format!("{issue:?}").split([' ', '{']).next().unwrap_or("").to_string();
+        let n = by_kind.entry(kind).or_default();
+        *n += 1;
+        if *n <= 15 || std::env::var_os("IH_SCAN_ALL").is_some() {
+            println!("{file}: {issue}");
+        }
+    }
+    if report.issues.is_empty() {
+        println!("schema: OK, all {} fields known", report.fields);
+    } else {
+        let summary: Vec<_> = by_kind.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        println!("schema: {} issues in {} fields ({})", report.issues.len(), report.fields, summary.join(", "));
+    }
+    if show_parsers {
+        let mut v: Vec<_> = report.parser_use.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        println!("{} value parsers used:", v.len());
+        for (p, n) in v {
+            println!("  {n:>8}  {p}");
+        }
     }
     Ok(())
 }
