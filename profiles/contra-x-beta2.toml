@@ -1,0 +1,24 @@
+# Contra X Beta 2, matching the options chosen in Contra's launcher:
+# Contra control bar, standard music and voices, original hotkeys (English),
+# default general portraits, building props and water effects on, fog effects off.
+#
+# Contra ships its archives as .ctr files in the Zero Hour folder. The `!` and `!!`
+# prefixes make them sort ahead of the stock archives, so they override them under
+# the original first-archive-wins rule. Optional packs are switched off by
+# excluding them here.
+name = "Contra X Beta 2"
+extensions = ["ctr"]
+exclude = [
+    "*_ControlBarPro.ctr",
+    "*_ControlBarStandard.ctr",
+    "*_MusicEnhanced.ctr",
+    "*_MusicTheScore.ctr",
+    "*_FunnyGeneralPortraits.ctr",
+    "*_DisableExtraBuildingProps.ctr",
+    "*_DisableWaterEffects.ctr",
+    "*_UnitVoicesNative.ctr",
+    "*_HotkeysLeikeze_*.ctr",
+    "*_HotkeysOriginal_Russian.ctr",
+    # The launcher's own executable, not an archive.
+    "generals.ctr",
+]

@@ -1,0 +1,17 @@
+[package]
+name = "ih-vfs"
+description = "Virtual file system: loose files and .big archives with the original game's priority rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

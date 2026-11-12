@@ -1,0 +1,10 @@
+[package]
+name = "ih-ini"
+description = "INI parser with the original game's syntax, load order and override rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ih-vfs.workspace = true
+thiserror.workspace = true

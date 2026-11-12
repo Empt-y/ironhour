@@ -1,0 +1,16 @@
+[package]
+name = "ih-tools"
+description = "Command-line tools for inspecting game data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ih-tools"
+path = "src/main.rs"
+
+[dependencies]
+ih-vfs.workspace = true
+ih-ini.workspace = true
+anyhow.workspace = true
+clap.workspace = true
