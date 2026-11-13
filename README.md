@@ -6,7 +6,7 @@ ironhour is an unofficial project. It is not affiliated with or endorsed by Elec
 
 ## Status
 
-Milestones M0 and M1 are done: the game's archives, INI data (schema, values, load order) and string tables are read exactly as the original engine reads them, for stock Zero Hour and Contra X. See [PORTING.md](PORTING.md) for progress.
+Milestones M0 to M2 are done: the game's archives, INI data (schema, values, load order), string tables, W3D models, animations and textures are read as the original engine reads them, and models render with the original fixed-function look on wgpu, for stock Zero Hour and Contra X. See [PORTING.md](PORTING.md) for progress.
 
 ## You need the game
 
@@ -29,6 +29,9 @@ cargo run -p ih-tools -- load-order             # INI files in the order the gam
 cargo run -p ih-tools -- scan                   # parse and check every loaded INI file
 cargo run -p ih-tools -- strings OBJECT:Crusader
 cargo run -p ih-tools -- coverage               # what ironhour understands, as Markdown
+cargo run -p ih-tools -- models AVCrusader       # describe a W3D model
+cargo run -p ih-tools -- textures avcrusader.tga --out out/t.png
+cargo run --release -p ih-tools -- render AVCrusader --hide TURRETFX --out out/crusader.png
 cargo run -p ih-tools -- --profile profiles/contra-x-beta2.toml coverage
 ```
 

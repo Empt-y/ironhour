@@ -90,7 +90,70 @@ Script actions and conditions live in map files and are covered in M7.
   original treats an unknown button in a `CommandSet` as a fatal error, so those
   campaign maps would not load with Contra in either engine.
 
-## M2. Model viewer (next)
+## M2. Model viewer (done)
 
-W3D meshes, hierarchies and animations, textures, and the `wgpu` renderer core, checked
-with offscreen renders of a fixed list of units and buildings.
+- **W3D reader** (`crates/ih-formats/src/w3d.rs`): meshes (all prelit material variants,
+  per-pass vertex materials, shaders, per-vertex colours, texture stages), hierarchies,
+  raw and compressed animations (time-coded and adaptive-delta, decoded as
+  `motchan.cpp` does), HLODs, boxes. Malformed objects are skipped and reported, the rest
+  of the file still loads.
+- **Textures** (`crates/ih-formats/src/texture.rs`): Targa (true-colour, grey,
+  colour-mapped, RLE) and DDS (DXT1/3/5 and uncompressed). A `.tga` name loads the
+  `.dds` of the same name first, searching `Data\<language>\Art\Textures\` then
+  `Art\Textures\`.
+- **Renderer** (`crates/ih-render`, wgpu): fixed-function emulation of WW3D2 on
+  Direct3D 8:
+  - Direct3D-style per-vertex lighting with GameData's object lights;
+  - colour sources from `meshmatdesc.cpp`: vertex colours pre-multiplied, prelit meshes
+    unlit;
+  - texture stage 0 primary gradient and stage 1 detail colour/alpha functions;
+  - alpha test (0x60) and the blend and depth states from `shader.cpp`;
+  - two-sided meshes, opaque-then-translucent ordering, 4× MSAA.
+- **Texture mappers**: environment (camera and world space), cheap environment, linear
+  offset (scrolling), scale, grid (flipbook) and rotate.
+- **Poses and animation** (`pose.rs`): hierarchy poses as `htree.cpp` builds them,
+  rigid and skinned meshes, interpolation as `hrawanim.cpp`/`hcanim.cpp`.
+- **House colour**: `HOUSECOLOR` meshes take the colour as material ambient and diffuse.
+  `ZHCA` textures get the original's HSV hue shift on pixels whose alpha is below 255;
+  `ZHCD` textures get the 16-step palette.
+- **Tools**: `ih-tools models` (describe or scan all), `textures` (decode, export colour
+  and alpha), `render` (one model, optional animation frame), `sheet` (a grid of models).
+
+### Results
+
+| Data | Model files | Meshes | HLODs | Animations | Failed objects | Textures decoded |
+|---|---|---|---|---|---|---|
+| Stock Zero Hour | 8,897 | 70,585 | 6,505 | 4,090 | 10 | 6,774 of 6,774 |
+| Contra X Beta 2 | 12,312 | 110,633 | 9,733 | 5,312 | 10 | 10,188 of 10,188 |
+
+Of 70,136 HLOD sub-object references in stock data, 45 name objects no file contains
+(helper boxes and the like the original also skips).
+
+### Findings to carry forward
+
+- **Targa row order.** WWLib's `Targa::Load` stores every image bottom row first and
+  uploads it as is, so for Targas v = 0 is the image's bottom row. The DDS files were
+  converted to match. Decoding Targas top-down puts colours on the wrong parts.
+- The five `uisabotr_*.w3d` UI animations are malformed: a channel's chunk size is 3
+  bytes short. The original reads garbage from that point on.
+- `GENERALSKEL`, the hierarchy for six General portrait animations, is not in the data.
+- Only time-coded compressed animations occur (21 stock, 72 Contra). The adaptive-delta
+  decoder is checked by a unit test only.
+
+### Not yet done (later milestones)
+
+- Which sub-objects show depends on model condition state (muzzle flashes, afterburners,
+  upgrade parts, damage states). That comes with drawables in M4; `--hide` stands in.
+- Bump-environment mapping (Contra only, 1,885 materials) draws with the original's
+  no-bump-support fallback. Sine, step and zig-zag offset, screen, random and edge
+  mappers are not used by stock or Contra data and draw with plain UVs.
+- LOD switching by screen size (the highest-detail LOD is always used), camera-aligned
+  meshes (none in stock data), specular (none in stock data), shadows, fog.
+- Lighting matches GameData's afternoon object lights; per-map lighting comes with M3.
+
+To compare against the game, see [docs/reference-models.md](docs/reference-models.md).
+
+## M3. Map viewer (next)
+
+Map loading, terrain with blend tiles and cliffs, roads, bridges, water, trees and props,
+placed objects, map lighting and a tactical camera, in a window.

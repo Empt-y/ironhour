@@ -2,3 +2,5 @@
 //! ported from.
 
 pub mod strings;
+pub mod texture;
+pub mod w3d;

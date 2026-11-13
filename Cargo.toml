@@ -12,6 +12,7 @@ rust-version = "1.85"
 ih-vfs = { path = "crates/ih-vfs" }
 ih-ini = { path = "crates/ih-ini" }
 ih-formats = { path = "crates/ih-formats" }
+ih-render = { path = "crates/ih-render" }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -19,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 winreg = "0.55"
 tempfile = "3"
+png = "0.17"
 
 [profile.dev.package."*"]
 opt-level = 2

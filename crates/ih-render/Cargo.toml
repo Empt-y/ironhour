@@ -1,0 +1,15 @@
+[package]
+name = "ih-render"
+description = "wgpu renderer: W3D models with the original fixed-function look"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ih-vfs.workspace = true
+ih-formats.workspace = true
+thiserror.workspace = true
+wgpu = "30"
+glam = { version = "0.34", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "1"

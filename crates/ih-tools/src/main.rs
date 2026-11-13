@@ -40,6 +40,62 @@ enum Cmd {
     Cat { path: String },
     /// Print the INI files the game loads at startup, in order, with where each comes from.
     LoadOrder,
+    /// Decode textures: save one as PNG, or check every texture the game can load.
+    Textures {
+        /// Texture name as a model refers to it (e.g. avcrusader.tga). Omit to scan all.
+        name: Option<String>,
+        /// Write the decoded texture here (PNG).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Render a model to a PNG, offscreen.
+    Render {
+        /// Model name, e.g. AVCrusader.
+        name: String,
+        #[arg(long, default_value = "out/render.png")]
+        out: PathBuf,
+        /// Animation (`SKELETON.ANIM` or file name) and frame to pose the model.
+        #[arg(long)]
+        anim: Option<String>,
+        #[arg(long, default_value_t = 0.0)]
+        frame: f32,
+        #[arg(long, default_value_t = 512)]
+        size: u32,
+        /// Camera yaw and pitch in degrees.
+        #[arg(long, default_value_t = -135.0)]
+        yaw: f32,
+        #[arg(long, default_value_t = 35.0)]
+        pitch: f32,
+        /// House colour as RRGGBB hex (default: USA blue).
+        #[arg(long, default_value = "1e5aff")]
+        house: String,
+        /// Sub-objects to hide (prefix of the mesh name), e.g. TURRETFX.
+        #[arg(long, value_delimiter = ',')]
+        hide: Vec<String>,
+    },
+    /// Render several models into one grid image (left to right, top to bottom).
+    Sheet {
+        /// Models as NAME or NAME:RRGGBB (house colour).
+        names: Vec<String>,
+        #[arg(long, default_value = "out/sheet.png")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 384)]
+        cell: u32,
+        #[arg(long, default_value_t = 3)]
+        columns: u32,
+        #[arg(long, default_value_t = -110.0, allow_hyphen_values = true)]
+        yaw: f32,
+        #[arg(long, default_value_t = 35.0)]
+        pitch: f32,
+        /// Sub-objects to hide (prefix of the mesh name).
+        #[arg(long, value_delimiter = ',', default_value = "TURRETFX,MUZZLE")]
+        hide: Vec<String>,
+    },
+    /// Parse W3D models: describe one file, or check every .w3d the game can load.
+    Models {
+        /// Model file name (e.g. AVCrusader or Art\W3D\AVCrusader.w3d). Omit to scan all.
+        name: Option<String>,
+    },
     /// Report how much of the mounted data ironhour understands (Markdown).
     Coverage {
         /// Also write the report to this file.
@@ -207,6 +263,152 @@ fn main() -> Result<()> {
                 std::fs::write(path, &text).with_context(|| path.display().to_string())?;
             }
         }
+        Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
+        Cmd::Sheet { names, out, cell, columns, yaw, pitch, hide } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let mut assets = ih_render::Assets::new(&vfs, &language);
+            let mut renderer = ih_render::Renderer::new()?;
+            let cols = (*columns).max(1);
+            let rows = (names.len() as u32).div_ceil(cols).max(1);
+            let (w, h) = (cell * cols, cell * rows);
+            let mut sheet: Vec<u8> = std::iter::repeat_n([46u8, 51, 56, 255], (w * h) as usize).flatten().collect();
+            for (i, spec) in names.iter().enumerate() {
+                let (name, color) = match spec.split_once(':') {
+                    Some((n, c)) => (n, u32::from_str_radix(c, 16).ok()),
+                    None => (spec.as_str(), Some(0x1e5aff)),
+                };
+                let opts = ih_render::BuildOptions { house_color: color, hide: hide.clone() };
+                let model = match ih_render::build(&mut assets, name, &opts) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("{name}: {e}");
+                        continue;
+                    }
+                };
+                let bones = match &model.hierarchy {
+                    Some(hier) => ih_render::pose::base_pose(hier, glam::Mat4::IDENTITY),
+                    None => vec![glam::Mat4::IDENTITY],
+                };
+                let Some((lo, hi)) = ih_render::bounds(&model, &bones) else { continue };
+                let camera = ih_render::framing_camera(lo, hi, *yaw, *pitch);
+                let rgba = renderer.render(
+                    &mut assets,
+                    &model,
+                    &bones,
+                    &camera,
+                    &ih_render::Lights::afternoon(),
+                    (*cell, *cell),
+                    [0.18, 0.2, 0.22, 1.0],
+                    0.0,
+                );
+                let (cx, cy) = (i as u32 % cols * cell, i as u32 / cols * cell);
+                for y in 0..*cell {
+                    let src = (y * cell * 4) as usize;
+                    let dst = (((cy + y) * w + cx) * 4) as usize;
+                    sheet[dst..dst + (cell * 4) as usize].copy_from_slice(&rgba[src..src + (cell * 4) as usize]);
+                }
+                println!("{:2}: {name} ({} batches)", i + 1, model.batches.len());
+            }
+            write_png(out, w, h, &sheet)?;
+            for warn in &assets.warnings {
+                eprintln!("warning: {warn}");
+            }
+            println!("wrote {}", out.display());
+        }
+        Cmd::Render { name, out, anim, frame, size, yaw, pitch, house, hide } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let mut assets = ih_render::Assets::new(&vfs, &language);
+            let opts = ih_render::BuildOptions {
+                house_color: Some(u32::from_str_radix(house, 16).context("--house must be RRGGBB hex")?),
+                hide: hide.clone(),
+            };
+            let model = ih_render::build(&mut assets, name, &opts)?;
+            let root = glam::Mat4::IDENTITY;
+            let bones = match (&model.hierarchy, anim) {
+                (Some(h), Some(a)) => {
+                    let a = assets.animation(a).with_context(|| format!("animation {a} not found"))?;
+                    ih_render::pose::animated_pose(h, &a, *frame, root).0
+                }
+                (Some(h), None) => ih_render::pose::base_pose(h, root),
+                (None, _) => vec![root],
+            };
+            let (lo, hi) = ih_render::bounds(&model, &bones).context("model has no visible geometry")?;
+            let camera = ih_render::framing_camera(lo, hi, *yaw, *pitch);
+            let mut renderer = ih_render::Renderer::new()?;
+            let rgba = renderer.render(
+                &mut assets,
+                &model,
+                &bones,
+                &camera,
+                &ih_render::Lights::afternoon(),
+                (*size, *size),
+                [0.18, 0.2, 0.22, 1.0],
+                *frame * 1000.0 / 30.0,
+            );
+            write_png(out, *size, *size, &rgba)?;
+            for w in &assets.warnings {
+                eprintln!("warning: {w}");
+            }
+            println!(
+                "{name}: {} batches, {} bones, on {}; wrote {}",
+                model.batches.len(),
+                bones.len(),
+                renderer.adapter_name,
+                out.display()
+            );
+        }
+        Cmd::Textures { name, out } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            match name {
+                Some(n) => {
+                    let (path, img) = load_texture(&vfs, &language, n)?.with_context(|| format!("{n}: not found"))?;
+                    let translucent = img.rgba().as_chunks::<4>().0.iter().filter(|p| p[3] < 255).count();
+                    println!(
+                        "{path}: {}x{}, {} mip levels, alpha: {} ({translucent} of {} pixels below 255)",
+                        img.width,
+                        img.height,
+                        img.levels.len(),
+                        img.has_alpha,
+                        img.width * img.height
+                    );
+                    if let Some(out) = out {
+                        // Colour (alpha forced opaque) and the alpha channel as grey, side by side.
+                        let (w, h) = (img.width, img.height);
+                        let mut both = vec![0u8; (w * 2 * h * 4) as usize];
+                        for y in 0..h {
+                            for x in 0..w {
+                                let s = ((y * w + x) * 4) as usize;
+                                let p = &img.rgba()[s..s + 4];
+                                let d = ((y * w * 2 + x) * 4) as usize;
+                                both[d..d + 4].copy_from_slice(&[p[0], p[1], p[2], 255]);
+                                let d = ((y * w * 2 + w + x) * 4) as usize;
+                                both[d..d + 4].copy_from_slice(&[p[3], p[3], p[3], 255]);
+                            }
+                        }
+                        write_png(out, w * 2, h, &both)?;
+                        println!("wrote {} (colour | alpha)", out.display());
+                    }
+                }
+                None => {
+                    let mut files = vfs.list("Art\\Textures", "*.dds", true);
+                    files.extend(vfs.list("Art\\Textures", "*.tga", true));
+                    let mut bad = 0;
+                    for f in &files {
+                        let Some(b) = vfs.read(f)? else { continue };
+                        if let Err(e) = ih_formats::texture::decode(&b) {
+                            bad += 1;
+                            if bad <= 20 {
+                                println!("{f}: {e}");
+                            }
+                        }
+                    }
+                    println!("{} textures, {bad} failed to decode", files.len());
+                }
+            }
+        }
         Cmd::LoadOrder => {
             use ih_ini::load_order::{BEFORE_MODS, STARTUP, plan};
             let vfs = mount(&cli)?;
@@ -225,6 +427,227 @@ fn main() -> Result<()> {
             scan(&mount(&cli)?, &Installs::locate().language, dirs, *modules, *parsers)?
         }
     }
+    Ok(())
+}
+
+/// Finds and decodes a texture the way the game does (`W3DFileSystem.cpp`,
+/// `textureloader.cpp`): the `.dds` of the same name first, then the `.tga`, each
+/// looked up in `Data\<language>\Art\Textures\` and then `Art\Textures\`.
+fn load_texture(vfs: &Vfs, language: &str, name: &str) -> Result<Option<(String, ih_formats::texture::Image)>> {
+    let base = name.rsplit_once('.').map_or(name, |(b, _)| b);
+    for ext in ["dds", "tga"] {
+        for dir in [format!("Data\\{language}\\Art\\Textures\\"), "Art\\Textures\\".to_string()] {
+            let path = format!("{dir}{base}.{ext}");
+            if let Some(bytes) = vfs.read(&path)? {
+                return Ok(Some((path, ih_formats::texture::decode(&bytes)?)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::io::BufWriter::new(std::fs::File::create(path).with_context(|| path.display().to_string())?);
+    let mut enc = png::Encoder::new(file, w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()?.write_image_data(rgba)?;
+    Ok(())
+}
+
+fn models(vfs: &Vfs, name: Option<&str>) -> Result<()> {
+    use ih_formats::w3d;
+    use std::collections::BTreeMap;
+
+    if let Some(name) = name {
+        let path = if name.contains(['\\', '/']) { name.to_string() } else { format!("Art\\W3D\\{name}.w3d") };
+        let bytes = vfs.read(&path)?.with_context(|| format!("{path}: not found"))?;
+        let f = w3d::parse(&bytes)?;
+        for h in &f.hierarchies {
+            println!("hierarchy {} ({} pivots)", h.name, h.pivots.len());
+        }
+        for h in &f.hlods {
+            println!(
+                "hlod {} (hierarchy {}), {} lods, {} aggregates, {} proxies",
+                h.name,
+                h.hierarchy,
+                h.lods.len(),
+                h.aggregates.len(),
+                h.proxies.len()
+            );
+            for (i, l) in h.lods.iter().enumerate() {
+                let objs: Vec<_> = l.objects.iter().map(|o| format!("{}@{}", o.name, o.bone)).collect();
+                println!("  lod {i} (max size {}): {}", l.max_screen_size, objs.join(", "));
+            }
+        }
+        for m in &f.meshes {
+            let mats = m.active_materials();
+            let tex: Vec<_> = mats.map(|s| s.textures.iter().map(|t| t.name.clone()).collect()).unwrap_or_default();
+            println!(
+                "mesh {} : {} verts, {} tris, flags {:#010x}{}, passes {}, textures {:?}",
+                m.full_name(),
+                m.vertices.len(),
+                m.triangles.len(),
+                m.attributes,
+                if m.is_skin() { " (skin)" } else { "" },
+                mats.map_or(0, |s| s.passes.len()),
+                tex
+            );
+        }
+        for a in &f.animations {
+            println!(
+                "animation {} on {}: {} frames at {} fps, {} channels{}",
+                a.name,
+                a.hierarchy,
+                a.num_frames,
+                a.frame_rate,
+                a.channels.len(),
+                if a.compressed { " (compressed)" } else { "" }
+            );
+        }
+        for (id, n) in &f.others {
+            println!("other {id:#06x} {n}");
+        }
+        return Ok(());
+    }
+
+    let files = vfs.list("Art\\W3D", "*.w3d", true);
+    let (mut meshes, mut hlods, mut hiers, mut anims, mut errors) = (0, 0, 0, 0, 0);
+    let mut skipped: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut others: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut compressed = 0usize;
+    let mut features: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut mappers: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    let mut mapper_examples: BTreeMap<(u32, u32), String> = BTreeMap::new();
+    let mut examples: BTreeMap<&str, String> = BTreeMap::new();
+    let mut objects: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut hier_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut wanted: Vec<(String, String)> = Vec::new(); // (object name, used by)
+    let mut wanted_h: Vec<(String, String)> = Vec::new();
+    for p in &files {
+        let Some(bytes) = vfs.read(p)? else { continue };
+        match w3d::parse(&bytes) {
+            Ok(f) => {
+                meshes += f.meshes.len();
+                hlods += f.hlods.len();
+                hiers += f.hierarchies.len();
+                anims += f.animations.len();
+                for (k, v) in &f.skipped {
+                    *skipped.entry(*k).or_default() += v;
+                }
+                for (k, _) in &f.others {
+                    *others.entry(*k).or_default() += 1;
+                }
+                for m in &f.meshes {
+                    objects.insert(m.full_name().to_ascii_uppercase());
+                }
+                for b in &f.boxes {
+                    objects.insert(b.name.to_ascii_uppercase());
+                }
+                for (_, n) in &f.others {
+                    objects.insert(n.to_ascii_uppercase());
+                }
+                for m in &f.meshes {
+                    let geo = m.attributes & ih_formats::w3d::mesh_flags::GEOMETRY_TYPE_MASK;
+                    if geo == ih_formats::w3d::mesh_flags::GEOMETRY_TYPE_CAMERA_ALIGNED
+                        || geo == ih_formats::w3d::mesh_flags::GEOMETRY_TYPE_CAMERA_ORIENTED
+                    {
+                        *features.entry("camera-aligned/oriented meshes").or_default() += 1;
+                    }
+                    if let Some(set) = m.active_materials() {
+                        for v in &set.vertex_materials {
+                            for (stage, shift) in [(0u32, 16u32), (1, 8)] {
+                                let kind = (v.info.attributes >> shift) & 0xFF;
+                                if kind != 0 {
+                                    *mappers.entry((stage, kind)).or_default() += 1;
+                                    mapper_examples
+                                        .entry((stage, kind))
+                                        .or_insert_with(|| format!("{} in {p}", m.full_name()));
+                                }
+                            }
+                        }
+                        if set.shaders.iter().any(|s| s.sec_gradient != 0) {
+                            *features.entry("meshes with specular (secondary gradient)").or_default() += 1;
+                        }
+                        if set.textures.iter().any(|t| t.info.is_some_and(|i| i.frame_count > 1)) {
+                            *features.entry("meshes with animated textures").or_default() += 1;
+                        }
+                        if set.passes.len() > 1 {
+                            *features.entry("multi-pass meshes").or_default() += 1;
+                        }
+                        if set.passes.iter().any(|p| p.stages.len() > 1) {
+                            *features.entry("meshes with a second texture stage").or_default() += 1;
+                        }
+                    }
+                }
+                for a in &f.animations {
+                    if a.compressed {
+                        compressed += 1;
+                        let flavor = a.channels.first().map(|c| match c.data {
+                            ih_formats::w3d::ChannelData::Dense { .. } => "adaptive-delta",
+                            ih_formats::w3d::ChannelData::TimeCoded { .. } => "time-coded",
+                            _ => "raw",
+                        });
+                        if let Some(fl) = flavor {
+                            examples.entry(fl).or_insert_with(|| format!("{} ({p})", a.name));
+                        }
+                    }
+                }
+                for h in &f.hierarchies {
+                    hier_names.insert(h.name.to_ascii_uppercase());
+                }
+                for h in &f.hlods {
+                    objects.insert(h.name.to_ascii_uppercase());
+                    for o in h.lods.iter().flat_map(|l| &l.objects).chain(&h.aggregates) {
+                        wanted.push((o.name.to_ascii_uppercase(), format!("{p} ({})", h.name)));
+                    }
+                    if !h.hierarchy.is_empty() {
+                        wanted_h.push((h.hierarchy.to_ascii_uppercase(), h.name.clone()));
+                    }
+                }
+                for a in &f.animations {
+                    wanted_h.push((a.hierarchy.to_ascii_uppercase(), format!("animation {}", a.name)));
+                }
+                for e in &f.errors {
+                    errors += 1;
+                    if errors <= 20 {
+                        println!("{p}: {e} (object skipped)");
+                    }
+                }
+            }
+            Err(e) => {
+                errors += 1;
+                if errors <= 20 {
+                    println!("{p}: {e}");
+                }
+            }
+        }
+    }
+    println!(
+        "{} files: {meshes} meshes, {hlods} HLODs, {hiers} hierarchies, {anims} animations; {errors} objects or files failed",
+        files.len()
+    );
+    let missing: Vec<_> = wanted.iter().filter(|(n, _)| !objects.contains(n)).collect();
+    let missing_h: Vec<_> = wanted_h.iter().filter(|(n, _)| !hier_names.contains(n)).collect();
+    println!("HLOD sub-objects: {} references, {} not found in any file", wanted.len(), missing.len());
+    for (n, by) in missing.iter().take(10) {
+        println!("  {n} used by {by}");
+    }
+    println!("hierarchy references: {} , {} not found", wanted_h.len(), missing_h.len());
+    for (n, by) in missing_h.iter().take(10) {
+        println!("  {n} used by {by}");
+    }
+    println!("features (of {meshes} meshes): {features:?}");
+    println!("texture mappers (stage, type) -> vertex materials: {mappers:?}");
+    for (k, v) in &mapper_examples {
+        println!("  mapper {k:?} e.g. {v}");
+    }
+    println!("compressed animations: {compressed}, e.g. {examples:?}");
+    println!("other render objects: {others:x?}");
+    println!("skipped chunk ids: {skipped:x?}");
     Ok(())
 }
 
