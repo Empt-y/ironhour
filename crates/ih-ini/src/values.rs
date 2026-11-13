@@ -611,6 +611,15 @@ fn qualified(p: &'static str, def: &FieldDef, inp: &mut In) -> R<Value> {
             expect_label(inp, "psys")?;
             Value::Tuple(vec![loc, reference(inp, RefKind::ParticleSystem, "None")?])
         }
+        // TransitionDamageFX.cpp. Quirk: the original passes `store` and `&info->ocl`
+        // to parseObjectCreationList in the wrong order, so the OCL pointer overwrites
+        // the start of the location info and `info->ocl` stays null. These transition
+        // OCLs never fire in the original; the simulation must reproduce that.
+        "TransitionDamageFXModuleData::parseObjectCreationList" => {
+            let loc = fx_loc_info(inp)?;
+            expect_label(inp, "ocl")?;
+            Value::Tuple(vec![loc, reference(inp, RefKind::ObjectCreationList, "None")?])
+        }
         "TransitionDamageFXModuleData::parseFXList" => {
             let loc = fx_loc_info(inp)?;
             expect_label(inp, "fxlist")?;
@@ -653,6 +662,63 @@ fn qualified(p: &'static str, def: &FieldDef, inp: &mut In) -> R<Value> {
             let kinds = parse_bitstring(inp, names("KindOfMaskType::s_bitNameList")?)?;
             Value::Tuple(vec![Value::Index { name, index }, Value::Bits(kinds)])
         }
+        // Anim2D.cpp.
+        "Anim2DTemplate::parseImage" => reference(inp, RefKind::MappedImage, "")?,
+        "Anim2DTemplate::parseNumImages" => {
+            let n = scan_uint(inp.next()?)?;
+            if n < 1 {
+                return invalid("NumberImages must be at least 1");
+            }
+            Value::UInt(n)
+        }
+        // Anim2D.cpp: images "<base>000", "<base>001", ... up to NumberImages, which
+        // must come first in the block; resolved when the animation is built.
+        "Anim2DTemplate::parseImageSequence" => Value::Str(next_ascii_string(inp)),
+        // PlayerTemplate.cpp: "<object> <percent>" and "<object> <veterancy>".
+        "PlayerTemplate::parseProductionCostChange" | "PlayerTemplate::parseProductionTimeChange" => {
+            let object = Value::Ref { kind: RefKind::Object, name: Some(text(inp.next()?)) };
+            Value::Tuple(vec![object, Value::Real(scan_real(inp.next()?)? / 100.0)])
+        }
+        "PlayerTemplate::parseProductionVeterancyLevel" => {
+            let object = Value::Ref { kind: RefKind::Object, name: Some(text(inp.next()?)) };
+            let (index, name) = scan_index(inp.next()?, names("TheVeterancyNames")?)?;
+            Value::Tuple(vec![object, Value::Index { name, index }])
+        }
+        "NameKeyGenerator::parseStringAsNameKeyType" => Value::Str(text(inp.next()?)),
+        // Eva.cpp: any EVA message name except the trailing EVA_INVALID.
+        "Eva::parseEvaMessageFromIni" => {
+            let list = names("TheEvaMessageNames")?;
+            let list = &list[..list.len().saturating_sub(1)];
+            let t = inp.next()?;
+            match list.iter().position(|n| n.as_bytes().eq_ignore_ascii_case(t)) {
+                Some(i) => Value::Index { name: list[i], index: i as i32 },
+                None => return invalid(format!("'{}' is not an EVA message", text(t))),
+            }
+        }
+        // TurretAI.cpp: "<slot> <degrees>" and "<slot> <factor>".
+        "TurretAIData::parseTurretSweep" | "TurretAIData::parseTurretSweepSpeed" => {
+            let (index, name) = scan_index(inp.next()?, names("TheWeaponSlotTypeNames")?)?;
+            let v = scan_real(inp.next()?)?;
+            let v = if p.ends_with("Speed") { v } else { v * RADS_PER_DEGREE };
+            Value::Tuple(vec![Value::Index { name, index }, Value::Real(v)])
+        }
+        // GlobalLanguage.cpp: "\"Font Name\" <size> <bold>".
+        "GlobalLanguage::parseFontDesc" => Value::Tuple(vec![
+            Value::Str(next_quoted_string(inp)?),
+            Value::Int(scan_int(inp.next()?)?),
+            Value::Bool(scan_bool(inp.next()?)?),
+        ]),
+        "GlobalLanguage::parseFontFileName" => Value::Str(next_ascii_string(inp)),
+        "PlayerTemplate::parseStartMoney" => Value::Int(scan_int(inp.next()?)?),
+        "Money::parseMoneyAmount" => Value::UInt(scan_uint(inp.next()?)?),
+        // CrateSystem.cpp: "<crate> <chance>".
+        "CrateTemplate::parseCrateCreationEntry" => Value::Tuple(vec![
+            Value::Ref { kind: RefKind::Crate, name: Some(text(inp.next()?)) },
+            Value::Real(scan_real(inp.next()?)?),
+        ]),
+        "BoneFXUpdateModuleData::parseFXList" => bone_fx(inp, "fxlist", RefKind::FxList)?,
+        "BoneFXUpdateModuleData::parseObjectCreationList" => bone_fx(inp, "ocl", RefKind::ObjectCreationList)?,
+        "BoneFXUpdateModuleData::parseParticleSystem" => bone_fx(inp, "psys", RefKind::ParticleSystem)?,
         "CreateCrateDieModuleData::parseCrateData" => {
             Value::Ref { kind: RefKind::Crate, name: Some(text(inp.next()?)) }
         }
@@ -806,21 +872,129 @@ pub fn parse_field(table: &crate::schema::TableDef, def: &FieldDef, raw: &str) -
         }
         // DamageFX.cpp: "[<veterancy>] <DamageType|Default> <fxlist>".
         ("DamageFX.cpp", "parseMajorFXList" | "parseMinorFXList") => {
-            let vet = if def.user.contains("TheVeterancyNames") {
-                let (index, name) = scan_index(inp.next()?, names("TheVeterancyNames")?)?;
-                Value::Index { name, index }
-            } else {
-                Value::Str("All".into())
-            };
-            let dt = inp.next()?;
-            let damage = if dt.eq_ignore_ascii_case(b"Default") {
-                Value::Str("Default".into())
-            } else {
-                let (index, name) = scan_index(dt, names("DamageTypeFlags::s_bitNameList")?)?;
-                Value::Index { name, index }
-            };
+            let (vet, damage) = damage_fx_prefix(inp, def)?;
             Value::Tuple(vec![vet, damage, reference(inp, RefKind::FxList, "None")?])
         }
+        // Friction is given per second and stored per frame (three identical copies).
+        ("Locomotor.cpp" | "ObjectCreationList.cpp" | "PhysicsUpdate.cpp", "parseFrictionPerSec") => {
+            Value::Real(scan_real(inp.next()?)? * SECONDS_PER_LOGICFRAME)
+        }
+        // PhysicsUpdate.cpp: a fall height, converted to a speed with GameData's gravity
+        // (sqrt(|2 g h|)) when templates are built.
+        ("PhysicsUpdate.cpp", "parseHeightToSpeed") => Value::Real(scan_real(inp.next()?)?),
+        // RiderChangeContain.cpp: "<object> <model condition> <weapon set flag> <status>
+        // <command set> <locomotor set>".
+        ("RiderChangeContain.cpp", "parseRiderInfo") => {
+            let object = Value::Ref { kind: RefKind::Object, name: Some(text(inp.next()?)) };
+            let mut idx = |list: &str| -> R<Value> {
+                let (index, name) = scan_index(inp.next()?, names(list)?)?;
+                Ok(Value::Index { name, index })
+            };
+            let cond = idx("ModelConditionFlags::s_bitNameList")?;
+            let wset = idx("WeaponSetFlags::s_bitNameList")?;
+            let status = idx("ObjectStatusMaskType::s_bitNameList")?;
+            let command_set = Value::Str(text(inp.next()?));
+            let (index, name) = scan_index(inp.next()?, names("TheLocomotorSetNames")?)?;
+            Value::Tuple(vec![object, cond, wset, status, command_set, Value::Index { name, index }])
+        }
+        // Weapon.cpp veterancy variants.
+        ("Weapon.cpp", "parseAllVetLevelsPSys") => reference(inp, RefKind::ParticleSystem, "None")?,
+        ("Weapon.cpp", p @ ("parsePerVetLevelPSys" | "parsePerVetLevelFXList")) => {
+            let (index, name) = scan_index(inp.next()?, names("TheVeterancyNames")?)?;
+            let kind = if p == "parsePerVetLevelPSys" { RefKind::ParticleSystem } else { RefKind::FxList };
+            Value::Tuple(vec![Value::Index { name, index }, reference(inp, kind, "None")?])
+        }
+        // DamageFX.cpp: "[<veterancy>] <DamageType|Default> <amount or ms>".
+        ("DamageFX.cpp", p @ ("parseAmount" | "parseTime")) => {
+            let (vet, damage) = damage_fx_prefix(inp, def)?;
+            let v = if p == "parseAmount" {
+                Value::Real(scan_real(inp.next()?)?)
+            } else {
+                Value::UInt((scan_uint(inp.next()?)? as f32 * LOGICFRAMES_PER_MSEC).ceil() as u32)
+            };
+            Value::Tuple(vec![vet, damage, v])
+        }
+        // OCLUpdate.cpp: "Faction:<side> OCL:<ocl>".
+        ("OCLUpdate.cpp", "parseFactionObjectCreationList") => {
+            expect_label(inp, "Faction")?;
+            let faction =
+                text(inp.next_or_none_with(SEPS_COLON).ok_or_else(|| ValueError::Invalid("missing faction".into()))?);
+            expect_label(inp, "OCL")?;
+            Value::Tuple(vec![Value::Str(faction), reference(inp, RefKind::ObjectCreationList, "None")?])
+        }
+        // ObjectCreationList.cpp: initial, flying and final animation names.
+        ("ObjectCreationList.cpp", "parseAnimSet") => {
+            Value::Strings(vec![next_ascii_string(inp), next_ascii_string(inp), next_ascii_string(inp)])
+        }
+        // CashBountyPower.cpp: "<science> <percent>".
+        ("CashBountyPower.cpp", "parseBountyUpgradePair") => {
+            let science = reference(inp, RefKind::Science, "None")?;
+            Value::Tuple(vec![science, Value::Real(scan_real(inp.next_with(SEPS_PERCENT)?)? / 100.0)])
+        }
+        ("Weapon.cpp", "parsePerVetLevelAsciiString") => {
+            let (index, name) = scan_index(inp.next()?, names("TheVeterancyNames")?)?;
+            Value::Tuple(vec![Value::Index { name, index }, Value::Str(next_ascii_string(inp))])
+        }
+        ("CashHackSpecialPower.cpp", "parseCashHackUpgradePair") => {
+            Value::Tuple(vec![reference(inp, RefKind::Science, "None")?, Value::Int(scan_int(inp.next()?)?)])
+        }
+        // "<object> [count]" in several contain modules and ProductionUpdate.
+        ("TransportContain.cpp" | "MobNexusContain.cpp", "parseInitialPayload")
+        | ("GarrisonContain.h", "parseInitialRoster")
+        | ("ProductionUpdate.cpp", "parseAppendQuantityModifier") => {
+            let name = text(inp.next()?);
+            let count = match inp.next_or_none() {
+                Some(t) => scan_int(t)?,
+                None => 1,
+            };
+            Value::Tuple(vec![Value::Ref { kind: RefKind::Object, name: Some(name) }, Value::Int(count)])
+        }
+        // TerrainRoads.cpp: "Transition:<Damage|Repair> ToState:<state> EffectNum:<1..3> OCL|FX:<name>".
+        ("TerrainRoads.cpp", p @ ("parseTransitionToOCL" | "parseTransitionToFX")) => {
+            let t = inp.sub("Transition")?;
+            let damage = if t.eq_ignore_ascii_case(b"Damage") {
+                true
+            } else if t.eq_ignore_ascii_case(b"Repair") {
+                false
+            } else {
+                return invalid(format!("Transition must be Damage or Repair, found '{}'", text(t)));
+            };
+            let (index, name) = scan_index(inp.sub("ToState")?, names("TheBodyDamageTypeNames")?)?;
+            // MAX_BRIDGE_BODY_FX = 3 (TerrainRoads.h).
+            let effect = scan_int(inp.sub("EffectNum")?)? - 1;
+            ranged(effect, 0, 2, "EffectNum - 1")?;
+            let (label, kind) = if p == "parseTransitionToOCL" {
+                ("OCL", RefKind::ObjectCreationList)
+            } else {
+                ("FX", RefKind::FxList)
+            };
+            let target = Value::Ref { kind, name: Some(text(inp.sub(label)?)) };
+            Value::Tuple(vec![Value::Bool(damage), Value::Index { name, index }, Value::Int(effect), target])
+        }
+        // StructureToppleUpdate.cpp: "<degrees> <fxlist>".
+        ("StructureToppleUpdate.cpp", "parseAngleFX") => {
+            let angle = scan_real(inp.next()?)? * PI / 180.0;
+            Value::Tuple(vec![Value::Real(angle), reference(inp, RefKind::FxList, "None")?])
+        }
+        ("ThingTemplate.cpp", "parseArbitraryFXIntoMap") => reference(inp, RefKind::FxList, "None")?,
+        // FlightDeckBehavior.cpp: optional start and end bone names.
+        ("FlightDeckBehavior.cpp", "parseRunwayStrip") => {
+            Value::Strings(std::iter::from_fn(|| inp.next_or_none()).take(2).map(text).collect())
+        }
+        // AutoDepositUpdate.cpp (also used by MoneyCrateCollide): "UpgradeType:<u> Boost:<n>".
+        ("AutoDepositUpdate.h" | "MoneyCrateCollide.h", "parseUpgradePair") => {
+            expect_label(inp, "UpgradeType")?;
+            let up =
+                text(inp.next_or_none_with(SEPS_COLON).ok_or_else(|| ValueError::Invalid("missing upgrade".into()))?);
+            expect_label(inp, "Boost")?;
+            let boost = scan_int(inp.next_with(SEPS_COLON)?)?;
+            Value::Tuple(vec![Value::Ref { kind: RefKind::Upgrade, name: Some(up) }, Value::Int(boost)])
+        }
+        // GameAudio.cpp: speaker setup name, translated by the audio device.
+        ("GameAudio.cpp", "parseSpeakerType") => Value::Str(next_ascii_string(inp)),
+        // INIDrawGroupInfo.cpp: pixel (int) or percent offset; user data picks X or Y.
+        ("INIDrawGroupInfo.cpp", "parseInt") => Value::Int(scan_int(inp.next()?)?),
+        ("INIDrawGroupInfo.cpp", "parsePercentToReal") => Value::Real(scan_real(inp.next_with(SEPS_PERCENT)?)? / 100.0),
         ("ThingTemplate.cpp", "parsePrerequisiteScience") => {
             Value::Ref { kind: RefKind::Science, name: Some(text(inp.next()?)) }
         }
@@ -847,6 +1021,43 @@ pub fn parse_field(table: &crate::schema::TableDef, def: &FieldDef, raw: &str) -
         }
         _ => return parse_value(def, raw),
     })
+}
+
+/// `parseCommonStuff` (DamageFX.cpp): an optional veterancy level (when the field's
+/// user data is the veterancy name list) then a damage type or `Default`.
+fn damage_fx_prefix(inp: &mut In, def: &FieldDef) -> R<(Value, Value)> {
+    let vet = if def.user.contains("TheVeterancyNames") {
+        let (index, name) = scan_index(inp.next()?, names("TheVeterancyNames")?)?;
+        Value::Index { name, index }
+    } else {
+        Value::Str("All".into())
+    };
+    let dt = inp.next()?;
+    let damage = if dt.eq_ignore_ascii_case(b"Default") {
+        Value::Str("Default".into())
+    } else {
+        let (index, name) = scan_index(dt, names("DamageTypeFlags::s_bitNameList")?)?;
+        Value::Index { name, index }
+    };
+    Ok((vet, damage))
+}
+
+/// BoneFXUpdate.cpp: "Bone:<b> OnlyOnce:<bool> <min ms> <max ms> <Label>:<name>".
+fn bone_fx(inp: &mut In, label: &str, kind: RefKind) -> R<Value> {
+    expect_label(inp, "bone")?;
+    let bone = text(inp.next()?);
+    expect_label(inp, "onlyonce")?;
+    let once = scan_bool(inp.next()?)?;
+    let min = scan_real(inp.next()?)? * LOGICFRAMES_PER_MSEC;
+    let max = scan_real(inp.next()?)? * LOGICFRAMES_PER_MSEC;
+    expect_label(inp, label)?;
+    Ok(Value::Tuple(vec![
+        Value::Str(bone),
+        Value::Bool(once),
+        Value::Real(min),
+        Value::Real(max),
+        reference(inp, kind, "None")?,
+    ]))
 }
 
 fn list_kind(parser: &str) -> RefKind {
@@ -952,5 +1163,91 @@ mod tests {
         assert!(v("KindOfMaskType::parseFromINI", "", "= NOT_A_KINDOF").is_err());
         let Ok(Value::Bits(b)) = v("INI::parseDeathTypeFlags", "", "= NONE +NORMAL") else { panic!() };
         assert_eq!(b.set, [0]);
+    }
+}
+
+#[cfg(test)]
+mod schema_coverage {
+    use super::*;
+    use crate::schema::{Shape, TABLES, schema};
+
+    /// Every one-line field in the extracted schema must have a ported parser, so that
+    /// any mod's data can be read, not just the data sets tested so far.
+    #[test]
+    fn every_schema_parser_is_ported() {
+        let mut missing = std::collections::BTreeSet::new();
+        for t in TABLES {
+            for f in t.fields {
+                if !matches!(schema().shape(f), Shape::Field) {
+                    continue;
+                }
+                if let Err(ValueError::Unimplemented(p)) = parse_field(t, f, "") {
+                    let file = t.file.rsplit('/').next().unwrap_or(t.file);
+                    missing.insert(if p.contains("::") { p.to_string() } else { format!("{file}:{p}") });
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "{} parsers not ported:\n{}",
+            missing.len(),
+            missing.into_iter().collect::<Vec<_>>().join("\n")
+        );
+    }
+}
+
+#[cfg(test)]
+mod static_parsers {
+    use super::*;
+    use crate::schema::TableDef;
+
+    fn field(file: &'static str, parser: &'static str, raw: &str) -> R<Value> {
+        let def = FieldDef { name: Some("X"), parser, user: "NULL" };
+        let table = TableDef { id: "test", file, fields: &[] };
+        parse_field(&table, &def, raw)
+    }
+
+    #[test]
+    fn debris_names_skip_every_second_token() {
+        let v =
+            field("GameEngine/Source/GameLogic/Object/ObjectCreationList.cpp", "parseDebrisObjectNames", "= A B C D E");
+        assert_eq!(v, Ok(Value::Strings(vec!["A".into(), "C".into(), "E".into()])));
+    }
+
+    #[test]
+    fn same_name_different_file() {
+        // parseFX takes a phase in SlowDeathBehavior but not in InstantDeathBehavior.
+        let slow = field("x/SlowDeathBehavior.cpp", "parseFX", "= FINAL FX_Boom").unwrap();
+        let instant = field("x/InstantDeathBehavior.cpp", "parseFX", "= FINAL FX_Boom").unwrap();
+        let Value::Tuple(s) = slow else { panic!() };
+        assert!(matches!(s[0], Value::Index { name: "FINAL", .. }));
+        let Value::Tuple(i) = instant else { panic!() };
+        assert_eq!(i.len(), 2, "FINAL is read as an FX list name, as the original does");
+    }
+
+    #[test]
+    fn bridge_transition() {
+        let v = field(
+            "x/TerrainRoads.cpp",
+            "parseTransitionToOCL",
+            "= Transition:Damage ToState:REALLYDAMAGED EffectNum:1 OCL:OCL_BridgeDebris",
+        )
+        .unwrap();
+        let Value::Tuple(t) = v else { panic!() };
+        assert_eq!(t[0], Value::Bool(true));
+        assert_eq!(t[2], Value::Int(0));
+        assert!(
+            field(
+                "x/TerrainRoads.cpp",
+                "parseTransitionToOCL",
+                "= Transition:Damage ToState:REALLYDAMAGED EffectNum:4 OCL:X"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn friction_is_per_frame() {
+        assert_eq!(field("x/PhysicsUpdate.cpp", "parseFrictionPerSec", "= 30"), Ok(Value::Real(30.0 * (1.0 / 30.0))));
     }
 }

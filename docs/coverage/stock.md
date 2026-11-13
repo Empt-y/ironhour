@@ -6,8 +6,8 @@
 | INI parsed | 215 files, 568497 lines, 13825 definitions |
 | Structure (blocks and `End`) | 0 problems |
 | Schema (fields and modules known) | 386620 fields, 0 unknown |
-| Values | 333898 parsed (99.7%), 0 invalid, 840 use 34 parsers not yet ported |
-| References | 51246 total, 60 names that are never defined |
+| Values | 334738 parsed (100.0%), 0 invalid, 0 use 0 parsers not yet ported |
+| References | 51838 total, 69 names that are never defined |
 | Module classes used | 205 (simulation not implemented yet: M4) |
 | Files never loaded | 7 |
 
@@ -15,22 +15,22 @@
 
 | Kind | Uses | Distinct names | Undefined |
 |---|---|---|---|
-| Object | 508 | 469 | 1 |
+| Object | 611 | 470 | 1 |
 | Armor | 1387 | 52 | 0 |
 | Weapon | 1452 | 337 | 0 |
-| FxList | 4171 | 355 | 2 |
-| ParticleSystem | 23888 | 284 | 0 |
+| FxList | 4259 | 369 | 2 |
+| ParticleSystem | 24072 | 314 | 0 |
 | DamageFx | 1076 | 11 | 0 |
-| ObjectCreationList | 2402 | 228 | 4 |
-| Upgrade | 105 | 76 | 0 |
+| ObjectCreationList | 2426 | 242 | 4 |
+| Upgrade | 107 | 76 | 0 |
 | SpecialPower | 705 | 74 | 0 |
-| Science | 543 | 76 | 0 |
+| Science | 553 | 78 | 0 |
 | Audio | 7082 | 912 | 2 |
-| MappedImage | 659 | 157 | 11 |
+| MappedImage | 829 | 306 | 11 |
 | Label | 2408 | 600 | 39 |
 | CommandButton | 3621 | 764 | 0 |
 | Locomotor | 973 | 173 | 0 |
-| Crate | 266 | 7 | 1 |
+| Crate | 277 | 16 | 10 |
 
 Undefined names (first use shown; the original treats these as null, or shows `MISSING:` for labels):
 
@@ -70,11 +70,16 @@ Undefined names (first use shown; the original treats these as null, or shows `M
 - Label `GUI:AddTeam6Description` at Data\english\CommandMap.ini:438
 - Label `GUI:AddTeam7` at Data\english\CommandMap.ini:449
 - Label: 24 more
+- Crate `1000DollarCrate` at Data\INI\Crate.ini:131
+- Crate `100DollarCrate` at Data\INI\Crate.ini:149
+- Crate `1500DollarCrate` at Data\INI\Crate.ini:167
+- Crate `200DollarCrate` at Data\INI\Crate.ini:155
+- Crate `2500DollarCrate` at Data\INI\Crate.ini:139
+- Crate `2FreeCrusadersCrate` at Data\INI\Crate.ini:141
+- Crate `MediumLevelUpCrate` at Data\INI\Crate.ini:140
+- Crate `SalvageCrate` at Data\INI\Crate.ini:124
+- Crate `SmallLevelUpCrate` at Data\INI\Crate.ini:132
 - Crate `USA02_Always2500DollarCrate` at Maps\md_usa02\map.ini:97
-
-### Value parsers not yet ported
-
-`Anim2DTemplate::parseImage` (170), `parseAllVetLevelsPSys` (89), `parseRiderInfo` (77), `parsePerVetLevelPSys` (75), `parsePerVetLevelFXList` (61), `parseFrictionPerSec` (48), `Eva::parseEvaMessageFromIni` (38), `NameKeyGenerator::parseStringAsNameKeyType` (25), `TurretAIData::parseTurretSweep` (22), `BoneFXUpdateModuleData::parseParticleSystem` (20), `parseAnimSet` (20), `parseInitialPayload` (19), `TurretAIData::parseTurretSweepSpeed` (18), `GlobalLanguage::parseFontDesc` (17), `PlayerTemplate::parseStartMoney` (15), `Anim2DTemplate::parseNumImages` (14), `parseFactionObjectCreationList` (12), `parseTransitionToFX` (12), `parseTransitionToOCL` (12), `CrateTemplate::parseCrateCreationEntry` (11), `parseCashHackUpgradePair` (10), `parseAmount` (9), `parseTime` (9), `parseArbitraryFXIntoMap` (7), `parseAngleFX` (6), `Money::parseMoneyAmount` (5), `parseAppendQuantityModifier` (5), `parseRunwayStrip` (4), `BoneFXUpdateModuleData::parseFXList` (2), `parseInitialRoster` (2), `parseSpeakerType` (2), `parseUpgradePair` (2), `parseInt` (1), `parsePercentToReal` (1)
 
 ### Files never loaded
 

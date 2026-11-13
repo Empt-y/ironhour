@@ -6,8 +6,8 @@
 | INI parsed | 453 files, 1177066 lines, 31515 definitions |
 | Structure (blocks and `End`) | 0 problems |
 | Schema (fields and modules known) | 847388 fields, 0 unknown |
-| Values | 739157 parsed (99.9%), 0 invalid, 978 use 36 parsers not yet ported |
-| References | 102167 total, 196 names that are never defined |
+| Values | 740135 parsed (100.0%), 0 invalid, 0 use 0 parsers not yet ported |
+| References | 102687 total, 207 names that are never defined |
 | Module classes used | 203 (simulation not implemented yet: M4) |
 | Files never loaded | 8 |
 
@@ -15,35 +15,40 @@
 
 | Kind | Uses | Distinct names | Undefined |
 |---|---|---|---|
-| Object | 1221 | 983 | 0 |
+| Object | 1342 | 1017 | 2 |
 | Armor | 3475 | 197 | 0 |
 | Weapon | 5550 | 1915 | 2 |
-| FxList | 8352 | 805 | 5 |
-| ParticleSystem | 38312 | 906 | 3 |
+| FxList | 8390 | 811 | 6 |
+| ParticleSystem | 38366 | 909 | 5 |
 | DamageFx | 2104 | 20 | 0 |
-| ObjectCreationList | 9721 | 1424 | 6 |
-| Upgrade | 244 | 118 | 0 |
+| ObjectCreationList | 9808 | 1453 | 6 |
+| Upgrade | 250 | 118 | 0 |
 | SpecialPower | 2814 | 227 | 1 |
-| Science | 2951 | 244 | 1 |
+| Science | 2989 | 246 | 1 |
 | Audio | 13966 | 1960 | 10 |
-| MappedImage | 919 | 166 | 12 |
+| MappedImage | 1089 | 315 | 12 |
 | Label | 3927 | 1209 | 102 |
 | CommandButton | 6081 | 1642 | 53 |
 | Locomotor | 2109 | 397 | 0 |
-| Crate | 421 | 7 | 1 |
+| Crate | 427 | 13 | 7 |
 
 Undefined names (first use shown; the original treats these as null, or shows `MISSING:` for labels):
 
+- Object `GLAInfantrySaboteur` at Data\INI\Object\cine_objects.ini:9923
+- Object `GLAInfantryWorker` at Data\INI\Object\cine_objects.ini:9917
 - Weapon `CINE_GLARebelMachineGun` at Maps\gla02\map.ini:897
 - Weapon `RadarVanBogusWeapon` at Maps\md_chi01\map.ini:85
 - FxList `FX_CINE_CarpetBomb` at Maps\md_gla03\map.ini:221
 - FxList `FX_ToxinTractorDie` at Data\INI\Object\cine_objects.ini:14083
 - FxList `FX_WaterPropExplodeLow` at Data\INI\Object\civilianbuilding.ini:16970
 - FxList `INITIAL` at Data\INI\Object\chem_glasystem.ini:1663
+- FxList `WeaponFX_GenericMachineGunFireWithRedTracers` at Maps\md_gla04\map.ini:135
 - FxList `WeaponFX_MediumPoisonFieldWeapon` at Maps\gla06\map.ini:88
 - ParticleSystem `DamMist_Big_Black` at Maps\desert vortex\map.ini:142
 - ParticleSystem `DamMist_Grey` at Maps\desert vortex\map.ini:136
 - ParticleSystem `DrainPipeWater2` at Maps\sakura forest ii\map.ini:51
+- ParticleSystem `HeroicMissileExhaust` at Maps\chi01\map.ini:76
+- ParticleSystem `HeroicTomahawkMissileExhaust` at Maps\md_gla04\map.ini:192
 - ObjectCreationList `FINAL` at Data\INI\Object\bossgeneral.ini:22178
 - ObjectCreationList `INITIAL` at Data\INI\Object\chem_glasystem.ini:1664
 - ObjectCreationList `OCL_CINE_U05_TechnicalAirDeathStart` at Data\INI\Object\cine_objects.ini:3947
@@ -106,11 +111,13 @@ Undefined names (first use shown; the original treats these as null, or shows `M
 - CommandButton `Command_ConstructGLAVehicleCombatBike` at Maps\md_chi01\map.ini:115
 - CommandButton `Command_ConstructGLAVehicleCombatBikeRocket` at Maps\md_chi01\map.ini:118
 - CommandButton: 38 more
+- Crate `1000DollarCrate` at Data\INI\Crate.ini:135
+- Crate `100DollarCrate` at Data\INI\Crate.ini:123
+- Crate `1500DollarCrate` at Data\INI\Crate.ini:141
+- Crate `200DollarCrate` at Data\INI\Crate.ini:129
+- Crate `2500DollarCrate` at Data\INI\Crate.ini:147
+- Crate `SalvageCrate` at Data\INI\Crate.ini:117
 - Crate `USA02_Always2500DollarCrate` at Maps\md_usa02\map.ini:97
-
-### Value parsers not yet ported
-
-`Anim2DTemplate::parseImage` (170), `parseFrictionPerSec` (111), `parseAmount` (82), `parseRiderInfo` (81), `parseFactionObjectCreationList` (75), `NameKeyGenerator::parseStringAsNameKeyType` (74), `parseAllVetLevelsPSys` (42), `parseAnimSet` (40), `parseCashHackUpgradePair` (38), `Eva::parseEvaMessageFromIni` (30), `parseInitialPayload` (26), `parseTime` (22), `GlobalLanguage::parseFontDesc` (17), `PlayerTemplate::parseStartMoney` (17), `TurretAIData::parseTurretSweep` (16), `Anim2DTemplate::parseNumImages` (14), `TurretAIData::parseTurretSweepSpeed` (14), `parseAppendQuantityModifier` (13), `parseTransitionToFX` (12), `parseTransitionToOCL` (12), `parseAngleFX` (11), `BoneFXUpdateModuleData::parseParticleSystem` (8), `parseRunwayStrip` (8), `parseArbitraryFXIntoMap` (7), `CrateTemplate::parseCrateCreationEntry` (6), `parsePerVetLevelFXList` (6), `parseUpgradePair` (6), `Money::parseMoneyAmount` (5), `parsePerVetLevelPSys` (4), `parseHeightToSpeed` (3), `BoneFXUpdateModuleData::parseFXList` (2), `parseSpeakerType` (2), `GlobalLanguage::parseFontFileName` (1), `parseInitialRoster` (1), `parseInt` (1), `parsePercentToReal` (1)
 
 ### Files never loaded
 

@@ -48,9 +48,10 @@ Mounting takes about 0.1 s and a full INI scan about 0.35 s (release build).
   `cargo run -p ih-schemagen -- reference/ea-zh/GeneralsMD/Code crates/ih-ini/src/schema/generated.rs`.
 - **Field validation.** Every field resolves to its exact C++ definition, following
   `initFromINIMulti` (tables in order, first match wins, catch-all entries).
-- **Values** (`crates/ih-ini/src/values.rs`). Ports of the generic `INI::` parsers and about
-  60 specialised ones, with the original's tokenising (`strtok` separator sets, quoted
-  strings), `sscanf`-style numbers, and unit conversions (milliseconds to whole frames,
+- **Values** (`crates/ih-ini/src/values.rs`). Ports of every value parser in the schema (the
+  generic `INI::` ones and about 100 specialised module, draw and UI parsers), checked by a
+  test that fails if a regenerated schema adds one that is not ported. They keep the
+  original's tokenising (`strtok` separator sets, quoted strings), `sscanf`-style numbers, and unit conversions (milliseconds to whole frames,
   degrees to radians, per-second to per-frame). File-local `static` parsers are matched
   by source file, because several files reuse names like `parseOCL`. Original quirks are
   kept, e.g. `parseDebrisObjectNames` skips every second name.
@@ -66,11 +67,10 @@ Mounting takes about 0.1 s and a full INI scan about 0.35 s (release build).
 
 | Data | INI files loaded | Fields | Unknown fields | Values parsed | Invalid values | Undefined references |
 |---|---|---|---|---|---|---|
-| Stock Zero Hour | 215 | 386,620 | 0 | 99.7% | 0 | 60 |
-| Contra X Beta 2 | 453 | 847,388 | 0 | 99.9% | 0 | 196 |
+| Stock Zero Hour | 215 | 386,620 | 0 | 100% | 0 | 69 |
+| Contra X Beta 2 | 453 | 847,388 | 0 | 100% | 0 | 207 |
 
-The remaining values use 34 to 36 rarely used parsers (under 1,000 fields), listed in the
-coverage reports. Script actions and conditions live in map files and are covered in M7.
+Script actions and conditions live in map files and are covered in M7.
 
 ### Findings to carry forward
 
@@ -80,6 +80,9 @@ coverage reports. Script actions and conditions live in map files and are covere
 - Contra's `Data\INI\DefenseTowers.ini` is never loaded, so `AmericaBuildingDefenseLaser`
   and `AmericaBuildingDefenseGunHigh` do not exist in the game.
 - Contra uses a text `Data\Generals.str`, which the engine prefers over the CSF.
+- `TransitionDamageFX`'s OCL parser passes its arguments in the wrong order, so the OCL
+  pointer overwrites the effect's location and the OCL itself stays null: transition OCLs
+  never fire in the original. The value is parsed normally; the simulation must keep it inert.
 - Stock data has real dangling references the original tolerates as null, e.g. an
   `InstantDeathBehavior` with `FX = FINAL ...` (a phase word copied from `SlowDeath`),
   `OCL = INITIAL OCL_`, and a missing `GC_Nuke_ChinaCarpetBomb` payload.
