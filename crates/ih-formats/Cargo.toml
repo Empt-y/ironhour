@@ -1,0 +1,9 @@
+[package]
+name = "ih-formats"
+description = "Readers for the original game's binary and text asset formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true

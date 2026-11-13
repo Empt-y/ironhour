@@ -11,6 +11,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 ih-vfs = { path = "crates/ih-vfs" }
 ih-ini = { path = "crates/ih-ini" }
+ih-formats = { path = "crates/ih-formats" }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

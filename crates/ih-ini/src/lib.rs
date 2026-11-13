@@ -15,6 +15,7 @@
 //! [`Diagnostic`]s and parsing resumes, so a whole mod can be checked at once.
 
 pub mod lexer;
+pub mod load_order;
 pub mod schema;
 pub mod structure;
 pub mod validate;

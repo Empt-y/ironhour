@@ -1,5 +1,7 @@
 //! `ih-tools`: inspect game data through the same file system the engine uses.
 
+mod coverage;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -36,10 +38,26 @@ enum Cmd {
     Extract { pattern: String, out: PathBuf },
     /// Print a text file to stdout.
     Cat { path: String },
-    /// Parse every INI file under a folder and report structure problems and usage.
+    /// Print the INI files the game loads at startup, in order, with where each comes from.
+    LoadOrder,
+    /// Report how much of the mounted data ironhour understands (Markdown).
+    Coverage {
+        /// Also write the report to this file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Load the game's string table; look up labels, or print a summary.
+    Strings {
+        /// Labels to look up (case-insensitive).
+        labels: Vec<String>,
+        /// A map's folder, e.g. "Maps\Tournament Desert", to add its map.str.
+        #[arg(long)]
+        map: Option<String>,
+    },
+    /// Parse and check INI files: by default exactly the files the game loads, in load
+    /// order, plus every per-map override file.
     Scan {
-        /// Folders to scan (recursively).
-        #[arg(default_values_t = ["Data\\INI".to_string(), "Data\\English".to_string(), "Maps".to_string()])]
+        /// Scan every *.ini under these folders instead of following the load order.
         dirs: Vec<String>,
         /// Also print the most used module class names.
         #[arg(long)]
@@ -153,29 +171,96 @@ fn main() -> Result<()> {
             let bytes = vfs.read(path)?.with_context(|| format!("{path}: not found"))?;
             print!("{}", String::from_utf8_lossy(&bytes));
         }
-        Cmd::Scan { dirs, modules, parsers } => scan(&mount(&cli)?, dirs, *modules, *parsers)?,
+        Cmd::Strings { labels, map } => {
+            let vfs = mount(&cli)?;
+            let (main, from) = load_strings(&vfs, &Installs::locate().language)?;
+            let map_table = match map {
+                Some(m) => {
+                    let p = format!("{}\\map.str", m.trim_end_matches(['\\', '/']));
+                    let bytes = vfs.read(&p)?.with_context(|| format!("{p}: not found"))?;
+                    Some(ih_formats::strings::parse_str(&bytes))
+                }
+                None => None,
+            };
+            if labels.is_empty() {
+                let speech = main.entries.iter().filter(|e| e.speech.is_some()).count();
+                println!("{from}: {} strings ({speech} with speech), language id {}", main.len(), main.language_id);
+                if let Some(t) = &map_table {
+                    println!("map.str: {} strings", t.len());
+                }
+            }
+            for l in labels {
+                println!("{l} = {:?}", ih_formats::strings::fetch(&main, map_table.as_ref(), l));
+            }
+        }
+        Cmd::Coverage { out } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let (strings, _) = load_strings(&vfs, &language)?;
+            let name = match &cli.profile {
+                Some(p) => ModProfile::load(p)?.name,
+                None => ModProfile::stock().name,
+            };
+            let text = coverage::run(&vfs, &language, &name, &strings)?;
+            print!("{text}");
+            if let Some(path) = out {
+                std::fs::write(path, &text).with_context(|| path.display().to_string())?;
+            }
+        }
+        Cmd::LoadOrder => {
+            use ih_ini::load_order::{BEFORE_MODS, STARTUP, plan};
+            let vfs = mount(&cli)?;
+            let (files, missing) = plan(&vfs, &Installs::locate().language, STARTUP);
+            for (i, p) in files.iter().enumerate() {
+                let mods =
+                    if STARTUP[..BEFORE_MODS].iter().any(|s| std::ptr::eq(s, p.step)) { " (before -mod)" } else { "" };
+                let from = vfs.resolve(&p.path).map(|s| s.describe()).unwrap_or_default();
+                println!("{:4} {:<24} {}{mods}\n       {from}", i + 1, p.step.subsystem, p.path);
+            }
+            for m in &missing {
+                println!("MISSING {:?} ({})", m.source, m.cpp);
+            }
+        }
+        Cmd::Scan { dirs, modules, parsers } => {
+            scan(&mount(&cli)?, &Installs::locate().language, dirs, *modules, *parsers)?
+        }
     }
     Ok(())
 }
 
-fn scan(vfs: &Vfs, dirs: &[String], show_modules: bool, show_parsers: bool) -> Result<()> {
+/// The main string table, as `GameTextManager::init` picks it: a loose
+/// `Data\Generals.str` if present, otherwise `Data\<language>\Generals.csf`.
+fn load_strings(vfs: &Vfs, language: &str) -> Result<(ih_formats::strings::StringTable, String)> {
+    if let Some(b) = vfs.read("Data\\Generals.str")? {
+        return Ok((ih_formats::strings::parse_str(&b), "Data\\Generals.str".into()));
+    }
+    let p = format!("Data\\{language}\\Generals.csf");
+    let b = vfs.read(&p)?.with_context(|| format!("{p}: not found"))?;
+    Ok((ih_formats::strings::parse_csf(&b)?, p))
+}
+
+fn scan(vfs: &Vfs, language: &str, dirs: &[String], show_modules: bool, show_parsers: bool) -> Result<()> {
     use std::collections::BTreeMap;
 
-    // Files shipped in the archives that no code path in the original loads.
-    // Replaced by the real load-order manifest in M1.
-    const NEVER_LOADED: &[&str] = &["data\\ini\\default\\buttonsets.ini"];
-
     let mut files = Vec::new();
-    for d in dirs {
-        files.extend(vfs.list(d, "*.ini", true));
-    }
-    files.retain(|f| {
-        let skip = NEVER_LOADED.contains(&ih_vfs::path::key(f).as_str());
-        if skip {
-            println!("{f}: skipped (never loaded by the game)");
+    if dirs.is_empty() {
+        use ih_ini::load_order::{ON_DEMAND, STARTUP, map_files, plan};
+        let (startup, missing) = plan(vfs, language, STARTUP);
+        for m in &missing {
+            println!("missing required file: {:?} ({})", m.source, m.cpp);
         }
-        !skip
-    });
+        let (later, _) = plan(vfs, language, ON_DEMAND);
+        files.extend(startup.into_iter().chain(later).map(|p| p.path));
+        files.extend(map_files(vfs));
+        println!("load order: {} files, {} required files missing", files.len(), missing.len());
+    } else {
+        for d in dirs {
+            files.extend(vfs.list(d, "*.ini", true));
+        }
+    }
+    // Some files load twice (ShellMenuScheme); check each once.
+    let mut seen = std::collections::HashSet::new();
+    files.retain(|f| seen.insert(ih_vfs::path::key(f)));
     let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
     let mut nested: BTreeMap<String, usize> = BTreeMap::new();
     let mut module_classes: BTreeMap<String, usize> = BTreeMap::new();

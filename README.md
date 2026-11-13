@@ -6,7 +6,7 @@ ironhour is an unofficial project. It is not affiliated with or endorsed by Elec
 
 ## Status
 
-Milestone M0 (foundations): the virtual file system reads `.big` archives with the original game's priority rules. See [PORTING.md](PORTING.md) for progress.
+Milestones M0 and M1 are done: the game's archives, INI data (schema, values, load order) and string tables are read exactly as the original engine reads them, for stock Zero Hour and Contra X. See [PORTING.md](PORTING.md) for progress.
 
 ## You need the game
 
@@ -25,7 +25,11 @@ cargo run -p ih-tools -- archives               # archives in mount order
 cargo run -p ih-tools -- ls "data\ini\*.ini"    # list resolved files
 cargo run -p ih-tools -- which data\ini\weapon.ini
 cargo run -p ih-tools -- extract data\ini\weapon.ini out/
-cargo run -p ih-tools -- --profile profiles/contra-x-beta2.toml archives
+cargo run -p ih-tools -- load-order             # INI files in the order the game loads them
+cargo run -p ih-tools -- scan                   # parse and check every loaded INI file
+cargo run -p ih-tools -- strings OBJECT:Crusader
+cargo run -p ih-tools -- coverage               # what ironhour understands, as Markdown
+cargo run -p ih-tools -- --profile profiles/contra-x-beta2.toml coverage
 ```
 
 ## Licence

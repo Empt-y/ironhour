@@ -368,7 +368,7 @@ mod tests {
         put(&modd, "a.big", &write_big(&[("Data\\INI\\Only.ini", b"mod a")]));
         put(&modd, "b.big", &write_big(&[("Data\\INI\\Only.ini", b"mod b")]));
 
-        let installs = Installs { zero_hour: Some(zh.clone()), generals: Some(base) };
+        let installs = Installs { zero_hour: Some(zh.clone()), generals: Some(base), ..Default::default() };
         let mut profile = ModProfile::default();
         let v = Vfs::for_game(&installs, &profile).unwrap();
         assert_eq!(read(&v, "DATA\\INI\\WEAPON.INI").as_deref(), Some("bang"), "! sorts first and first wins");
@@ -399,7 +399,7 @@ mod tests {
         );
         put(&zh, "Data\\INI\\Object\\A.ini", b"");
         put(&zh, "Data\\INI\\Object\\Deep\\D.ini", b"");
-        let v = Vfs::for_game(&Installs { zero_hour: Some(zh), generals: None }, &ModProfile::default()).unwrap();
+        let v = Vfs::for_game(&Installs { zero_hour: Some(zh), ..Default::default() }, &ModProfile::default()).unwrap();
         let got = v.list("Data\\INI\\Object", "*.ini", false);
         // Loose honours `recursive = false`; archive listings always recurse.
         assert_eq!(got, ["Data\\INI\\Object\\A.ini", "Data\\INI\\Object\\b.ini", "Data\\INI\\Object\\sub\\c.ini"]);
