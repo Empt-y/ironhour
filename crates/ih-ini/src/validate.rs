@@ -39,6 +39,7 @@ impl std::fmt::Display for Issue {
 /// One field occurrence that resolved to a definition, for value-level checks.
 #[derive(Debug, Clone, Copy)]
 pub struct Resolved<'a> {
+    pub table: &'static crate::schema::TableDef,
     pub def: &'static crate::schema::FieldDef,
     pub field: &'a crate::Field,
 }
@@ -92,7 +93,7 @@ impl Report {
                 Item::Field(f) => (&f.name, f.line),
                 Item::Block(b) => (&b.kind, b.line),
             };
-            let Some(def) = s.find_field(tables, name) else {
+            let Some((table, def)) = s.find_entry(tables, name) else {
                 self.issue(file, Issue::UnknownField { path: path.to_string(), field: name.clone(), line });
                 continue;
             };
@@ -100,7 +101,7 @@ impl Report {
             let mismatch =
                 || Issue::StructureMismatch { path: path.to_string(), field: name.clone(), parser: def.parser, line };
             match (item, s.shape(def)) {
-                (Item::Field(field), Shape::Field) => on_field(Resolved { def, field }),
+                (Item::Field(field), Shape::Field) => on_field(Resolved { table, def, field }),
                 (Item::Block(b), Shape::Block(t)) => self.walk(file, b, t, &format!("{path}.{}", b.kind), on_field),
                 (Item::Block(b), Shape::Module) => {
                     let class = b.args().into_iter().next().unwrap_or_default();

@@ -18,6 +18,7 @@ pub mod lexer;
 pub mod schema;
 pub mod structure;
 pub mod validate;
+pub mod values;
 
 use lexer::{Line, Tokens};
 use structure::Ctx;

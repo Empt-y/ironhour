@@ -204,13 +204,18 @@ impl Schema {
 
     /// Finds the definition `field` resolves to, as `initFromINIMulti` would.
     pub fn find_field(&self, tables: &[&str], field: &str) -> Option<&'static FieldDef> {
+        self.find_entry(tables, field).map(|(_, f)| f)
+    }
+
+    /// Like [`Schema::find_field`], also returning the table the definition is in.
+    pub fn find_entry(&self, tables: &[&str], field: &str) -> Option<(&'static TableDef, &'static FieldDef)> {
         for id in tables {
             let Some(t) = self.table(id) else { continue };
             if let Some(f) = t.fields.iter().find(|f| f.name == Some(field)) {
-                return Some(f);
+                return Some((t, f));
             }
             if let Some(f) = t.fields.iter().find(|f| f.name.is_none()) {
-                return Some(f);
+                return Some((t, f));
             }
         }
         None

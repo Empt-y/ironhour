@@ -96,6 +96,15 @@ fn main() -> Result<()> {
         let rel = f.strip_prefix(&root).unwrap_or(f).to_string_lossy().replace('\\', "/");
         ingest(&mut db, &rel, &src);
     }
+    // Name lists used as field user data also live in the WWVegas libraries
+    // (e.g. TheAnimModeNames in WW3D2/rendobj.h). Only lists are taken from there.
+    let mut libs = Vec::new();
+    collect(&root.join("Libraries/Source/WWVegas"), &mut libs)?;
+    libs.sort();
+    for f in &libs {
+        let raw = std::fs::read(f).with_context(|| f.display().to_string())?;
+        ingest_lists(&mut db, &cpp::strip(&String::from_utf8_lossy(&raw)));
+    }
 
     let out = generate(&db);
     std::fs::write(&args[2], out).with_context(|| args[2].clone())?;
@@ -156,28 +165,7 @@ fn ingest(db: &mut Db, file: &str, src: &str) {
         db.tables.entry(id.clone()).or_insert(Table { id, file: file.to_string(), fields });
     }
 
-    // Name and lookup lists (file scope or local).
-    for m in NAMES_RE.captures_iter(src) {
-        let open = m.get(0).unwrap().end() - 1;
-        let Some(close) = cpp::match_brace(src, open) else { continue };
-        let names: Vec<String> =
-            cpp::split_top_level(&src[open + 1..close - 1]).iter().filter_map(|s| cpp::string_literal(s)).collect();
-        if !names.is_empty() {
-            db.name_lists.entry(short(&m[1])).or_insert(names);
-        }
-    }
-    for m in LOOKUP_RE.captures_iter(src) {
-        let open = m.get(0).unwrap().end() - 1;
-        let Some(close) = cpp::match_brace(src, open) else { continue };
-        let pairs: Vec<(String, String)> = cpp::brace_groups(&src[open + 1..close - 1])
-            .iter()
-            .filter_map(|g| {
-                let parts = cpp::split_top_level(g);
-                Some((cpp::string_literal(parts.first()?)?, parts.get(1)?.trim().to_string()))
-            })
-            .collect();
-        db.lookup_lists.entry(short(&m[1])).or_insert(pairs);
-    }
+    ingest_lists(db, src);
 
     // Builders and getters.
     for f in &scan.functions {
@@ -426,4 +414,29 @@ fn generate(db: &Db) -> String {
         eprintln!("problem: {p}");
     }
     o
+}
+
+/// Name lists (`const char *X[]`) and lookup lists (`LookupListRec X[]`).
+fn ingest_lists(db: &mut Db, src: &str) {
+    for m in NAMES_RE.captures_iter(src) {
+        let open = m.get(0).unwrap().end() - 1;
+        let Some(close) = cpp::match_brace(src, open) else { continue };
+        let names: Vec<String> =
+            cpp::split_top_level(&src[open + 1..close - 1]).iter().filter_map(|s| cpp::string_literal(s)).collect();
+        if !names.is_empty() {
+            db.name_lists.entry(short(&m[1])).or_insert(names);
+        }
+    }
+    for m in LOOKUP_RE.captures_iter(src) {
+        let open = m.get(0).unwrap().end() - 1;
+        let Some(close) = cpp::match_brace(src, open) else { continue };
+        let pairs: Vec<(String, String)> = cpp::brace_groups(&src[open + 1..close - 1])
+            .iter()
+            .filter_map(|g| {
+                let parts = cpp::split_top_level(g);
+                Some((cpp::string_literal(parts.first()?)?, parts.get(1)?.trim().to_string()))
+            })
+            .collect();
+        db.lookup_lists.entry(short(&m[1])).or_insert(pairs);
+    }
 }

@@ -181,11 +181,28 @@ fn scan(vfs: &Vfs, dirs: &[String], show_modules: bool, show_parsers: bool) -> R
     let mut module_classes: BTreeMap<String, usize> = BTreeMap::new();
     let (mut lines, mut fields, mut problems, mut bad_files) = (0u64, 0u64, 0usize, 0usize);
     let mut report = ih_ini::validate::Report::default();
+    let (mut values_ok, mut invalid_count) = (0u64, 0u64);
+    let mut invalid: Vec<String> = Vec::new();
+    let mut unported: BTreeMap<&'static str, u64> = BTreeMap::new();
 
     for f in &files {
         let Some(bytes) = vfs.read(f)? else { continue };
         let doc = ih_ini::parse(&bytes);
-        report.validate(f, &doc);
+        report.validate_with(f, &doc, &mut |r| match ih_ini::values::parse_field(r.table, r.def, &r.field.rest) {
+            Ok(_) => values_ok += 1,
+            Err(ih_ini::values::ValueError::Unimplemented(p)) => *unported.entry(p).or_default() += 1,
+            Err(ih_ini::values::ValueError::Invalid(msg)) => {
+                if invalid.len() < 40 || std::env::var_os("IH_SCAN_ALL").is_some() {
+                    invalid.push(format!(
+                        "{f}: line {}: {} = {}: {msg}",
+                        r.field.line,
+                        r.field.name,
+                        r.field.rest.trim()
+                    ));
+                }
+                invalid_count += 1;
+            }
+        });
         lines += u64::from(doc.line_count);
         if !doc.diagnostics.is_empty() {
             bad_files += 1;
@@ -250,6 +267,24 @@ fn scan(vfs: &Vfs, dirs: &[String], show_modules: bool, show_parsers: bool) -> R
     } else {
         let summary: Vec<_> = by_kind.iter().map(|(k, n)| format!("{n} {k}")).collect();
         println!("schema: {} issues in {} fields ({})", report.issues.len(), report.fields, summary.join(", "));
+    }
+    for line in &invalid {
+        println!("{line}");
+    }
+    let unported_total: u64 = unported.values().sum();
+    let total = values_ok + invalid_count + unported_total;
+    println!(
+        "values: {values_ok} parsed, {invalid_count} invalid, {unported_total} with parsers not yet ported ({:.1}% of {total} done, {} parsers left)",
+        100.0 * values_ok as f64 / total.max(1) as f64,
+        unported.len()
+    );
+    if show_parsers {
+        let mut u: Vec<_> = unported.iter().collect();
+        u.sort_by(|a, b| b.1.cmp(a.1));
+        println!("parsers not yet ported:");
+        for (p, n) in u {
+            println!("  {n:>8}  {p}");
+        }
     }
     if show_parsers {
         let mut v: Vec<_> = report.parser_use.iter().collect();
