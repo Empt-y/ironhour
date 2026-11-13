@@ -96,6 +96,38 @@ enum Cmd {
         /// Model file name (e.g. AVCrusader or Art\W3D\AVCrusader.w3d). Omit to scan all.
         name: Option<String>,
     },
+    /// Read map files: describe one (name or path) or scan every map.
+    Maps {
+        /// Map name (e.g. "Tournament Desert") or path. Omit to scan all.
+        name: Option<String>,
+        /// List objects within R of X,Y instead: `--near X,Y,R`.
+        #[arg(long, value_delimiter = ',')]
+        near: Option<Vec<f32>>,
+    },
+    /// Render a map offscreen to PNG.
+    MapRender {
+        /// Map name or path.
+        name: String,
+        #[arg(long, default_value = "out/map.png")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 1600)]
+        width: u32,
+        #[arg(long, default_value_t = 1000)]
+        height: u32,
+        /// Camera target as world x,y (defaults to the map centre).
+        #[arg(long, value_delimiter = ',')]
+        at: Option<Vec<f32>>,
+        /// Distance from the target; defaults to fitting the whole map.
+        #[arg(long)]
+        distance: Option<f32>,
+        #[arg(long, default_value_t = 90.0)]
+        yaw: f32,
+        #[arg(long, default_value_t = 60.0)]
+        pitch: f32,
+        /// Terrain only (no objects).
+        #[arg(long)]
+        no_objects: bool,
+    },
     /// Report how much of the mounted data ironhour understands (Markdown).
     Coverage {
         /// Also write the report to this file.
@@ -262,6 +294,65 @@ fn main() -> Result<()> {
             if let Some(path) = out {
                 std::fs::write(path, &text).with_context(|| path.display().to_string())?;
             }
+        }
+        Cmd::Maps { name, near } => maps(&mount(&cli)?, name.as_deref(), near.as_deref())?,
+        Cmd::MapRender { name, out, width, height, at, distance, yaw, pitch, no_objects } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let t0 = std::time::Instant::now();
+            let defs = ih_client::Definitions::load(&vfs, &language);
+            let t_defs = t0.elapsed();
+            let mut world = ih_client::World::load(&vfs, name)?;
+            let mut assets = ih_render::Assets::new(&vfs, &language);
+            let mut renderer = ih_render::Renderer::new()?;
+            let mut scene = ih_render::Scene::default();
+            world.add_terrain(&mut renderer, &mut assets, &vfs, &defs, &mut scene)?;
+            world.add_water(&mut renderer, &mut assets, &defs, &mut scene);
+            if !*no_objects {
+                let n = world.add_objects(&mut renderer, &mut assets, &defs, &mut scene);
+                eprintln!("{n} objects placed");
+            }
+            let t_build = t0.elapsed();
+            let (lo, hi) = world.playable_bounds();
+            let center = match at {
+                Some(v) if v.len() == 2 => glam::Vec2::new(v[0], v[1]),
+                _ => (glam::Vec2::from(lo) + glam::Vec2::from(hi)) * 0.5,
+            };
+            let target = center.extend(world.ground_height(center.x, center.y));
+            let fov_y = 50f32.to_radians();
+            let dist = distance.unwrap_or_else(|| {
+                let extent = (glam::Vec2::from(hi) - glam::Vec2::from(lo)).length() * 0.5;
+                extent / (fov_y * 0.5).tan()
+            });
+            let (yr, pr) = (yaw.to_radians(), pitch.to_radians());
+            let dir = glam::Vec3::new(-pr.cos() * yr.cos(), -pr.cos() * yr.sin(), pr.sin());
+            let camera = ih_render::Camera {
+                eye: target + dir * dist,
+                target,
+                fov_y,
+                near: (dist * 0.01).max(1.0),
+                far: dist * 4.0,
+            };
+            let rgba = renderer.render_scene(
+                &scene,
+                &camera,
+                &world.object_lights(),
+                (*width, *height),
+                [0.0, 0.0, 0.0, 1.0],
+                0.0,
+            );
+            write_png(out, *width, *height, &rgba)?;
+            for w in world.warnings.iter().chain(&assets.warnings) {
+                eprintln!("warning: {w}");
+            }
+            eprintln!(
+                "{} INI files in {:.2?}; scene built in {:.2?}; on {}",
+                defs.files,
+                t_defs,
+                t_build - t_defs,
+                renderer.adapter_name
+            );
+            println!("wrote {}", out.display());
         }
         Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
         Cmd::Sheet { names, out, cell, columns, yaw, pitch, hide } => {
@@ -455,6 +546,106 @@ fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> 
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()?.write_image_data(rgba)?;
+    Ok(())
+}
+
+/// Finds a map by path or by name (`Maps\<name>\<name>.map`).
+fn find_map(vfs: &Vfs, name: &str) -> Option<String> {
+    if vfs.exists(name) {
+        return Some(name.to_string());
+    }
+    let path = format!("Maps\\{name}\\{name}.map");
+    if vfs.exists(&path) {
+        return Some(path);
+    }
+    let lower = name.to_ascii_lowercase();
+    vfs.list("Maps", "*.map", true).into_iter().find(|p| p.to_ascii_lowercase().contains(&lower))
+}
+
+fn maps(vfs: &Vfs, name: Option<&str>, near: Option<&[f32]>) -> Result<()> {
+    use ih_formats::map::Map;
+    if let Some(name) = name {
+        let path = find_map(vfs, name).with_context(|| format!("{name}: no such map"))?;
+        let bytes = vfs.read(&path)?.context("unreadable")?;
+        let map = Map::parse(&bytes).with_context(|| path.clone())?;
+        if let Some(&[x, y, r]) = near {
+            for o in &map.objects {
+                let (dx, dy) = (o.position[0] - x, o.position[1] - y);
+                if dx * dx + dy * dy <= r * r {
+                    println!(
+                        "{:8.1} {:8.1} {:6.1} {:6.2} {:#x} {}",
+                        o.position[0], o.position[1], o.position[2], o.angle, o.flags, o.name
+                    );
+                }
+            }
+            return Ok(());
+        }
+        println!("{path}");
+        println!("  size {}x{}, border {}, boundaries {:?}", map.width, map.height, map.border, map.boundaries);
+        for c in &map.chunks {
+            println!("  chunk {} v{} ({} bytes)", c.label, c.version, c.size);
+        }
+        if let Some(t) = &map.tiles {
+            println!(
+                "  tiles: {} bitmap tiles, {} blends, {} cliff infos, {} edge tiles",
+                t.num_bitmap_tiles,
+                t.blended.len(),
+                t.cliff_info.len(),
+                t.num_edge_tiles
+            );
+            for c in &t.texture_classes {
+                println!("    class {} first {} tiles {} width {}", c.name, c.first_tile, c.num_tiles, c.width);
+            }
+        }
+        if let Some(l) = &map.lighting {
+            let cur = l.current();
+            println!("  time of day {}: terrain {:?}", l.time_of_day, cur.terrain[0]);
+        }
+        let water = map.triggers.iter().filter(|t| t.is_water).count();
+        println!("  {} polygon triggers ({} water)", map.triggers.len(), water);
+        let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+        for o in &map.objects {
+            *counts.entry(&o.name).or_default() += 1;
+        }
+        println!("  {} objects, {} kinds", map.objects.len(), counts.len());
+        let mut top: Vec<_> = counts.into_iter().collect();
+        top.sort_by_key(|e| std::cmp::Reverse(e.1));
+        for (n, c) in top.iter().take(15) {
+            println!("    {c:5} {n}");
+        }
+        for w in &map.warnings {
+            println!("  warning: {w}");
+        }
+        return Ok(());
+    }
+    let files = vfs.list("Maps", "*.map", true);
+    let (mut ok, mut failed, mut objects, mut warned) = (0, 0, 0, 0);
+    let mut versions: std::collections::BTreeMap<String, usize> = Default::default();
+    for f in &files {
+        let Some(bytes) = vfs.read(f)? else { continue };
+        match Map::parse(&bytes) {
+            Ok(m) => {
+                ok += 1;
+                objects += m.objects.len();
+                for c in &m.chunks {
+                    *versions.entry(format!("{} v{}", c.label, c.version)).or_default() += 1;
+                }
+                if !m.warnings.is_empty() {
+                    warned += 1;
+                    println!("{f}: {}", m.warnings.join("; "));
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                println!("{f}: FAILED: {e}");
+            }
+        }
+    }
+    println!("chunk versions:");
+    for (k, v) in &versions {
+        println!("  {v:5} {k}");
+    }
+    println!("{} maps: {ok} read, {failed} failed, {warned} with warnings, {objects} objects", files.len());
     Ok(())
 }
 

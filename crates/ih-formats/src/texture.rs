@@ -42,7 +42,7 @@ pub fn decode(data: &[u8]) -> R<Image> {
 // ---------------------------------------------------------------------------
 // Targa
 
-/// Decodes a Targa with WW3D's row order: memory row 0 is the bottom of the image.
+/// Decodes a Targa with memory row 0 at the top of the image, as WW3D uploads it.
 pub fn decode_tga(d: &[u8]) -> R<Image> {
     if d.len() < 18 {
         return Err(TextureError::Truncated);
@@ -112,13 +112,12 @@ pub fn decode_tga(d: &[u8]) -> R<Image> {
             _ => pixel(px, bpp)?,
         };
         has_alpha |= c[3] != 255;
-        // WWLib's Targa::Load arranges every image with its origin at the bottom-left:
-        // memory row 0 is the image's bottom row. Bottom-up files (the usual kind) keep
-        // their stored order; top-down files are flipped. Textures are uploaded in that
-        // order, so v = 0 samples the bottom row.
+        // TextureLoader toggles the Y-origin flag before Targa::Load ("DX8 uses image
+        // upside down compared to TGA"), and Targa::Load flips images whose flag is
+        // set. Together: memory row 0 is the image's top row, as in a DDS file.
         let (x, y) = (i % width as usize, i / width as usize);
         let x = if right_to_left { width as usize - 1 - x } else { x };
-        let y = if top_down { height as usize - 1 - y } else { y };
+        let y = if top_down { y } else { height as usize - 1 - y };
         let o = (y * width as usize + x) * 4;
         out[o..o + 4].copy_from_slice(&c);
     }
@@ -344,9 +343,9 @@ mod tests {
         // bottom row: blue, green; top row: red, white (BGR order)
         d.extend([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]);
         let img = decode_tga(&d).unwrap();
-        // WW3D order: memory row 0 is the bottom row, as stored.
-        assert_eq!(&img.rgba()[0..4], &[0, 0, 255, 255]); // bottom-left blue first
-        assert_eq!(&img.rgba()[8..12], &[255, 0, 0, 255]); // then top-left red
+        // Memory row 0 is the top row.
+        assert_eq!(&img.rgba()[0..4], &[255, 0, 0, 255]); // top-left red first
+        assert_eq!(&img.rgba()[8..12], &[0, 0, 255, 255]); // then bottom-left blue
         assert!(!img.has_alpha);
     }
 

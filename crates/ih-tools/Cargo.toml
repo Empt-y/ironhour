@@ -14,6 +14,7 @@ ih-vfs.workspace = true
 ih-ini.workspace = true
 ih-formats.workspace = true
 ih-render.workspace = true
+ih-client.workspace = true
 glam = "0.34"
 anyhow.workspace = true
 clap.workspace = true

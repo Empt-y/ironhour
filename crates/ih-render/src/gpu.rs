@@ -1,4 +1,5 @@
-//! The wgpu side: device, pipelines per render state, textures, offscreen rendering.
+//! The wgpu side: device, pipelines per render state, textures, and scenes that are
+//! uploaded once and drawn every frame (offscreen or to a window).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,7 +11,9 @@ use ih_formats::w3d::Shader;
 use wgpu::util::DeviceExt;
 
 use crate::assets::Assets;
-use crate::model::{Model, TextureSlot, Vertex};
+use crate::model::{Mapper, Model, TextureSlot, Vertex};
+use crate::terrain::{Atlas, TerrainMesh, TerrainVertex};
+use crate::water::{WaterMesh, WaterSettings, WaterVertex};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GpuError {
@@ -41,6 +44,20 @@ impl Lights {
             ],
         }
     }
+
+    /// A map's object lights for its time of day. As in `W3DScene`, only the first
+    /// light's ambient is used.
+    pub fn from_map(map: &ih_formats::map::Map) -> Option<Self> {
+        let l = map.lighting.as_ref()?.current();
+        let dir = |p: [f32; 3]| {
+            let v = Vec3::from(p);
+            if v.length_squared() > 0.0 { v.normalize() } else { Vec3::NEG_Z }
+        };
+        Some(Self {
+            ambient: Vec3::from(l.objects[0].ambient),
+            lights: [0, 1, 2].map(|i| (dir(l.objects[i].position), Vec3::from(l.objects[i].diffuse))),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,11 +70,11 @@ pub struct Camera {
 }
 
 impl Camera {
-    fn view(&self) -> Mat4 {
+    pub fn view(&self) -> Mat4 {
         glam::camera::rh::view::look_at_mat4(self.eye, self.target, Vec3::Z)
     }
 
-    fn view_proj(&self, aspect: f32) -> Mat4 {
+    pub fn view_proj(&self, aspect: f32) -> Mat4 {
         // WebGPU clip space: right-handed, depth 0..1, Y up (glam's "directx" convention).
         let proj = glam::camera::rh::proj::directx::perspective(self.fov_y, aspect, self.near, self.far);
         proj * self.view()
@@ -85,6 +102,13 @@ struct DrawU {
     tm: [[f32; 4]; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct TerrainU {
+    cloud: [f32; 4],
+    mode: [f32; 4],
+}
+
 /// Render state that needs its own pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PipeKey {
@@ -95,24 +119,104 @@ struct PipeKey {
     two_sided: bool,
 }
 
-const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const SAMPLES: u32 = 4;
+/// Offscreen colour format; a window uses its surface's format instead.
+pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub const SAMPLES: u32 = 4;
 /// `alphareference = 0x60` in `ShaderClass::Apply`.
 const ALPHA_REF: f32 = 96.0 / 255.0;
 
+/// One draw of a prepared model.
+struct Draw {
+    key: PipeKey,
+    vb: wgpu::Buffer,
+    ib: wgpu::Buffer,
+    count: u32,
+    bg: wgpu::BindGroup,
+    ub: wgpu::Buffer,
+    uniforms: DrawU,
+    mappers: [Mapper; 2],
+    translucent: bool,
+    sort_level: i32,
+}
+
+/// A model's geometry, textures and states on the GPU, shared by its instances.
+pub struct PreparedModel {
+    draws: Vec<Draw>,
+    animated: bool,
+}
+
+/// A placed model: shared geometry plus its own pose.
+pub struct Instance {
+    model: Arc<PreparedModel>,
+    bones: wgpu::BindGroup,
+}
+
+pub struct PreparedTerrain {
+    vb: wgpu::Buffer,
+    ib: wgpu::Buffer,
+    count: u32,
+    extra: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
+    ub: wgpu::Buffer,
+    extra_ub: wgpu::Buffer,
+    bg: wgpu::BindGroup,
+    extra_bg: wgpu::BindGroup,
+    use_cloud: bool,
+    use_noise: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct WaterU {
+    color: [f32; 4],
+    params: [f32; 4],
+    map: [f32; 4],
+}
+
+pub struct PreparedWater {
+    vb: wgpu::Buffer,
+    ib: wgpu::Buffer,
+    count: u32,
+    ub: wgpu::Buffer,
+    uniforms: WaterU,
+    bg: wgpu::BindGroup,
+    additive: bool,
+}
+
+/// What to draw.
+#[derive(Default)]
+pub struct Scene {
+    pub terrain: Option<PreparedTerrain>,
+    pub water: Option<PreparedWater>,
+    pub instances: Vec<Instance>,
+}
+
+/// Render targets of one size: multisampled colour and depth.
+pub struct Targets {
+    pub size: (u32, u32),
+    msaa: wgpu::TextureView,
+    depth: wgpu::TextureView,
+}
+
 pub struct Renderer {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub format: wgpu::TextureFormat,
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
-    globals_layout: wgpu::BindGroupLayout,
     bones_layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
+    terrain_layout: wgpu::BindGroupLayout,
+    terrain_pipelines: [wgpu::RenderPipeline; 2],
+    water_layout: wgpu::BindGroupLayout,
+    water_pipelines: [wgpu::RenderPipeline; 2],
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     textures: HashMap<String, Arc<wgpu::TextureView>>,
     white: Arc<wgpu::TextureView>,
     samplers: HashMap<(bool, bool), Arc<wgpu::Sampler>>,
+    globals: wgpu::Buffer,
+    globals_bg: wgpu::BindGroup,
+    identity_bones: wgpu::BindGroup,
     pub adapter_name: String,
 }
 
@@ -127,6 +231,11 @@ impl Renderer {
             apply_limit_buckets: false,
         }))
         .map_err(|e| GpuError::Adapter(e.to_string()))?;
+        Self::with_adapter(&adapter, COLOR_FORMAT)
+    }
+
+    /// Creates a renderer on `adapter` drawing to `format` (a window surface's).
+    pub fn with_adapter(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> Result<Self, GpuError> {
         let adapter_name = adapter.get_info().name;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("ih-render"),
@@ -185,6 +294,31 @@ impl Renderer {
             bind_group_layouts: &[Some(&globals_layout), Some(&bones_layout), Some(&draw_layout)],
             immediate_size: 0,
         });
+        let terrain_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("terrain"),
+            entries: &[
+                entry(0, vf, uniform),
+                entry(1, fs, tex),
+                entry(2, fs, samp),
+                entry(3, fs, tex),
+                entry(4, fs, tex),
+                entry(5, fs, samp),
+            ],
+        });
+        let terrain_pipelines = terrain_pipelines(&device, format, &globals_layout, &terrain_layout);
+        let water_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("water"),
+            entries: &[
+                entry(0, vf, uniform),
+                entry(1, fs, tex),
+                entry(2, fs, tex),
+                entry(3, fs, tex),
+                entry(4, fs, tex),
+                entry(5, fs, samp),
+                entry(6, fs, samp),
+            ],
+        });
+        let water_pipelines = water_pipelines(&device, format, &globals_layout, &water_layout);
         let white_tex = device.create_texture_with_data(
             &queue,
             &wgpu::TextureDescriptor {
@@ -201,24 +335,43 @@ impl Renderer {
             &[255, 255, 255, 255],
         );
         let white = Arc::new(white_tex.create_view(&Default::default()));
+        let globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("globals"),
+            size: std::mem::size_of::<GlobalsU>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &globals_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+        });
+        let identity_bones = bones_bind_group(&device, &bones_layout, &[]);
         Ok(Self {
             device,
             queue,
+            format,
             module,
             layout,
-            globals_layout,
             bones_layout,
             draw_layout,
+            terrain_layout,
+            terrain_pipelines,
+            water_layout,
+            water_pipelines,
             pipelines: HashMap::new(),
             textures: HashMap::new(),
             white,
             samplers: HashMap::new(),
+            globals,
+            globals_bg,
+            identity_bones,
             adapter_name,
         })
     }
 
-    fn pipeline(&mut self, key: PipeKey) -> &wgpu::RenderPipeline {
-        let (device, module, layout) = (&self.device, &self.module, &self.layout);
+    fn pipeline(&mut self, key: PipeKey) {
+        let (device, module, layout, format) = (&self.device, &self.module, &self.layout, self.format);
         self.pipelines.entry(key).or_insert_with(|| {
             // srcBlendLUT / dstBlendLUT (shader.cpp).
             let src = match key.src_blend {
@@ -284,16 +437,12 @@ impl Renderer {
                     module,
                     entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: COLOR_FORMAT,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 multiview_mask: None,
                 cache: None,
             })
-        })
+        });
     }
 
     fn sampler(&mut self, clamp_u: bool, clamp_v: bool) -> Arc<wgpu::Sampler> {
@@ -314,18 +463,29 @@ impl Renderer {
             .clone()
     }
 
+    fn named_texture(&mut self, assets: &mut Assets, name: &str) -> Arc<wgpu::TextureView> {
+        let key = name.to_ascii_lowercase();
+        if let Some(t) = self.textures.get(&key) {
+            return t.clone();
+        }
+        let view = match assets.texture(name) {
+            Some(img) => Arc::new(upload(&self.device, &self.queue, &img)),
+            None => self.white.clone(),
+        };
+        self.textures.insert(key, view.clone());
+        view
+    }
+
     fn texture(&mut self, assets: &mut Assets, slot: &TextureSlot, house: Option<u32>) -> Arc<wgpu::TextureView> {
         let house = house.filter(|_| crate::house_color::applies(&slot.name));
-        let key = match house {
-            Some(c) => format!("{}#{c:06x}", slot.name.to_ascii_lowercase()),
-            None => slot.name.to_ascii_lowercase(),
-        };
+        let Some(c) = house else { return self.named_texture(assets, &slot.name) };
+        let key = format!("{}#{c:06x}", slot.name.to_ascii_lowercase());
         if let Some(t) = self.textures.get(&key) {
             return t.clone();
         }
         let view = match assets.texture(&slot.name) {
             Some(img) => {
-                let recolored = house.and_then(|c| crate::house_color::recolor(&slot.name, &img, c));
+                let recolored = crate::house_color::recolor(&slot.name, &img, c);
                 Arc::new(upload(&self.device, &self.queue, recolored.as_ref().unwrap_or(&img)))
             }
             None => self.white.clone(),
@@ -334,93 +494,13 @@ impl Renderer {
         view
     }
 
-    /// Renders `model` posed by `bones` (one world matrix per hierarchy pivot) at
-    /// `time_ms` (for time-based texture mappers) and returns tightly packed RGBA8 rows.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render(
-        &mut self,
-        assets: &mut Assets,
-        model: &Model,
-        bones: &[Mat4],
-        camera: &Camera,
-        lights: &Lights,
-        size: (u32, u32),
-        clear: [f64; 4],
-        time_ms: f32,
-    ) -> Vec<u8> {
-        let (w, h) = size;
-        let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
-        let target = |format, samples, usage| {
-            self.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: extent,
-                mip_level_count: 1,
-                sample_count: samples,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
-        let msaa = target(COLOR_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
-        let resolve = target(COLOR_FORMAT, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
-        let depth = target(DEPTH_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
-
-        // Globals.
-        let mut gu = GlobalsU {
-            view_proj: camera.view_proj(w as f32 / h as f32).to_cols_array_2d(),
-            view: camera.view().to_cols_array_2d(),
-            eye: camera.eye.extend(1.0).to_array(),
-            ambient: lights.ambient.extend(1.0).to_array(),
-            light_dir: [[0.0; 4]; 3],
-            light_color: [[0.0; 4]; 3],
-        };
-        for (i, (d, c)) in lights.lights.iter().enumerate() {
-            gu.light_dir[i] = d.extend(0.0).to_array();
-            gu.light_color[i] = c.extend(1.0).to_array();
-        }
-        let globals = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::bytes_of(&gu),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let globals_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.globals_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
-        });
-        let bone_data: Vec<[[f32; 4]; 4]> = if bones.is_empty() {
-            vec![Mat4::IDENTITY.to_cols_array_2d()]
-        } else {
-            bones.iter().map(|m| m.to_cols_array_2d()).collect()
-        };
-        let bone_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&bone_data),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let bones_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.bones_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: bone_buf.as_entire_binding() }],
-        });
-
-        // Opaque first, then translucent, each in sort-level order (stable).
-        let mut order: Vec<usize> = (0..model.batches.len()).collect();
-        order.sort_by_key(|&i| (model.batches[i].is_translucent(), model.batches[i].sort_level));
-
-        struct Prepared {
-            key: PipeKey,
-            vb: wgpu::Buffer,
-            ib: wgpu::Buffer,
-            count: u32,
-            bg: wgpu::BindGroup,
-        }
-        let mut prepared = Vec::new();
-        for i in order {
-            let b = &model.batches[i];
+    /// Uploads a model's batches. Instances of it share the result.
+    pub fn prepare_model(&mut self, assets: &mut Assets, model: &Model) -> Arc<PreparedModel> {
+        let mut draws = Vec::new();
+        let mut animated = false;
+        for b in &model.batches {
             let s: &Shader = &b.shader;
-            let du = DrawU {
+            let uniforms = DrawU {
                 modes: [
                     u32::from(s.pri_gradient),
                     u32::from(s.texturing != 0 && b.textures[0].is_some()),
@@ -445,17 +525,13 @@ impl Renderer {
                     let (m1, a1) = b.mappers[1].mode();
                     [m0, m1, a0, a1]
                 },
-                tm: {
-                    let r = |m: &crate::model::Mapper| m.matrix(time_ms);
-                    let (t0, t1) = (r(&b.mappers[0]), r(&b.mappers[1]));
-                    let row = |x: [f32; 3]| [x[0], x[1], x[2], 0.0];
-                    [row(t0[0]), row(t0[1]), row(t1[0]), row(t1[1])]
-                },
+                tm: tm_rows(&b.mappers, 0.0),
             };
+            animated |= b.mappers.iter().any(Mapper::is_animated);
             let ub = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
-                contents: bytemuck::bytes_of(&du),
-                usage: wgpu::BufferUsages::UNIFORM,
+                contents: bytemuck::bytes_of(&uniforms),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
             let views: Vec<(Arc<wgpu::TextureView>, Arc<wgpu::Sampler>)> = b
                 .textures
@@ -496,44 +572,351 @@ impl Renderer {
                 two_sided: b.two_sided,
             };
             self.pipeline(key);
-            prepared.push(Prepared { key, vb, ib, count: b.indices.len() as u32, bg });
-        }
-
-        let msaa_view = msaa.create_view(&Default::default());
-        let resolve_view = resolve.create_view(&Default::default());
-        let depth_view = depth.create_view(&Default::default());
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("model"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &msaa_view,
-                    depth_slice: None,
-                    resolve_target: Some(&resolve_view),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+            draws.push(Draw {
+                key,
+                vb,
+                ib,
+                count: b.indices.len() as u32,
+                bg,
+                ub,
+                uniforms,
+                mappers: b.mappers.clone(),
+                translucent: b.is_translucent(),
+                sort_level: b.sort_level,
             });
-            pass.set_bind_group(0, &globals_bg, &[]);
-            pass.set_bind_group(1, &bones_bg, &[]);
-            for p in &prepared {
-                pass.set_pipeline(&self.pipelines[&p.key]);
-                pass.set_bind_group(2, &p.bg, &[]);
-                pass.set_vertex_buffer(0, p.vb.slice(..));
-                pass.set_index_buffer(p.ib.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..p.count, 0, 0..1);
+        }
+        Arc::new(PreparedModel { draws, animated })
+    }
+
+    /// Places a prepared model with one world matrix per hierarchy pivot.
+    pub fn instance(&self, model: &Arc<PreparedModel>, bones: &[Mat4]) -> Instance {
+        Instance { model: model.clone(), bones: bones_bind_group(&self.device, &self.bones_layout, bones) }
+    }
+
+    /// Uploads terrain geometry and its atlas. `cloud` and `noise` are the
+    /// `TSCloudMed.tga` and macro (`TSNoiseUrb.tga`) textures when enabled.
+    pub fn prepare_terrain(
+        &mut self,
+        assets: &mut Assets,
+        atlas: &Atlas,
+        mesh: &TerrainMesh,
+        cloud: Option<&str>,
+        noise: Option<&str>,
+    ) -> PreparedTerrain {
+        let img =
+            Image { width: atlas.width, height: atlas.height, levels: vec![atlas.pixels.clone()], has_alpha: false };
+        // MIP_LEVELS_3, box filtered.
+        let atlas_view = upload_levels(&self.device, &self.queue, &img, 3);
+        let cloud_view = cloud.map(|n| self.named_texture(assets, n)).unwrap_or_else(|| self.white.clone());
+        let noise_view = noise.map(|n| self.named_texture(assets, n)).unwrap_or_else(|| self.white.clone());
+        let clamp = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let wrap = self.sampler(false, false);
+        let mk_ub = |extra: bool| {
+            let u = TerrainU { cloud: [0.0; 4], mode: [if extra { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0] };
+            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&u),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            })
+        };
+        let (ub, extra_ub) = (mk_ub(false), mk_ub(true));
+        let mk_bg = |ub: &wgpu::Buffer| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("terrain"),
+                layout: &self.terrain_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&clamp) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&cloud_view) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&noise_view) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&wrap) },
+                ],
+            })
+        };
+        let (bg, extra_bg) = (mk_bg(&ub), mk_bg(&extra_ub));
+        let buffers = |v: &[TerrainVertex], i: &[u32]| {
+            let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("terrain"),
+                contents: bytemuck::cast_slice(v),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("terrain"),
+                contents: bytemuck::cast_slice(i),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            (vb, ib, i.len() as u32)
+        };
+        let (vb, ib, count) = buffers(&mesh.vertices, &mesh.indices);
+        let extra = (!mesh.extra_indices.is_empty()).then(|| buffers(&mesh.extra_vertices, &mesh.extra_indices));
+        PreparedTerrain {
+            vb,
+            ib,
+            count,
+            extra,
+            ub,
+            extra_ub,
+            bg,
+            extra_bg,
+            use_cloud: cloud.is_some(),
+            use_noise: noise.is_some(),
+        }
+    }
+
+    /// Uploads the map's standing water. `heights` is the height map (width, height,
+    /// samples) for the shoreline opacity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_water(
+        &mut self,
+        assets: &mut Assets,
+        mesh: &WaterMesh,
+        settings: &WaterSettings,
+        color: [f32; 4],
+        heights: (u32, u32, &[u8]),
+        border: i32,
+    ) -> Option<PreparedWater> {
+        if mesh.indices.is_empty() {
+            return None;
+        }
+        let water = self.named_texture(assets, &settings.texture);
+        let sparkles = self.named_texture(assets, "WaterSurfaceBubbles.tga");
+        let noise = self.named_texture(assets, "Noise0000.tga");
+        let (hw, hh, hdata) = heights;
+        let height_tex = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("heights"),
+                size: wgpu::Extent3d { width: hw, height: hh, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            hdata,
+        );
+        let height_view = height_tex.create_view(&Default::default());
+        let wrap = self.sampler(false, false);
+        let clamp = self.sampler(true, true);
+        let uniforms = WaterU {
+            color,
+            params: [0.0, settings.transparent_depth * settings.min_opacity, settings.min_opacity, 1.0],
+            map: [border as f32, hw as f32, hh as f32, 0.0],
+        };
+        let ub = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water"),
+            contents: bytemuck::bytes_of(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        fn tv(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+            wgpu::BindingResource::TextureView(v)
+        }
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("water"),
+            layout: &self.water_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: tv(&water) },
+                wgpu::BindGroupEntry { binding: 2, resource: tv(&sparkles) },
+                wgpu::BindGroupEntry { binding: 3, resource: tv(&noise) },
+                wgpu::BindGroupEntry { binding: 4, resource: tv(&height_view) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&wrap) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&clamp) },
+            ],
+        });
+        let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water"),
+            contents: bytemuck::cast_slice(&mesh.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        Some(PreparedWater { vb, ib, count: mesh.indices.len() as u32, ub, uniforms, bg, additive: settings.additive })
+    }
+
+    /// Render targets for `size`.
+    pub fn targets(&self, size: (u32, u32)) -> Targets {
+        let extent = wgpu::Extent3d { width: size.0.max(1), height: size.1.max(1), depth_or_array_layers: 1 };
+        let make = |format| {
+            self.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count: SAMPLES,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        Targets { size, msaa: make(self.format), depth: make(DEPTH_FORMAT) }
+    }
+
+    /// Records a frame of `scene` into `enc`, resolving into `output`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        scene: &Scene,
+        camera: &Camera,
+        lights: &Lights,
+        targets: &Targets,
+        output: &wgpu::TextureView,
+        clear: [f64; 4],
+        time_ms: f32,
+    ) {
+        let (w, h) = targets.size;
+        let mut gu = GlobalsU {
+            view_proj: camera.view_proj(w as f32 / h.max(1) as f32).to_cols_array_2d(),
+            view: camera.view().to_cols_array_2d(),
+            eye: camera.eye.extend(1.0).to_array(),
+            ambient: lights.ambient.extend(1.0).to_array(),
+            light_dir: [[0.0; 4]; 3],
+            light_color: [[0.0; 4]; 3],
+        };
+        for (i, (d, c)) in lights.lights.iter().enumerate() {
+            gu.light_dir[i] = d.extend(0.0).to_array();
+            gu.light_color[i] = c.extend(1.0).to_array();
+        }
+        self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&gu));
+
+        // Time-based texture mappers.
+        let mut seen = std::collections::HashSet::new();
+        for inst in &scene.instances {
+            if !inst.model.animated || !seen.insert(Arc::as_ptr(&inst.model)) {
+                continue;
+            }
+            for d in &inst.model.draws {
+                if d.mappers.iter().any(Mapper::is_animated) {
+                    let mut u = d.uniforms;
+                    u.tm = tm_rows(&d.mappers, time_ms);
+                    self.queue.write_buffer(&d.ub, 0, bytemuck::bytes_of(&u));
+                }
             }
         }
+        if let Some(t) = &scene.terrain {
+            // TerrainShader2Stage::updateNoise1: -0.02 and -0.03 per second, wrapped.
+            let wrap = |v: f32| v - v.trunc();
+            let secs = time_ms / 1000.0;
+            let cloud = [wrap(-0.02 * secs), wrap(-0.03 * secs)];
+            for (ub, extra) in [(&t.ub, 0.0), (&t.extra_ub, 1.0)] {
+                let u = TerrainU {
+                    cloud: [cloud[0], cloud[1], f32::from(u8::from(t.use_cloud)), f32::from(u8::from(t.use_noise))],
+                    mode: [extra, 0.0, 0.0, 0.0],
+                };
+                self.queue.write_buffer(ub, 0, bytemuck::bytes_of(&u));
+            }
+        }
+        if let Some(wt) = &scene.water {
+            // WaterRenderObjClass::update adds 0.002 to m_riverVOrigin each logic frame.
+            let mut u = wt.uniforms;
+            u.params[0] = time_ms / 1000.0 * 30.0 * 0.002;
+            self.queue.write_buffer(&wt.ub, 0, bytemuck::bytes_of(&u));
+        }
+
+        // Opaque before translucent, each in sort-level order; stable otherwise.
+        let mut order: Vec<(&Instance, &Draw)> =
+            scene.instances.iter().flat_map(|i| i.model.draws.iter().map(move |d| (i, d))).collect();
+        order.sort_by_key(|(_, d)| (d.translucent, d.sort_level));
+        let split = order.iter().position(|(_, d)| d.translucent).unwrap_or(order.len());
+
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("scene"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &targets.msaa,
+                depth_slice: None,
+                resolve_target: Some(output),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &targets.depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_bind_group(0, &self.globals_bg, &[]);
+        let draw_model = |pass: &mut wgpu::RenderPass, list: &[(&Instance, &Draw)]| {
+            for (inst, d) in list {
+                pass.set_pipeline(&self.pipelines[&d.key]);
+                pass.set_bind_group(1, &inst.bones, &[]);
+                pass.set_bind_group(2, &d.bg, &[]);
+                pass.set_vertex_buffer(0, d.vb.slice(..));
+                pass.set_index_buffer(d.ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..d.count, 0, 0..1);
+            }
+        };
+        if let Some(t) = &scene.terrain {
+            pass.set_pipeline(&self.terrain_pipelines[0]);
+            pass.set_bind_group(1, &t.bg, &[]);
+            pass.set_vertex_buffer(0, t.vb.slice(..));
+            pass.set_index_buffer(t.ib.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..t.count, 0, 0..1);
+            if let Some((vb, ib, n)) = &t.extra {
+                pass.set_pipeline(&self.terrain_pipelines[1]);
+                pass.set_bind_group(1, &t.extra_bg, &[]);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..*n, 0, 0..1);
+            }
+        }
+        draw_model(&mut pass, &order[..split]);
+        if let Some(wt) = &scene.water {
+            pass.set_pipeline(&self.water_pipelines[usize::from(wt.additive)]);
+            pass.set_bind_group(1, &wt.bg, &[]);
+            pass.set_vertex_buffer(0, wt.vb.slice(..));
+            pass.set_index_buffer(wt.ib.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..wt.count, 0, 0..1);
+        }
+        draw_model(&mut pass, &order[split..]);
+    }
+
+    /// Renders `scene` offscreen and returns tightly packed RGBA8 rows.
+    pub fn render_scene(
+        &mut self,
+        scene: &Scene,
+        camera: &Camera,
+        lights: &Lights,
+        size: (u32, u32),
+        clear: [f64; 4],
+        time_ms: f32,
+    ) -> Vec<u8> {
+        let (w, h) = size;
+        let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let resolve = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let resolve_view = resolve.create_view(&Default::default());
+        let targets = self.targets(size);
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        self.draw(&mut enc, scene, camera, lights, &targets, &resolve_view, clear, time_ms);
 
         // Read back (rows padded to 256 bytes).
         let padded = (w * 4).div_ceil(256) * 256;
@@ -567,19 +950,200 @@ impl Renderer {
         }
         out
     }
+
+    /// Renders one model posed by `bones` (one world matrix per hierarchy pivot) at
+    /// `time_ms` (for time-based texture mappers) and returns tightly packed RGBA8 rows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &mut self,
+        assets: &mut Assets,
+        model: &Model,
+        bones: &[Mat4],
+        camera: &Camera,
+        lights: &Lights,
+        size: (u32, u32),
+        clear: [f64; 4],
+        time_ms: f32,
+    ) -> Vec<u8> {
+        let prepared = self.prepare_model(assets, model);
+        let instance = if bones.is_empty() {
+            Instance { model: prepared, bones: self.identity_bones.clone() }
+        } else {
+            self.instance(&prepared, bones)
+        };
+        let scene = Scene { instances: vec![instance], ..Default::default() };
+        self.render_scene(&scene, camera, lights, size, clear, time_ms)
+    }
+}
+
+fn tm_rows(mappers: &[Mapper; 2], time_ms: f32) -> [[f32; 4]; 4] {
+    let (t0, t1) = (mappers[0].matrix(time_ms), mappers[1].matrix(time_ms));
+    let row = |x: [f32; 3]| [x[0], x[1], x[2], 0.0];
+    [row(t0[0]), row(t0[1]), row(t1[0]), row(t1[1])]
+}
+
+fn bones_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, bones: &[Mat4]) -> wgpu::BindGroup {
+    let data: Vec<[[f32; 4]; 4]> = if bones.is_empty() {
+        vec![Mat4::IDENTITY.to_cols_array_2d()]
+    } else {
+        bones.iter().map(|m| m.to_cols_array_2d()).collect()
+    };
+    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("bones"),
+        contents: bytemuck::cast_slice(&data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+    })
+}
+
+fn water_pipelines(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    globals: &wgpu::BindGroupLayout,
+    water: &wgpu::BindGroupLayout,
+) -> [wgpu::RenderPipeline; 2] {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("water"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("water.wgsl").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("water"),
+        bind_group_layouts: &[Some(globals), Some(water)],
+        immediate_size: 0,
+    });
+    let attrs = wgpu::vertex_attr_array![0 => Float32x3];
+    let make = |additive: bool| {
+        // Premultiplied output: alpha blending, or additive (`AdditiveBlending`).
+        let dst = if additive { wgpu::BlendFactor::One } else { wgpu::BlendFactor::OneMinusSrcAlpha };
+        let comp = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: dst,
+            operation: wgpu::BlendOperation::Add,
+        };
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("water"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<WaterVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                // drawTrapezoidWater turns culling off.
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: SAMPLES, ..Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState { color: comp, alpha: comp }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    [make(false), make(true)]
+}
+
+fn terrain_pipelines(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    globals: &wgpu::BindGroupLayout,
+    terrain: &wgpu::BindGroupLayout,
+) -> [wgpu::RenderPipeline; 2] {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("terrain"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("terrain"),
+        bind_group_layouts: &[Some(globals), Some(terrain)],
+        immediate_size: 0,
+    });
+    let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x2, 3 => Float32x2];
+    let make = |extra: bool| {
+        let blend = extra.then_some(wgpu::BlendState::ALPHA_BLENDING);
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(if extra { "terrain extra blend" } else { "terrain" }),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                // The extra layer does not write depth (renderExtraBlendTiles).
+                depth_write_enabled: Some(!extra),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: SAMPLES, ..Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    [make(false), make(true)]
 }
 
 /// Uploads an image with a full mip chain: the file's own mips (DDS) or box-filtered
 /// ones (Targa), as `TextureLoader` generates them.
 fn upload(device: &wgpu::Device, queue: &wgpu::Queue, img: &Image) -> wgpu::TextureView {
-    let mut levels: Vec<Vec<u8>> = img.levels.clone();
-    let (mut w, mut h) = (img.width, img.height);
     let full = 32 - img.width.max(img.height).leading_zeros();
+    upload_levels(device, queue, img, full)
+}
+
+/// Uploads an image with `count` mip levels, box-filtering the ones it lacks.
+fn upload_levels(device: &wgpu::Device, queue: &wgpu::Queue, img: &Image, count: u32) -> wgpu::TextureView {
+    let mut levels: Vec<Vec<u8>> = img.levels.clone();
+    levels.truncate(count as usize);
+    let (mut w, mut h) = (img.width, img.height);
     for _ in 0..levels.len().saturating_sub(1) {
         w = (w / 2).max(1);
         h = (h / 2).max(1);
     }
-    while (levels.len() as u32) < full {
+    while (levels.len() as u32) < count {
         let prev = levels.last().unwrap();
         let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
         let mut next = vec![0u8; (nw * nh * 4) as usize];

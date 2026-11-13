@@ -136,6 +136,16 @@ impl Mapper {
         }
     }
 
+    /// Whether the transform changes with time.
+    pub fn is_animated(&self) -> bool {
+        match self {
+            Mapper::LinearOffset { per_ms, .. } => per_ms[0] != 0.0 || per_ms[1] != 0.0,
+            Mapper::Grid { sign, .. } => *sign != 0,
+            Mapper::Rotate { rad_per_ms, .. } => *rad_per_ms != 0.0,
+            _ => false,
+        }
+    }
+
     /// The UV transform at `time_ms` as two rows `(a, b, c)`: u' = a*u + b*v + c.
     pub fn matrix(&self, time_ms: f32) -> [[f32; 3]; 2] {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
@@ -392,10 +402,13 @@ fn add_mesh(model: &mut Model, mesh: &Mesh, bone: u32, opts: &BuildOptions) {
             }
         }
 
+        // MeshModelClass reads every texture coordinate as (u, 1 - v)
+        // (meshmdlio.cpp): W3D files store v upward, Direct3D samples it downward.
         let uv = |stage: usize, v: usize| -> [f32; 2] {
             let s = pass.stages.get(stage).and_then(|s| s.texcoords.as_ref());
             let s = s.or_else(|| pass.stages.first().and_then(|s| s.texcoords.as_ref()));
-            s.and_then(|t| t.get(v)).copied().unwrap_or([0.0, 0.0])
+            let [u, v] = s.and_then(|t| t.get(v)).copied().unwrap_or([0.0, 0.0]);
+            [u, 1.0 - v]
         };
 
         let vertices: Vec<Vertex> = (0..nverts)

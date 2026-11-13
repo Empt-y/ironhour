@@ -13,6 +13,7 @@ ih-vfs = { path = "crates/ih-vfs" }
 ih-ini = { path = "crates/ih-ini" }
 ih-formats = { path = "crates/ih-formats" }
 ih-render = { path = "crates/ih-render" }
+ih-client = { path = "crates/ih-client" }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -21,6 +22,7 @@ toml = "0.8"
 winreg = "0.55"
 tempfile = "3"
 png = "0.17"
+miniz_oxide = "0.8"
 
 [profile.dev.package."*"]
 opt-level = 2

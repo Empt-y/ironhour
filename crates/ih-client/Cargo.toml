@@ -1,0 +1,14 @@
+[package]
+name = "ih-client"
+description = "Client side of the game: maps, drawables, camera"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ih-vfs.workspace = true
+ih-ini.workspace = true
+ih-formats.workspace = true
+ih-render.workspace = true
+glam = "0.34"
+thiserror.workspace = true
