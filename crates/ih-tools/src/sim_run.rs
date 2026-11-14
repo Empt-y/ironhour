@@ -131,6 +131,7 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
         );
     }
     println!("stub module instances (loaded, gameplay not implemented): {:?}", a.stub_counts);
+    println!("crushed (frame, victim, crusher): {:?}; move-asides: {}", a.crushed, a.move_asides);
     println!("completed bridge traversals: {traversals}");
     let repaths: u32 = a.objects.values().map(|o| o.traffic_repaths).sum();
     if !a.events.is_empty() {

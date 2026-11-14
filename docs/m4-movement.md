@@ -230,3 +230,17 @@ classes already simulate gameplay.
 The present ground integrator stops horizontal drive immediately on disable;
 retail inertia/friction, falling/held transport behavior, disabled tint/effects,
 special-power pausing, rider propagation and power-system effects remain pending.
+
+## Moving out of the way and crushing
+
+A Crusader drives east through a Ranger standing on its route. An enemy Ranger is
+crushed (removed until death modules exist in M5); an allied one steps aside and
+the Crusader passes:
+
+```powershell
+cargo run --release -p ih-tools -- sim-run scenarios/m4-crush-enemy.toml
+cargo run --release -p ih-tools -- sim-run scenarios/m4-crush-ally.toml
+cargo run --release -p ih-game -- --scenario scenarios/m4-crush-ally.toml
+```
+
+`sim-run` reports crushes as (frame, victim, crusher) and counts move-asides.

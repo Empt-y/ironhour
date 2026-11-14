@@ -310,62 +310,75 @@ The initial ground integrator is replaced by ports of the original movement code
 - `Locomotor` INI parsing keeps the original's unconverted `BIGNUM` defaults for
   unset `Braking` and `MinTurnSpeed` (they were previously divided like set values).
 
-Collisions and traffic (state hash v6), from `PhysicsUpdate.cpp`, `AIUpdate.cpp`,
-`AIStates.cpp` and `Locomotor.cpp`:
+Collisions and traffic (state hash v7), from `PhysicsUpdate.cpp`, `AIUpdate.cpp`,
+`AIStates.cpp`, `AIPathfind.cpp`, `Object.cpp`, `SquishCollide.cpp` and `Locomotor.cpp`:
 
-- An end-of-frame collision pass calls `PhysicsBehavior::onCollide` both ways for
-  every touching ground pair, in object-ID order. Insubstantial objects (no physics,
-  not `IMMOBILE`) are ignored; immobile objects bounce with `StructureStiffness`;
-  non-AI bodies are pushed apart by their overlap (at most 5).
+- An end-of-frame collision pass runs each touching ground pair both ways, in
+  object-ID order: `SquishCollide` first, then `PhysicsBehavior::onCollide`.
+  Insubstantial objects (no physics, not `IMMOBILE`) are ignored; immobile objects
+  bounce with `StructureStiffness`; non-AI bodies are pushed apart by their
+  overlap (at most 5).
 - AI units go through `AIUpdateInterface::processCollision` and `blockedBy`
-  (goal proximity, reversing, crossing infantry, collision and facing angles,
-  same-cell and head-on path priority) and `calculateMaxBlockedSpeed`;
-  `needToRotate` uses the path goal point.
+  (goal proximity, crushable targets, reversing, crossing infantry, collision and
+  facing angles, same-cell and head-on path priority), `calculateMaxBlockedSpeed`,
+  `needToRotate` and the collision-ignore timer.
 - `doLocomotor`: blocked frames, the blocked speed cap and the decaying/recovering
-  bump speed limit feed the locomotor's original `*blocked` branch (cleared when
-  slower than desired; while blocked, scrub to the desired speed and stay blocked
-  only while turning).
+  bump speed limit feed the locomotor's original `*blocked` branch.
 - `AIInternalMoveToState` recomputes the path when blocked and stuck, or blocked
   for more than two seconds (ironhour also spaces recomputations by one second).
-- `Locomotor::fixInvalidPosition` pushes ground bodies off invalid cells; the
-  terrain gate on each ground step is gone (deck edges still stop a step).
+- Moving out of the way (`aiMoveAwayFromUnit`, `Pathfinder::getMoveAwayFromPath`,
+  `AIMoveOutOfTheWayState`): infantry blocking a vehicle, and the lower-priority
+  unit of a head-on deadlock, take the cheapest reachable cell whose box (grown by
+  both units' cell radii) clears the other unit's path and the previous one's,
+  follow it as a temporary state for up to ten seconds, then resume their order.
+- Crushing: `Object::canCrushOrSquish` (`CrusherLevel` above `CrushableLevel`, or
+  any crusher against `SquishCollide`; never allies), `checkForOverlapCollision`
+  (a moving crusher overlaps what it can crush, the crushee stays passive) and
+  `SquishCollide` (an enemy crusher reaching the infantry's centre while moving
+  toward it). Crushers are never blocked by what they can crush.
+- `Locomotor::fixInvalidPosition` pushes ground bodies off invalid cells; there is
+  no terrain gate on ground steps (deck edges still stop a step).
 
 Deviations until the missing systems exist, each marked in the code:
 
-- Ground bodies may not overlap: swept clipping stops a step at contact, and the
-  rest of the step slides along the contact (only motion into the other body is
-  removed). The original lets bodies overlap; collisions are therefore detected
-  within `CONTACT_RANGE` (1 unit) of touching.
-- `aiMoveAwayFromUnit` (infantry stepping aside for vehicles, the lower-priority
-  unit of a deadlock getting out of the way) is not ported; those units are marked
-  stuck and repath instead.
-- Crushing/squishing (`checkForOverlapCollision`, `canCrushOrSquish`), dead and
-  panic states, `isWaitingForPath` and `setIgnoreCollisionTime` are not ported.
-- The look-ahead to the next path segment is always line-checked (the original
-  skips the check when very close).
+- Bodies that cannot crush each other may not overlap: swept clipping stops a step
+  at contact and the rest slides along it. The original lets bodies overlap, so
+  collisions are detected within `CONTACT_RANGE` (1 unit) of touching.
+- Squished objects are removed outright and logged in `Simulation::crushed`;
+  the original deals `HUGE_DAMAGE_AMOUNT` of crush damage, and death modules,
+  vehicle crush damage (front/back crush points) and `CrushDie` arrive with
+  bodies and damage in M5.
+- Allies are objects with the same owner until players and teams exist.
+- Not ported: `moveAllies` (allies on a move-aside path moving too), ability/busy
+  exemptions, dead and panic states, `isWaitingForPath`, and the always-checked
+  look-ahead to the next path segment (the original skips it when very close).
 - Off-centre pivot turning goes through the same clipping as the rest of the step.
 - Not ported yet: damage-state speed/turn penalties, bouncing, pitch/roll/yaw,
   falling damage, air/hover/wings/thrust/climber locomotors and `ZAxisBehavior`
   other than resting on the ground. `HOVER`, `THRUST`, `WINGS` and `CLIMBER`
   ground movement uses the `OTHER` model.
 - `ih-tools sim-run --watch ID [--watch-every N]` prints one object's movement
-  state every N frames (default 15).
+  state every N frames (default 15); `sim-run` also reports crushes and move-asides.
 
-All twelve scenarios pass with v6 hashes (every-tick replay equality, no
+All fourteen scenarios pass with v7 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `83558844caa2089b` | `0b07797d28922ad6` |
-| AI/status orders | `182570915e61ea14` | `d6b294824f5fb31b` |
-| Bridges | `ea08efd66c2f3882` | `03522f3b7d72b185` |
-| Traffic, Tournament Desert | `f300b80149de4171` | `7ecef1af7432faae` |
-| Traffic, Winding River | `9711e559603d319b` | `5618cef0feacf729` |
-| Long map travel | `c4e556dedfd547fc` | `6611fbaa8c8a4a11` |
+| Desert (`m4-desert` / `m4-contra`) | `8890b2e94036cc18` | `dad945a5f61bde9f` |
+| AI/status orders | `346ef704b8d1e187` | `0a7df79f6788bfea` |
+| Bridges | `08391e0ac9bc1e81` | `c7676cae944eed22` |
+| Traffic, Tournament Desert (one move-aside each) | `faecd6efbb0a34dd` | `c60b7d5e669a59b7` |
+| Traffic, Winding River | `e42e0da698af6360` | `d0c02bc7475ead52` |
+| Long map travel | `2fce2fab1ba1961f` | `842c52c64e964722` |
+| Crusader through an enemy Ranger (crushed at frame 131) | `eaf7c20f02e28bfb` | |
+| Crusader through an allied Ranger (steps aside) | `9c5f8ac52f1b512f` | |
 
-Asset-free fixtures: `d1d0a4c196f969f8` (ground), `5f7e1e1dcb31a22a`
-(bridge/deck stop), `9c0b94047ed94257` (head-on traffic), `cd7dc1f085983ddd`
-(AI/status orders). The v4 hashes below are superseded and kept as history.
+Asset-free fixtures: `5f5f68319f62cf7f` (ground), `5f866c9f7c83c1b5`
+(bridge/deck stop), `6a39c8d0cf2cd386` (head-on traffic, resolved by a
+move-aside), `19c96d8f45ef7ec6` (AI/status orders). Unit tests also cover a tank
+squishing enemy infantry and allied infantry stepping aside. The v4 hashes below
+are superseded and kept as history.
 
 ### Verification (v4, before the locomotion port)
 
@@ -430,10 +443,10 @@ Asset-free fixtures: `d1d0a4c196f969f8` (ground), `5f7e1e1dcb31a22a`
 
 Multi-surface/crusher zone tables and incremental zone updates, bridge damage/destruction/repair,
 full traffic/formation and collision handling,
-air/hover/thrust locomotors, the physics and traffic pieces listed above (crushing, move-out-of-the-way, overlap handling), combat/guard/transport/mood/temporary AI states,
+air/hover/thrust locomotors, the physics and traffic pieces listed above (vehicle crush damage, moveAllies, overlap handling), combat/guard/transport/mood/temporary AI states,
 disabled gameplay side effects,
-map-wide object lifecycle and complete condition-state drawables. Traffic uses the ported blocked/stuck logic on bounding circles; shape narrow-phase,
-crushing, allied move-away requests and crowded bottleneck recovery remain pending. Occupied goals/routes
+map-wide object lifecycle and complete condition-state drawables. Traffic uses the ported blocked/stuck, move-aside and crush logic on bounding circles;
+shape narrow-phase and crowded bottleneck recovery remain pending. Occupied goals/routes
 without passing room wait until space is available. M3's visual review remains pending.
 Disabled movement currently stops horizontal drive immediately; original inertia,
 gravity/falling, held transports, tint/effects, special-power timers, rider

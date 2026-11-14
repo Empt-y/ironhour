@@ -1,0 +1,22 @@
+# A Crusader drives through a Ranger standing on its route (enemy).
+map = "Tournament Desert"
+seed = 42
+frames = 900
+require_idle_at_end = true
+require_no_overlaps = true
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1150.0, 900.0]
+owner = 2
+
+[[commands]]
+frame = 1
+kind = "move"
+object = 1
+target = [1300.0, 900.0]

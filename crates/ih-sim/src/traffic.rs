@@ -190,6 +190,8 @@ pub struct TrafficState {
     pub stuck: bool,
     pub max_blocked_speed: f32,
     pub bump_speed_limit: f32,
+    /// `m_ignoreCollisionsUntil`.
+    pub ignore_until: u32,
 }
 impl Default for TrafficState {
     fn default() -> Self {
@@ -198,6 +200,7 @@ impl Default for TrafficState {
             stuck: false,
             max_blocked_speed: FAST_AS_POSSIBLE,
             bump_speed_limit: FAST_AS_POSSIBLE,
+            ignore_until: 0,
         }
     }
 }

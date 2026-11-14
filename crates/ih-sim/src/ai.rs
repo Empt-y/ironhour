@@ -35,9 +35,15 @@ pub struct AiMachine {
     pub remaining: VecDeque<[f32; 2]>,
     pub face_position: Option<[f32; 2]>,
     pub face_object: Option<u32>,
+    /// Active move-out-of-the-way temporary state.
+    pub move_out: Option<MoveOutOfWay>,
+    /// `m_moveOutOfWay1`, `m_moveOutOfWay2`: the units most recently made way for.
+    pub move_out_of_way: [Option<u32>; 2],
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {
+        self.move_out = None;
+        self.move_out_of_way = [None; 2];
         if self.state != AiState::Idle {
             self.interrupted_orders += 1;
         }
@@ -66,11 +72,24 @@ impl AiMachine {
         }
         self.state = AiState::Idle;
         self.outcome = outcome;
+        self.move_out = None;
+        self.move_out_of_way = [None; 2];
         self.remaining.clear();
         self.face_position = None;
         self.face_object = None;
     }
     pub fn active(&self) -> bool {
-        self.state != AiState::Idle
+        self.state != AiState::Idle || self.move_out.is_some()
     }
+}
+
+/// `AI_MOVE_OUT_OF_THE_WAY` as a temporary state (`StateMachine::setTemporaryState`):
+/// the unit follows a short path off another unit's route for up to ten seconds,
+/// then resumes its previous order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MoveOutOfWay {
+    /// The frame the temporary state expires.
+    pub until: u32,
+    /// The target of the interrupted order, if it was moving.
+    pub resume_target: Option<[f32; 2]>,
 }

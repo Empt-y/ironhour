@@ -126,6 +126,10 @@ pub struct Simulation {
     pub stub_counts: BTreeMap<String, usize>,
     pub events: Vec<String>,
     pub failed_orders: u32,
+    /// (frame, victim, crusher) for objects crushed so far.
+    pub crushed: Vec<(u32, u32, u32)>,
+    /// Move-out-of-the-way requests carried out (diagnostics).
+    pub move_asides: u32,
     next_id: u32,
     sequence: u64,
     commands: BTreeMap<(u32, u64), Command>,
@@ -200,6 +204,8 @@ impl Simulation {
             stub_counts: BTreeMap::new(),
             events: vec![],
             failed_orders: 0,
+            crushed: Vec::new(),
+            move_asides: 0,
             next_id: 1,
             sequence: 0,
             commands: BTreeMap::new(),
@@ -510,46 +516,21 @@ impl Simulation {
         if o.disabled.any() {
             return if o.ai.active() { 1 } else { FOREVER };
         }
+        if o.ai.move_out.is_some() {
+            self.drive(id);
+            let o = &self.objects[&id];
+            let until = o.ai.move_out.as_ref().map_or(0, |m| m.until);
+            if o.target.is_none() || self.frame >= until {
+                self.end_move_out(id);
+            }
+            return 1;
+        }
         match o.ai.state {
             AiState::Idle => return FOREVER,
             AiState::MoveTo | AiState::FollowPath => {
                 self.repath_traffic(id);
+                self.drive(id);
                 let o = self.objects.get_mut(&id).unwrap();
-                let t = &self.templates.objects[&o.template];
-                if let Some(l) = t.locomotor().and_then(|n| self.templates.locomotors.get(n)) {
-                    let radii = (
-                        t.number("GeometryMajorRadius", 5.0) * t.number("Scale", 1.0),
-                        t.collision_radius(),
-                        t.radius(),
-                    );
-                    // AIUpdateInterface::doLocomotor: collisions found last frame block
-                    // this frame's drive, capped to how fast the blocker moves away.
-                    let tr = &mut o.traffic;
-                    if tr.is_blocked {
-                        o.blocked_frames = o.blocked_frames.saturating_add(1);
-                    } else {
-                        o.blocked_frames = 0;
-                    }
-                    tr.is_blocked = false;
-                    let mut blocked = o.blocked_frames > 0;
-                    let mut speed = l.speed;
-                    if blocked && speed > tr.max_blocked_speed {
-                        speed = tr.max_blocked_speed;
-                        tr.bump_speed_limit = tr.bump_speed_limit.min(speed) * 0.95;
-                        speed = tr.bump_speed_limit;
-                    } else {
-                        blocked = false;
-                        if tr.bump_speed_limit < traffic::FAST_AS_POSSIBLE {
-                            tr.bump_speed_limit = tr.bump_speed_limit.max(speed * 0.2) * 1.05;
-                        }
-                        speed = speed.min(tr.bump_speed_limit);
-                    }
-                    steer(o, l, &self.grid, &self.map, self.frame, radii, speed, &mut blocked);
-                    if !blocked && o.blocked_frames > 1 {
-                        o.blocked_frames = 1;
-                    }
-                    o.traffic.max_blocked_speed = traffic::FAST_AS_POSSIBLE;
-                }
                 if o.target.is_none() {
                     let next = if o.ai.state == AiState::FollowPath { o.ai.remaining.pop_front() } else { None };
                     if let Some(target) = next {
@@ -594,6 +575,63 @@ impl Simulation {
         }
         if self.objects[&id].ai.active() { 1 } else { FOREVER }
     }
+    /// `AIUpdateInterface::doLocomotor` for path following: collisions found last
+    /// frame block this frame's drive, capped to how fast the blocker moves away.
+    fn drive(&mut self, id: u32) {
+        let o = self.objects.get_mut(&id).unwrap();
+        let t = &self.templates.objects[&o.template];
+        let Some(l) = t.locomotor().and_then(|n| self.templates.locomotors.get(n)) else { return };
+        let radii = (t.number("GeometryMajorRadius", 5.0) * t.number("Scale", 1.0), t.collision_radius(), t.radius());
+        let tr = &mut o.traffic;
+        if tr.is_blocked {
+            o.blocked_frames = o.blocked_frames.saturating_add(1);
+        } else {
+            o.blocked_frames = 0;
+        }
+        tr.is_blocked = false;
+        let mut blocked = o.blocked_frames > 0;
+        let mut speed = l.speed;
+        if blocked && speed > tr.max_blocked_speed {
+            speed = tr.max_blocked_speed;
+            tr.bump_speed_limit = tr.bump_speed_limit.min(speed) * 0.95;
+            speed = tr.bump_speed_limit;
+        } else {
+            blocked = false;
+            if tr.bump_speed_limit < traffic::FAST_AS_POSSIBLE {
+                tr.bump_speed_limit = tr.bump_speed_limit.max(speed * 0.2) * 1.05;
+            }
+            speed = speed.min(tr.bump_speed_limit);
+        }
+        steer(o, l, &self.grid, &self.map, self.frame, radii, speed, &mut blocked);
+        if !blocked && o.blocked_frames > 1 {
+            o.blocked_frames = 1;
+        }
+        o.traffic.max_blocked_speed = traffic::FAST_AS_POSSIBLE;
+    }
+
+    /// Leaving `AI_MOVE_OUT_OF_THE_WAY` (`AIMoveOutOfTheWayState::onExit`): drop the
+    /// path and resume the interrupted order, routing again to its target.
+    fn end_move_out(&mut self, id: u32) {
+        let o = self.objects.get_mut(&id).unwrap();
+        let resume = o.ai.move_out.take().and_then(|m| m.resume_target);
+        o.ai.move_out_of_way = [None; 2];
+        o.path.clear();
+        o.target = None;
+        o.traffic.stuck = false;
+        o.blocked_frames = 0;
+        let Some(target) = resume else { return };
+        match self.route_to(id, target) {
+            Ok(path) => {
+                let o = self.objects.get_mut(&id).unwrap();
+                o.path = path;
+                o.path.push_front(Waypoint { position: [o.position[0], o.position[1]], layer: o.layer });
+                o.target = Some(target);
+                o.last_repath = self.frame;
+            }
+            Err(_) => self.end_order(id, Outcome::Failure),
+        }
+    }
+
     fn rebuild_partition(&mut self) {
         self.partition.rebuild(self.objects.values().map(|o| (o.id, o.position)));
         self.collision_radius_bound = self.objects.values().map(|o| self.collider(o.id).radius).fold(0.0, f32::max);
@@ -682,7 +720,8 @@ impl Simulation {
         let dz = self.grid.height_at(&self.map, Waypoint { position: to, layer }) - from[2];
         body.bottom += dz.min(0.0);
         body.top += dz.max(0.0);
-        let others = self.nearby(id, ih_math::length(velocity));
+        let others: Vec<Collider> =
+            self.nearby(id, ih_math::length(velocity)).into_iter().filter(|c| !self.crush_pair(id, c.id)).collect();
         let clip = |start: Collider, v: [f32; 2]| {
             let mut fraction = 1.0f32;
             let mut blocker = None;
@@ -761,9 +800,25 @@ impl Simulation {
             }
         }
         pairs.sort_unstable();
+        let mut squished = Vec::new();
         for (a, b) in pairs {
-            self.on_collide(a, b);
-            self.on_collide(b, a);
+            for (x, y) in [(a, b), (b, a)] {
+                if squished.iter().any(|(s, _)| *s == x || *s == y) {
+                    continue;
+                }
+                // Collide modules run with physics: SquishCollide first.
+                if self.squished_by(x, y) {
+                    squished.push((x, y));
+                    continue;
+                }
+                self.on_collide(x, y);
+            }
+        }
+        for (victim, crusher) in squished {
+            // HUGE_DAMAGE_AMOUNT of DAMAGE_CRUSH: until bodies and death modules exist
+            // (M5), a squished object is removed outright.
+            self.crushed.push((self.frame, victim, crusher));
+            let _ = self.remove(victim);
         }
     }
 
@@ -785,6 +840,9 @@ impl Simulation {
             return;
         }
         let immobile = ta.has_kind("IMMOBILE");
+        if self.overlap_collision(a, b) {
+            return; // overlap rather than bounce
+        }
         // AI objects move under their own initiative, not by being bounced.
         if self.has_ai(a) && !self.process_collision(a, b) {
             return;
@@ -830,6 +888,9 @@ impl Simulation {
         if !self.has_ai(b) {
             return false;
         }
+        if self.objects[&a].traffic.ignore_until > self.frame {
+            return false;
+        }
         let self_moving = self.objects[&a].target.is_some();
         let other_moving = self.objects[&b].target.is_some();
         if !self_moving || !self.blocked_by_object(a, b) {
@@ -848,12 +909,13 @@ impl Simulation {
         o.traffic.is_blocked = true;
         o.blocked_by = Some(b);
         o.traffic.max_blocked_speed = o.traffic.max_blocked_speed.min(max);
-        if b_infantry && !a_infantry {
-            // The original asks the infantry to step aside (aiMoveAwayFromUnit), which
-            // is not ported; the vehicle routes around instead.
-            o.traffic.stuck = true;
+        let away = self.is_moving_away_from(b, a);
+        if !away && b_infantry && !a_infantry {
+            // The original skips infantry using an ability or busy; neither exists yet.
+            self.move_away_from_unit(b, a);
             return false;
         }
+        let o = self.objects.get_mut(&a).unwrap();
         if o.blocked_frames == 0 {
             o.blocked_frames = 1;
         }
@@ -861,9 +923,8 @@ impl Simulation {
             if !other_moving {
                 o.traffic.stuck = true;
             } else if deadlock {
-                // The lower-priority unit gets out of the way in the original
-                // (aiMoveAwayFromUnit, not ported); here it repaths.
-                o.traffic.stuck = true;
+                // Deadlocked: the lower-priority unit gets out of the way.
+                self.move_away_from_unit(a, b);
             }
         } else {
             // Rotating: don't accumulate blocked frames.
@@ -872,7 +933,7 @@ impl Simulation {
         false
     }
 
-    /// `AIUpdateInterface::blockedBy`. Crushing and dead states are not modelled.
+    /// `AIUpdateInterface::blockedBy`. Dead states are not modelled.
     fn blocked_by_object(&self, a: u32, b: u32) -> bool {
         let (oa, ob) = (&self.objects[&a], &self.objects[&b]);
         let pos = [oa.position[0], oa.position[1]];
@@ -881,6 +942,9 @@ impl Simulation {
             && (goal[1] - pos[1]).abs() < CELL
         {
             return false; // approaching the goal: ignore obstacles
+        }
+        if self.can_crush_or_squish(a, b, CrushTest::Either) {
+            return false; // just run over them
         }
         if oa.loco.moving_backwards {
             return false;
@@ -967,6 +1031,232 @@ impl Simulation {
         let rel = ih_math::angle_delta(o.angle, ih_math::atan2(goal[1] - o.position[1], goal[0] - o.position[0]));
         rel.abs() > std::f32::consts::PI / 30.0
     }
+    /// `AIUpdateInterface::isMovingAwayFrom`.
+    fn is_moving_away_from(&self, id: u32, from: u32) -> bool {
+        let o = &self.objects[&id];
+        o.ai.move_out.is_some() && o.ai.move_out_of_way.contains(&Some(from))
+    }
+
+    /// `AIUpdateInterface::privateMoveAwayFromUnit`: step off `unit`'s path (and the
+    /// path of the unit made way for before) for up to ten seconds.
+    fn move_away_from_unit(&mut self, id: u32, unit: u32) {
+        let mobile = {
+            let o = &self.objects[&id];
+            let t = &self.templates.objects[&o.template];
+            self.has_ai(id)
+                && !t.has_kind("IMMOBILE")
+                && t.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_some_and(|l| l.ground())
+                && !o.disabled.any()
+        };
+        if !mobile {
+            return;
+        }
+        let frame = self.frame;
+        let o = self.objects.get_mut(&id).unwrap();
+        if o.ai.move_out.is_some() && o.ai.move_out_of_way.contains(&Some(unit)) {
+            if o.traffic.is_blocked {
+                o.traffic.ignore_until = frame + 60; // cheat for 2 seconds
+            }
+            return;
+        }
+        o.ai.move_out_of_way = [Some(unit), o.ai.move_out_of_way[0]];
+        let second = o.ai.move_out_of_way[1];
+        if self.objects[&unit].path.len() < 2 {
+            return;
+        }
+        let Some(path) = self.move_away_path(id, unit, second) else { return };
+        let o = self.objects.get_mut(&id).unwrap();
+        let resume = match o.ai.move_out.take() {
+            Some(m) => m.resume_target,
+            None => o.target,
+        };
+        let goal = path.back().map(|w| w.position);
+        o.path = path;
+        o.target = goal;
+        o.blocked_frames = 0;
+        o.traffic.stuck = false;
+        o.ai.move_out = Some(crate::ai::MoveOutOfWay { until: frame + 300, resume_target: resume });
+        self.move_asides += 1;
+        // Pathfinder::moveAllies (asking allies on the new path to move too) is not ported.
+        self.wake_ai(id);
+    }
+
+    /// `Pathfinder::getMoveAwayFromPath`: the cheapest reachable cell whose box,
+    /// grown by both units' sizes, no longer touches the paths to avoid.
+    fn move_away_path(&self, id: u32, unit: u32, second: Option<u32>) -> Option<VecDeque<Waypoint>> {
+        let o = &self.objects[&id];
+        let t = &self.templates.objects[&o.template];
+        let other = &self.objects[&unit];
+        let ot = &self.templates.objects[&other.template];
+        // Pathfinder::getRadiusAndCenter
+        let cells = |t: &crate::templates::Template| {
+            let mut d = 2.0 * t.collision_radius();
+            if d > CELL && d < 2.0 * CELL {
+                d = 2.0 * CELL;
+            }
+            let mut r = ((d / CELL) + 0.3).floor() as i32;
+            if r == 0 {
+                r = 1;
+            }
+            let mut center = r & 1 == 1;
+            r /= 2;
+            if r > 2 {
+                r = 2;
+                center = true;
+            }
+            (r, center)
+        };
+        let (radius, center) = cells(t);
+        let (other_radius, other_center) = cells(ot);
+        let mut half = radius as f32 * CELL - CELL / 4.0;
+        if center {
+            half += CELL / 2.0;
+        }
+        half += other_radius as f32 * CELL;
+        if other_center {
+            half += CELL / 2.0;
+        }
+        let mut segments: Vec<([f32; 2], [f32; 2])> =
+            other.path.iter().zip(other.path.iter().skip(1)).map(|(a, b)| (a.position, b.position)).collect();
+        if let Some(s) = second.and_then(|s| self.objects.get(&s)) {
+            segments.extend(s.path.iter().zip(s.path.iter().skip(1)).map(|(a, b)| (a.position, b.position)));
+        }
+        let layer = o.layer;
+        let body_radius = t.radius();
+        let mut start_pos = [o.position[0], o.position[1]];
+        if !center {
+            // The original adds half a cell to x twice here.
+            start_pos[0] += CELL;
+        }
+        let start = ((start_pos[0] / CELL).floor() as i32, (start_pos[1] / CELL).floor() as i32);
+        let cell_point = |c: (i32, i32)| {
+            if center {
+                [c.0 as f32 * CELL + CELL / 2.0, c.1 as f32 * CELL + CELL / 2.0]
+            } else {
+                [c.0 as f32 * CELL, c.1 as f32 * CELL]
+            }
+        };
+        let me = self.collider(id);
+        let free = |p: [f32; 2]| {
+            let ground = self.grid.height_at(&self.map, Waypoint { position: p, layer });
+            let body = me.with_position([p[0], p[1], ground]);
+            self.objects.keys().filter(|k| **k != id).all(|k| {
+                let c = self.collider(*k);
+                !body.interacts(c)
+                    || ih_math::length([c.position[0] - p[0], c.position[1] - p[1]]) >= body.radius + c.radius
+            })
+        };
+        // Dijkstra over cells: orthogonal 10, diagonal 14 (COST_ORTHOGONAL/DIAGONAL).
+        let mut open = std::collections::BinaryHeap::new();
+        // cell -> (cost, parent cell)
+        type Cell = (i32, i32);
+        let mut best: BTreeMap<Cell, (u32, Option<Cell>)> = BTreeMap::new();
+        best.insert(start, (0, None));
+        open.push(std::cmp::Reverse((0u32, start)));
+        let mut expanded = 0;
+        while let Some(std::cmp::Reverse((cost, cell))) = open.pop() {
+            if best.get(&cell).is_some_and(|(c, _)| *c < cost) {
+                continue;
+            }
+            expanded += 1;
+            if expanded > 4000 {
+                return None;
+            }
+            let p = cell_point(cell);
+            let lo = [p[0] - half, p[1] - half];
+            let hi = [p[0] + half, p[1] + half];
+            let overlap = cell == start || segments.iter().any(|(a, b)| segment_in_box(*a, *b, lo, hi));
+            if !overlap && free(p) {
+                let mut chain = vec![cell];
+                let mut cur = cell;
+                while let Some((_, Some(prev))) = best.get(&cur) {
+                    chain.push(*prev);
+                    cur = *prev;
+                }
+                chain.reverse();
+                let mut path: VecDeque<Waypoint> =
+                    chain.into_iter().skip(1).map(|c| Waypoint { position: cell_point(c), layer }).collect();
+                path.push_front(Waypoint { position: [o.position[0], o.position[1]], layer });
+                return Some(path);
+            }
+            for (dx, dy, step) in
+                [(1, 0, 10), (-1, 0, 10), (0, 1, 10), (0, -1, 10), (1, 1, 14), (1, -1, 14), (-1, 1, 14), (-1, -1, 14)]
+            {
+                let n = (cell.0 + dx, cell.1 + dy);
+                if !self.grid.passable_on(layer, n.0, n.1, body_radius) {
+                    continue;
+                }
+                let c = cost + step;
+                if best.get(&n).is_none_or(|(b, _)| c < *b) {
+                    best.insert(n, (c, Some(cell)));
+                    open.push(std::cmp::Reverse((c, n)));
+                }
+            }
+        }
+        None
+    }
+
+    /// `Object::canCrushOrSquish`. Allies (same owner, until players and teams
+    /// exist) never crush each other.
+    pub fn can_crush_or_squish(&self, a: u32, b: u32, test: CrushTest) -> bool {
+        let (Some(oa), Some(ob)) = (self.objects.get(&a), self.objects.get(&b)) else { return false };
+        if oa.disabled.has(DisabledReason::Unmanned) || oa.owner == ob.owner {
+            return false;
+        }
+        let (ta, tb) = (&self.templates.objects[&oa.template], &self.templates.objects[&ob.template]);
+        let crusher = ta.number("CrusherLevel", 0.0) as i32;
+        if crusher <= 0 {
+            return false;
+        }
+        if test != CrushTest::Crush && tb.modules.iter().any(|m| m.class == "SquishCollide") {
+            return true;
+        }
+        test != CrushTest::Squish && crusher > tb.number("CrushableLevel", 255.0) as i32
+    }
+
+    /// Either body may drive over the other.
+    fn crush_pair(&self, a: u32, b: u32) -> bool {
+        self.can_crush_or_squish(a, b, CrushTest::Either) || self.can_crush_or_squish(b, a, CrushTest::Either)
+    }
+
+    /// `SquishCollide::onCollide`: an enemy crusher whose geometry reaches this
+    /// body's centre (radius 1) while moving toward it crushes it.
+    fn squished_by(&self, a: u32, b: u32) -> bool {
+        let (oa, ob) = (&self.objects[&a], &self.objects[&b]);
+        let ta = &self.templates.objects[&oa.template];
+        if !ta.modules.iter().any(|m| m.class == "SquishCollide") {
+            return false;
+        }
+        let tb = &self.templates.objects[&ob.template];
+        if tb.number("CrusherLevel", 0.0) <= 0.0 || oa.owner == ob.owner {
+            return false;
+        }
+        if !ob.modules.iter().any(|m| m.kind == ModuleKind::Physics) {
+            return false;
+        }
+        let to = [oa.position[0] - ob.position[0], oa.position[1] - ob.position[1]];
+        if ih_math::length(to) > self.collider(b).radius + 1.0 {
+            return false;
+        }
+        to[0] * ob.physics.vel[0] + to[1] * ob.physics.vel[1] > 0.0
+    }
+
+    /// `PhysicsBehavior::checkForOverlapCollision`: a moving crusher overlaps what it
+    /// can crush, and the crushee stays passive. The crush damage to vehicles
+    /// (front/back crush points) waits for bodies and damage.
+    fn overlap_collision(&self, a: u32, b: u32) -> bool {
+        let v = self.objects[&a].physics.vel;
+        if v.iter().all(|c| c.abs() < 0.01) {
+            return false;
+        }
+        let crushing = self.can_crush_or_squish(a, b, CrushTest::Crush);
+        let crushed = self.can_crush_or_squish(b, a, CrushTest::Crush);
+        if crushing && crushed {
+            return false;
+        }
+        crushed || crushing
+    }
+
     fn repath_traffic(&mut self, id: u32) {
         let o = &self.objects[&id];
         // AIInternalMoveToState: recompute when blocked and stuck, or blocked for two
@@ -1042,7 +1332,7 @@ impl Simulation {
         for id in self.objects.keys().copied() {
             let a = self.collider(id);
             for b in self.nearby(id, 0.0) {
-                if id < b.id && traffic::overlaps(a, b) {
+                if id < b.id && traffic::overlaps(a, b) && !self.crush_pair(id, b.id) {
                     pairs.push((id, b.id));
                 }
             }
@@ -1051,12 +1341,19 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(6);
+        h.u32(7);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
         h.u64(self.sequence);
         h.u32(self.failed_orders);
+        h.u32(self.move_asides);
+        h.u64(self.crushed.len() as u64);
+        for (f, v, c) in &self.crushed {
+            h.u32(*f);
+            h.u32(*v);
+            h.u32(*c);
+        }
         for v in self.rng.state {
             h.u32(v);
         }
@@ -1097,6 +1394,14 @@ impl Simulation {
             }
             let tr = &o.traffic;
             h.u32(u32::from(tr.is_blocked) | u32::from(tr.stuck) << 1);
+            h.u32(tr.ignore_until);
+            h.u32(o.ai.move_out.as_ref().map_or(0, |m| m.until));
+            for v in o.ai.move_out.as_ref().and_then(|m| m.resume_target).unwrap_or([f32::NAN; 2]) {
+                h.float(v);
+            }
+            for w in o.ai.move_out_of_way {
+                h.u32(w.unwrap_or(0));
+            }
             h.float(tr.max_blocked_speed);
             h.float(tr.bump_speed_limit);
             for v in o.physics.vel.into_iter().chain(o.slide) {
@@ -1457,7 +1762,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xd1d0a4c196f969f8, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x5f5f68319f62cf7f, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -1498,6 +1803,63 @@ mod tests {
         let mut templates = (*base.templates).clone();
         templates.objects.get_mut("Tank").unwrap().fields.insert("GeometryMajorRadius".into(), vec!["10".into()]);
         Simulation::new(base.map, Arc::new(templates), 1)
+    }
+    /// A crushing tank and squishable infantry (CrusherLevel / SquishCollide).
+    fn crush_sim() -> Simulation {
+        let base = traffic_sim();
+        let mut templates = (*base.templates).clone();
+        templates.objects.get_mut("Tank").unwrap().fields.insert("CrusherLevel".into(), vec!["2".into()]);
+        let mut soldier = templates.objects["Tank"].clone();
+        soldier.name = "Soldier".into();
+        soldier.fields.insert("GeometryMajorRadius".into(), vec!["3".into()]);
+        soldier.fields.insert("CrusherLevel".into(), vec!["0".into()]);
+        soldier.fields.insert("CrushableLevel".into(), vec!["0".into()]);
+        soldier.fields.insert("KindOf".into(), vec!["INFANTRY".into()]);
+        let mut squish = soldier.modules[0].clone();
+        squish.class = "SquishCollide".into();
+        squish.tag = "Squish".into();
+        soldier.modules.push(squish);
+        templates.objects.insert("Soldier".into(), soldier);
+        Simulation::new(base.map, Arc::new(templates), 1)
+    }
+    #[test]
+    fn tank_squishes_enemy_infantry_in_its_path() {
+        let mut s = crush_sim();
+        s.spawn("Tank", [25.0, 105.0], 1).unwrap();
+        let soldier = s.spawn("Soldier", [95.0, 105.0], 2).unwrap();
+        assert!(s.can_crush_or_squish(1, soldier, CrushTest::Squish));
+        assert!(!s.can_crush_or_squish(soldier, 1, CrushTest::Either));
+        s.enqueue(1, Command::Move { object: 1, target: [175.0, 105.0] }).unwrap();
+        for _ in 0..600 {
+            s.step();
+        }
+        assert!(!s.objects.contains_key(&soldier), "{:?}", s.objects);
+        assert_eq!(s.crushed.len(), 1);
+        assert_eq!((s.crushed[0].1, s.crushed[0].2), (soldier, 1));
+        assert!((s.objects[&1].position[0] - 175.0).abs() < 0.5);
+    }
+    #[test]
+    fn allied_infantry_steps_aside_instead_of_being_crushed() {
+        let mut s = crush_sim();
+        s.spawn("Tank", [25.0, 105.0], 1).unwrap();
+        let soldier = s.spawn("Soldier", [95.0, 105.0], 1).unwrap();
+        assert!(!s.can_crush_or_squish(1, soldier, CrushTest::Either));
+        s.enqueue(1, Command::Move { object: 1, target: [175.0, 105.0] }).unwrap();
+        for _ in 0..900 {
+            s.step();
+            assert!(s.overlaps().is_empty(), "frame {}", s.frame);
+        }
+        assert!(s.objects.contains_key(&soldier));
+        assert!(s.crushed.is_empty());
+        assert!(s.move_asides > 0);
+        assert!((s.objects[&1].position[0] - 175.0).abs() < 0.5, "{:?}", s.objects[&1]);
+        assert!(s.objects[&soldier].target.is_none() && s.objects[&soldier].ai.move_out.is_none());
+    }
+    #[test]
+    fn segment_box_intersection() {
+        assert!(segment_in_box([0.0, 5.0], [10.0, 5.0], [4.0, 4.0], [6.0, 6.0]));
+        assert!(!segment_in_box([0.0, 0.0], [10.0, 0.0], [4.0, 4.0], [6.0, 6.0]));
+        assert!(segment_in_box([5.0, 5.0], [5.0, 5.0], [4.0, 4.0], [6.0, 6.0]));
     }
     #[test]
     fn parked_obstacle_causes_repath_without_overlap() {
@@ -1577,8 +1939,9 @@ mod tests {
         }
         assert!(a.events.is_empty());
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
-        assert!(a.objects.values().any(|o| o.traffic_repaths > 0));
-        assert_eq!(a.state_hash(), 0x9c0b94047ed94257, "portable traffic fixture changed");
+        // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
+        assert!(a.move_asides > 0, "{:?}", a.objects);
+        assert_eq!(a.state_hash(), 0x6a39c8d0cf2cd386, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -1664,7 +2027,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x5f7e1e1dcb31a22a, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x5f866c9f7c83c1b5, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {
@@ -1678,4 +2041,38 @@ mod tests {
         assert_eq!((x, y), (30, 30));
         assert_eq!(a.alpha(), b.alpha());
     }
+}
+
+/// `CrushSquishTestType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrushTest {
+    Crush,
+    Squish,
+    Either,
+}
+
+/// `LineInRegion`: whether segment a-b touches the box lo-hi (Liang-Barsky).
+fn segment_in_box(a: [f32; 2], b: [f32; 2], lo: [f32; 2], hi: [f32; 2]) -> bool {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for axis in 0..2 {
+        for (p, q) in [(-d[axis], a[axis] - lo[axis]), (d[axis], hi[axis] - a[axis])] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    return false;
+                }
+            } else {
+                let r = q / p;
+                if p < 0.0 {
+                    t0 = t0.max(r);
+                } else {
+                    t1 = t1.min(r);
+                }
+                if t0 > t1 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
