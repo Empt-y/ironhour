@@ -1,6 +1,9 @@
 //! `ih-tools`: inspect game data through the same file system the engine uses.
 
 mod coverage;
+mod map_check;
+mod nav_check;
+mod sim_run;
 
 use std::path::PathBuf;
 
@@ -104,6 +107,24 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         near: Option<Vec<f32>>,
     },
+    /// Build and validate road, bridge and water geometry without a GPU.
+    MapCheck { name: Option<String> },
+    /// Inspect bridge navigation layers, entry clearance and bank-to-bank routes.
+    NavCheck {
+        name: String,
+        #[arg(long, default_value_t = 5.0)]
+        radius: f32,
+        #[arg(long, value_delimiter = ',', requires = "to")]
+        from: Option<Vec<f32>>,
+        #[arg(long, value_delimiter = ',', requires = "from")]
+        to: Option<Vec<f32>>,
+    },
+    /// Replay a simulation command log twice and compare every tick's state hash.
+    SimRun {
+        scenario: PathBuf,
+        #[arg(long)]
+        trace: Option<PathBuf>,
+    },
     /// Render a map offscreen to PNG.
     MapRender {
         /// Map name or path.
@@ -127,6 +148,14 @@ enum Cmd {
         /// Terrain only (no objects).
         #[arg(long)]
         no_objects: bool,
+        /// Fixed animation time for reproducible water/cloud renders.
+        #[arg(long, default_value_t = 0.0)]
+        time_ms: f32,
+        /// Add the dynamic objects from a recorded M4 movement scenario.
+        #[arg(long)]
+        scenario: Option<PathBuf>,
+        #[arg(long, default_value_t = 300)]
+        sim_frame: u32,
     },
     /// Report how much of the mounted data ironhour understands (Markdown).
     Coverage {
@@ -188,6 +217,15 @@ fn split_pattern(pattern: &str) -> (String, String) {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.cmd {
+        Cmd::NavCheck { name, radius, from, to } => {
+            let vfs = mount(&cli)?;
+            let query = match from.as_ref().zip(to.as_ref()) {
+                Some((a, b)) if a.len() == 2 && b.len() == 2 => Some(([a[0], a[1]], [b[0], b[1]])),
+                Some(_) => bail!("from and to must each be X,Y"),
+                None => None,
+            };
+            nav_check::run(&vfs, &Installs::locate().language, name, *radius, query)?;
+        }
         Cmd::Installs => {
             let i = Installs::locate();
             println!("Zero Hour: {}", i.zero_hour.as_ref().map_or("not found".into(), |p| p.display().to_string()));
@@ -296,21 +334,83 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Maps { name, near } => maps(&mount(&cli)?, name.as_deref(), near.as_deref())?,
-        Cmd::MapRender { name, out, width, height, at, distance, yaw, pitch, no_objects } => {
+        Cmd::MapCheck { name } => map_check::run(&mount(&cli)?, &Installs::locate().language, name.as_deref())?,
+        Cmd::SimRun { scenario, trace } => {
+            sim_run::run(&mount(&cli)?, &Installs::locate().language, scenario, trace.as_deref())?
+        }
+        Cmd::MapRender {
+            name,
+            out,
+            width,
+            height,
+            at,
+            distance,
+            yaw,
+            pitch,
+            no_objects,
+            time_ms,
+            scenario,
+            sim_frame,
+        } => {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
             let t0 = std::time::Instant::now();
-            let defs = ih_client::Definitions::load(&vfs, &language);
+            let mut defs = ih_client::Definitions::load(&vfs, &language);
             let t_defs = t0.elapsed();
             let mut world = ih_client::World::load(&vfs, name)?;
+            defs.load_map_overrides(&vfs, &world.path)?;
             let mut assets = ih_render::Assets::new(&vfs, &language);
             let mut renderer = ih_render::Renderer::new()?;
             let mut scene = ih_render::Scene::default();
             world.add_terrain(&mut renderer, &mut assets, &vfs, &defs, &mut scene)?;
+            world.add_roads(&mut renderer, &mut assets, &defs, &mut scene);
+            world.add_bridges(&mut renderer, &mut assets, &defs, &mut scene);
             world.add_water(&mut renderer, &mut assets, &defs, &mut scene);
             if !*no_objects {
                 let n = world.add_objects(&mut renderer, &mut assets, &defs, &mut scene);
                 eprintln!("{n} objects placed");
+            }
+            if let Some(path) = scenario {
+                use std::sync::Arc;
+                let scenario: ih_sim::scenario::Scenario = toml::from_str(&std::fs::read_to_string(path)?)?;
+                let map_path = ih_client::find_map(&vfs, &scenario.map).context("scenario map is missing")?;
+                if ih_vfs::path::key(&map_path) != ih_vfs::path::key(&world.path) {
+                    bail!("scenario map differs from the map being rendered");
+                }
+                if *sim_frame > scenario.frames {
+                    bail!("sim-frame exceeds scenario length");
+                }
+                let templates =
+                    Arc::new(ih_sim::templates::Templates::for_map(&defs.data, &world.map, &vfs, &language)?);
+                let mut sim = scenario.instantiate(Arc::new(world.map.clone()), templates.clone())?;
+                scenario.verify_frame(&sim)?;
+                for _ in 0..*sim_frame {
+                    sim.step();
+                    scenario.verify_frame(&sim)?;
+                    if scenario.require_no_overlaps && !sim.overlaps().is_empty() {
+                        bail!("simulation overlap at frame {}: {:?}", sim.frame, sim.overlaps());
+                    }
+                }
+                if !sim.events.is_empty() {
+                    bail!("simulation rejected commands: {:?}", sim.events);
+                }
+                let names =
+                    scenario.spawn.iter().map(|s| s.template.clone()).chain(scenario.commands.iter().filter_map(|c| {
+                        match &c.command {
+                            ih_sim::Command::Spawn { template, .. } => Some(template.clone()),
+                            _ => None,
+                        }
+                    }));
+                let draw = ih_client::sim_draw::SimDrawables::new(
+                    &mut renderer,
+                    &mut assets,
+                    &templates,
+                    names,
+                    &world.condition_flags(),
+                    scene.instances.len(),
+                );
+                draw.update(&renderer, &mut scene, &sim, 1.0, *sim_frame as f32 * 1000.0 / 30.0, Some(1));
+                eprintln!("simulation frame {}: {:016x}", sim.frame, sim.state_hash());
             }
             let t_build = t0.elapsed();
             let (lo, hi) = world.playable_bounds();
@@ -339,7 +439,7 @@ fn main() -> Result<()> {
                 &world.object_lights(),
                 (*width, *height),
                 [0.0, 0.0, 0.0, 1.0],
-                0.0,
+                *time_ms,
             );
             write_png(out, *width, *height, &rgba)?;
             for w in world.warnings.iter().chain(&assets.warnings) {

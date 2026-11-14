@@ -282,6 +282,29 @@ impl Map {
         self.heights[(y * self.width + x) as usize]
     }
 
+    /// `BaseHeightMap.cpp::getHeightMapHeight`: interpolate across the 0-to-2
+    /// diagonal's two triangles. The outer samples use `getClipHeight`.
+    pub fn ground_height(&self, x: f32, y: f32) -> f32 {
+        if self.width <= 0 || self.height <= 0 {
+            return 0.0;
+        }
+        let (x, y) = (x / MAP_XY_FACTOR, y / MAP_XY_FACTOR);
+        let (fx, fy) = (x - x.floor(), y - y.floor());
+        let (ix, iy) = (x.floor() as i32 + self.border, y.floor() as i32 + self.border);
+        let h = |x: i32, y: i32| f32::from(self.height_at(x, y));
+        if ix < 1 || iy < 1 || ix > self.width - 3 || iy > self.height - 3 {
+            return h(ix.clamp(0, self.width - 1), iy.clamp(0, self.height - 1)) * MAP_HEIGHT_SCALE;
+        }
+        let (p0, p2) = (h(ix, iy), h(ix + 1, iy + 1));
+        if fy > fx {
+            let p3 = h(ix, iy + 1);
+            (p3 + (1.0 - fy) * (p0 - p3) + fx * (p2 - p3)) * MAP_HEIGHT_SCALE
+        } else {
+            let p1 = h(ix + 1, iy);
+            (p1 + fy * (p2 - p1) + (1.0 - fx) * (p0 - p1)) * MAP_HEIGHT_SCALE
+        }
+    }
+
     fn parse_height_map(&mut self, r: &mut Reader, version: u16) -> Result<(), MapError> {
         self.height_map_version = version;
         self.width = r.i32()?;
@@ -628,6 +651,17 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_height_follows_triangles_and_clamps_outer_samples() {
+        let mut map = Map { width: 5, height: 5, border: 1, heights: vec![0; 25], ..Default::default() };
+        map.heights[2 + 2 * 5] = 16;
+        assert_eq!(map.ground_height(5.0, 5.0), 5.0);
+        assert_eq!(map.ground_height(2.5, 7.5), 2.5);
+        assert_eq!(map.ground_height(7.5, 2.5), 2.5);
+        map.heights[0] = 32;
+        assert_eq!(map.ground_height(-1000.0, -1000.0), 20.0);
+    }
 
     struct W {
         names: Vec<String>,

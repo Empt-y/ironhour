@@ -1,0 +1,32 @@
+map = "Tournament Desert"
+seed = 42
+frames = 1200
+require_idle_at_end = true
+
+[[spawn]]
+template = "Humvee1"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1000.0, 1000.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "move"
+object = 1
+target = [1300.0, 900.0]
+
+[[commands]]
+frame = 30
+kind = "move"
+object = 2
+target = [1300.0, 1000.0]
+
+[[commands]]
+frame = 480
+kind = "move"
+object = 1
+target = [1000.0, 900.0]

@@ -5,17 +5,21 @@
 //! names the C++ it follows.
 
 pub mod assets;
+pub mod bridges;
 pub mod gpu;
 pub mod house_color;
 pub mod model;
 pub mod pose;
+pub mod roads;
 pub mod terrain;
 pub mod water;
 
 use glam::{Mat4, Vec3};
 
 pub use assets::Assets;
-pub use gpu::{Camera, Instance, Lights, PreparedModel, PreparedTerrain, PreparedWater, Renderer, Scene, Targets};
+pub use gpu::{
+    Camera, Instance, Lights, PreparedModel, PreparedRoad, PreparedTerrain, PreparedWater, Renderer, Scene, Targets,
+};
 pub use model::{BuildOptions, Model, build};
 
 /// World-space bounds of a posed model's vertices.

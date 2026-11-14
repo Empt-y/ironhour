@@ -110,7 +110,7 @@ pub fn template_art(defs: &Definitions, name: &str, wanted: &[&str]) -> Option<T
 
 /// The state block best matching `wanted`: one whose flags equal it, else the
 /// default state, else one with no flags, else the first.
-fn condition_model(d: &Block, wanted: &[&str]) -> Option<DrawModel> {
+pub(crate) fn condition_model(d: &Block, wanted: &[&str]) -> Option<DrawModel> {
     let states: Vec<&Block> = d
         .blocks()
         .filter(|b| {

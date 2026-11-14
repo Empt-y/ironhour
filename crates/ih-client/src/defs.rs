@@ -6,48 +6,73 @@
 
 use std::collections::HashMap;
 
-use ih_ini::Block;
 use ih_vfs::Vfs;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Definitions {
-    /// Kind (as written, e.g. `Object`) to name to definitions in load order.
-    by_kind: HashMap<String, HashMap<String, Vec<Block>>>,
-    pub files: usize,
+    pub data: ih_ini::definitions::Definitions,
+}
+
+impl std::ops::Deref for Definitions {
+    type Target = ih_ini::definitions::Definitions;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+impl std::ops::DerefMut for Definitions {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
 }
 
 impl Definitions {
     pub fn load(vfs: &Vfs, language: &str) -> Self {
-        let (files, _missing) = ih_ini::load_order::plan(vfs, language, ih_ini::load_order::STARTUP);
-        let mut d = Definitions::default();
-        for f in &files {
-            let Ok(Some(bytes)) = vfs.read(&f.path) else { continue };
-            d.add_document(ih_ini::parse(&bytes));
-            d.files += 1;
+        Self { data: ih_ini::definitions::Definitions::load(vfs, language) }
+    }
+
+    /// Road types in the linked-list order of `TerrainRoadCollection::newRoad`
+    /// (`TerrainRoads.cpp`), newest first. New roads inherit `DefaultRoad` at
+    /// creation time; later definitions reparse fields over the existing entry.
+    pub fn road_types(&self) -> Vec<ih_render::roads::RoadType> {
+        use ih_render::roads::RoadType;
+        let mut roads: Vec<RoadType> = Vec::new();
+        for block in self.data.ordered("Road") {
+            let name = block.args().into_iter().next().unwrap_or_default();
+            let at = if let Some(at) = roads.iter().position(|r| r.name == name) {
+                at
+            } else {
+                let mut road = roads.iter().find(|r| r.name == "DefaultRoad").cloned().unwrap_or(RoadType {
+                    name: String::new(),
+                    texture: String::new(),
+                    width: 0.0,
+                    width_in_texture: 0.0,
+                });
+                road.name = name.clone();
+                roads.push(road);
+                roads.len() - 1
+            };
+            let road = &mut roads[at];
+            for f in block.fields() {
+                let values = f.values();
+                let Some(value) = values.first() else { continue };
+                match f.name.as_str() {
+                    "Texture" => road.texture = value.clone(),
+                    "RoadWidth" => {
+                        if let Ok(v) = ih_ini::values::scan_real(value.as_bytes()) {
+                            road.width = v;
+                        }
+                    }
+                    "RoadWidthInTexture" => {
+                        if let Ok(v) = ih_ini::values::scan_real(value.as_bytes()) {
+                            road.width_in_texture = v;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
-        d
-    }
-
-    /// Adds a parsed file's blocks (e.g. a map's `map.ini`).
-    pub fn add_document(&mut self, doc: ih_ini::Document) {
-        for b in doc.blocks {
-            let name = b.args().into_iter().next().unwrap_or_default();
-            self.by_kind.entry(b.kind.clone()).or_default().entry(name).or_default().push(b);
-        }
-    }
-
-    /// The last definition of `name`.
-    pub fn get(&self, kind: &str, name: &str) -> Option<&Block> {
-        self.by_kind.get(kind)?.get(name)?.last()
-    }
-
-    /// Every definition of `name`, in load order.
-    pub fn all(&self, kind: &str, name: &str) -> &[Block] {
-        self.by_kind.get(kind).and_then(|m| m.get(name)).map_or(&[], |v| v.as_slice())
-    }
-
-    pub fn names(&self, kind: &str) -> impl Iterator<Item = &String> {
-        self.by_kind.get(kind).into_iter().flat_map(|m| m.keys())
+        roads.reverse();
+        roads
     }
 
     /// `TerrainType` name to its texture file (`Texture = ...`, under `Art\Terrain\`).
@@ -116,5 +141,34 @@ impl Definitions {
             s.additive = matches!(v.to_ascii_lowercase().as_str(), "yes" | "true" | "1");
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roads_inherit_defaults_and_keep_reverse_creation_order() {
+        let mut defs = Definitions::default();
+        defs.add_document(ih_ini::parse(b"Road DefaultRoad\nTexture = default.tga\nRoadWidth = 10\nRoadWidthInTexture = 0.9\nEnd\nRoad First\nTexture = first.tga\nEnd\nRoad Second\nRoadWidth = 25\nEnd\n"));
+        defs.add_document(ih_ini::parse(b"Road First\nRoadWidth = 35.5suffix\nEnd\n"));
+        let roads = defs.road_types();
+        assert_eq!(roads.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Second", "First", "DefaultRoad"]);
+        assert_eq!(roads[0].texture, "default.tga");
+        assert_eq!(roads[0].width, 25.0);
+        assert_eq!(roads[1].texture, "first.tga");
+        assert_eq!(roads[1].width, 35.5);
+        assert_eq!(roads[1].width_in_texture, 0.9);
+    }
+
+    #[test]
+    fn changing_defaults_only_affects_roads_created_afterwards() {
+        let mut defs = Definitions::default();
+        defs.add_document(ih_ini::parse(b"Road DefaultRoad\nRoadWidth = 10\nEnd\nRoad First\nEnd\nRoad DefaultRoad\nRoadWidth = 20\nEnd\nRoad Second\nEnd\n"));
+        let roads = defs.road_types();
+        assert_eq!(roads[0].width, 20.0);
+        assert_eq!(roads[1].width, 10.0);
+        assert_eq!(roads[2].width, 20.0);
     }
 }

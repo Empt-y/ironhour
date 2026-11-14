@@ -12,6 +12,7 @@ use wgpu::util::DeviceExt;
 
 use crate::assets::Assets;
 use crate::model::{Mapper, Model, TextureSlot, Vertex};
+use crate::roads::RoadMesh;
 use crate::terrain::{Atlas, TerrainMesh, TerrainVertex};
 use crate::water::{WaterMesh, WaterSettings, WaterVertex};
 
@@ -165,6 +166,18 @@ pub struct PreparedTerrain {
     use_noise: bool,
 }
 
+/// A textured terrain surface: road ribbons or a bridge mesh. The scene chooses
+/// the road's no-depth-write state or the bridge's alpha-test/depth-write state.
+pub struct PreparedRoad {
+    vb: wgpu::Buffer,
+    ib: wgpu::Buffer,
+    count: u32,
+    ub: wgpu::Buffer,
+    bg: wgpu::BindGroup,
+    use_cloud: bool,
+    use_noise: bool,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct WaterU {
@@ -187,6 +200,8 @@ pub struct PreparedWater {
 #[derive(Default)]
 pub struct Scene {
     pub terrain: Option<PreparedTerrain>,
+    pub roads: Vec<PreparedRoad>,
+    pub bridges: Vec<PreparedRoad>,
     pub water: Option<PreparedWater>,
     pub instances: Vec<Instance>,
 }
@@ -207,7 +222,7 @@ pub struct Renderer {
     bones_layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
     terrain_layout: wgpu::BindGroupLayout,
-    terrain_pipelines: [wgpu::RenderPipeline; 2],
+    terrain_pipelines: [wgpu::RenderPipeline; 4],
     water_layout: wgpu::BindGroupLayout,
     water_pipelines: [wgpu::RenderPipeline; 2],
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
@@ -316,6 +331,7 @@ impl Renderer {
                 entry(4, fs, tex),
                 entry(5, fs, samp),
                 entry(6, fs, samp),
+                entry(7, fs, tex),
             ],
         });
         let water_pipelines = water_pipelines(&device, format, &globals_layout, &water_layout);
@@ -671,6 +687,66 @@ impl Renderer {
         }
     }
 
+    /// Uploads road ribbons in draw order. As in `RoadShaderPixelShader::set`
+    /// (`W3DShaderManager.cpp`), road colour is modulated by terrain lighting,
+    /// cloud and noise; texture alpha blends its edges into the terrain.
+    pub fn prepare_roads(
+        &mut self,
+        assets: &mut Assets,
+        meshes: &[RoadMesh],
+        cloud: Option<&str>,
+        noise: Option<&str>,
+    ) -> Vec<PreparedRoad> {
+        if meshes.is_empty() {
+            return Vec::new();
+        }
+        let cloud_view = cloud.map(|n| self.named_texture(assets, n)).unwrap_or_else(|| self.white.clone());
+        let noise_view = noise.map(|n| self.named_texture(assets, n)).unwrap_or_else(|| self.white.clone());
+        let wrap = self.sampler(false, false);
+        let mut roads = Vec::new();
+        for mesh in meshes.iter().filter(|m| !m.indices.is_empty()) {
+            let texture = self.named_texture(assets, &mesh.texture);
+            let u = TerrainU { cloud: [0.0; 4], mode: [2.0, 0.0, 0.0, 0.0] };
+            let ub = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("road"),
+                contents: bytemuck::bytes_of(&u),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("road"),
+                layout: &self.terrain_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&wrap) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&cloud_view) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&noise_view) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&wrap) },
+                ],
+            });
+            let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("road"),
+                contents: bytemuck::cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("road"),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            roads.push(PreparedRoad {
+                vb,
+                ib,
+                count: mesh.indices.len() as u32,
+                ub,
+                bg,
+                use_cloud: cloud.is_some(),
+                use_noise: noise.is_some(),
+            });
+        }
+        roads
+    }
+
     /// Uploads the map's standing water. `heights` is the height map (width, height,
     /// samples) for the shoreline opacity.
     #[allow(clippy::too_many_arguments)]
@@ -689,6 +765,11 @@ impl Renderer {
         let water = self.named_texture(assets, &settings.texture);
         let sparkles = self.named_texture(assets, "WaterSurfaceBubbles.tga");
         let noise = self.named_texture(assets, "Noise0000.tga");
+        let edge = if mesh.vertices.iter().any(|v| v.river_uv[0] >= 0.0) {
+            self.named_texture(assets, "TWAlphaEdge.tga")
+        } else {
+            self.white.clone()
+        };
         let (hw, hh, hdata) = heights;
         let height_tex = self.device.create_texture_with_data(
             &self.queue,
@@ -732,6 +813,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 4, resource: tv(&height_view) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&wrap) },
                 wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&clamp) },
+                wgpu::BindGroupEntry { binding: 7, resource: tv(&edge) },
             ],
         });
         let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -828,6 +910,19 @@ impl Renderer {
             u.params[0] = time_ms / 1000.0 * 30.0 * 0.002;
             self.queue.write_buffer(&wt.ub, 0, bytemuck::bytes_of(&u));
         }
+        for (road, mode) in scene.roads.iter().map(|r| (r, 2.0)).chain(scene.bridges.iter().map(|r| (r, 3.0))) {
+            let secs = time_ms / 1000.0;
+            let u = TerrainU {
+                cloud: [
+                    (-0.02 * secs).fract(),
+                    (-0.03 * secs).fract(),
+                    f32::from(u8::from(road.use_cloud)),
+                    f32::from(u8::from(road.use_noise)),
+                ],
+                mode: [mode, 0.0, 0.0, 0.0],
+            };
+            self.queue.write_buffer(&road.ub, 0, bytemuck::bytes_of(&u));
+        }
 
         // Opaque before translucent, each in sort-level order; stable otherwise.
         let mut order: Vec<(&Instance, &Draw)> =
@@ -880,7 +975,21 @@ impl Renderer {
                 pass.draw_indexed(0..*n, 0, 0..1);
             }
         }
+        for road in &scene.roads {
+            pass.set_pipeline(&self.terrain_pipelines[2]);
+            pass.set_bind_group(1, &road.bg, &[]);
+            pass.set_vertex_buffer(0, road.vb.slice(..));
+            pass.set_index_buffer(road.ib.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..road.count, 0, 0..1);
+        }
         draw_model(&mut pass, &order[..split]);
+        for bridge in &scene.bridges {
+            pass.set_pipeline(&self.terrain_pipelines[3]);
+            pass.set_bind_group(1, &bridge.bg, &[]);
+            pass.set_vertex_buffer(0, bridge.vb.slice(..));
+            pass.set_index_buffer(bridge.ib.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..bridge.count, 0, 0..1);
+        }
         if let Some(wt) = &scene.water {
             pass.set_pipeline(&self.water_pipelines[usize::from(wt.additive)]);
             pass.set_bind_group(1, &wt.bg, &[]);
@@ -1015,7 +1124,7 @@ fn water_pipelines(
         bind_group_layouts: &[Some(globals), Some(water)],
         immediate_size: 0,
     });
-    let attrs = wgpu::vertex_attr_array![0 => Float32x3];
+    let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2];
     let make = |additive: bool| {
         // Premultiplied output: alpha blending, or additive (`AdditiveBlending`).
         let dst = if additive { wgpu::BlendFactor::One } else { wgpu::BlendFactor::OneMinusSrcAlpha };
@@ -1073,7 +1182,7 @@ fn terrain_pipelines(
     format: wgpu::TextureFormat,
     globals: &wgpu::BindGroupLayout,
     terrain: &wgpu::BindGroupLayout,
-) -> [wgpu::RenderPipeline; 2] {
+) -> [wgpu::RenderPipeline; 4] {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("terrain"),
         source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
@@ -1084,10 +1193,10 @@ fn terrain_pipelines(
         immediate_size: 0,
     });
     let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x2, 3 => Float32x2];
-    let make = |extra: bool| {
-        let blend = extra.then_some(wgpu::BlendState::ALPHA_BLENDING);
+    let make = |layer: usize| {
+        let blend = (layer != 0).then_some(wgpu::BlendState::ALPHA_BLENDING);
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(if extra { "terrain extra blend" } else { "terrain" }),
+            label: Some(["terrain", "terrain extra blend", "road", "bridge"][layer]),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &module,
@@ -1102,13 +1211,13 @@ fn terrain_pipelines(
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: if layer == 3 { None } else { Some(wgpu::Face::Back) },
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                // The extra layer does not write depth (renderExtraBlendTiles).
-                depth_write_enabled: Some(!extra),
+                // Extra blends/roads do not write depth; bridges do.
+                depth_write_enabled: Some(layer == 0 || layer == 3),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
@@ -1124,7 +1233,7 @@ fn terrain_pipelines(
             cache: None,
         })
     };
-    [make(false), make(true)]
+    [make(0), make(1), make(2), make(3)]
 }
 
 /// Uploads an image with a full mip chain: the file's own mips (DDS) or box-filtered

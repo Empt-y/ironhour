@@ -1,0 +1,145 @@
+# Follow two legs, pause under overlapping EMP/HELD timers, then turn in place.
+map = "Tournament Desert"
+seed = 42
+frames = 1200
+require_idle_at_end = true
+require_no_overlaps = true
+require_no_failed_orders = true
+
+[[spawn]]
+template = "Humvee1"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1300.0, 1000.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "follow_path"
+object = 1
+points = [[1300.0, 900.0], [1000.0, 900.0]]
+
+[[commands]]
+frame = 60
+kind = "disable"
+object = 1
+reason = "emp"
+frames = 120
+
+[[commands]]
+frame = 100
+kind = "disable"
+object = 1
+reason = "held"
+frames = 140
+
+[[commands]]
+frame = 300
+kind = "disable"
+object = 2
+reason = "script_disabled"
+
+[[commands]]
+frame = 500
+kind = "enable"
+object = 2
+reason = "script_disabled"
+
+[[commands]]
+frame = 1000
+kind = "face"
+object = 1
+target = [1000.0, 1100.0]
+
+[[commands]]
+frame = 1100
+kind = "face_object"
+object = 2
+target = 1
+
+[[check]]
+frame = 0
+object = 1
+position = [1000.0, 900.0]
+ai_state = "idle"
+disabled = []
+completed_orders = 0
+
+[[check]]
+frame = 61
+object = 1
+ai_state = "follow_path"
+disabled = ["emp"]
+stationary = true
+
+[[check]]
+frame = 101
+object = 1
+ai_state = "follow_path"
+disabled = ["held", "emp"]
+stationary = true
+
+[[check]]
+frame = 181
+object = 1
+ai_state = "follow_path"
+disabled = ["held"]
+stationary = true
+
+[[check]]
+frame = 241
+object = 1
+ai_state = "follow_path"
+disabled = []
+stationary = true
+
+[[check]]
+frame = 245
+object = 1
+ai_state = "follow_path"
+disabled = []
+stationary = false
+
+[[check]]
+frame = 301
+object = 2
+ai_state = "idle"
+disabled = ["script_disabled"]
+stationary = true
+
+[[check]]
+frame = 499
+object = 2
+disabled = ["script_disabled"]
+
+[[check]]
+frame = 501
+object = 2
+ai_state = "idle"
+disabled = []
+
+[[check]]
+frame = 900
+object = 1
+position = [1000.0, 900.0]
+ai_state = "idle"
+outcome = "success"
+completed_orders = 1
+
+[[check]]
+frame = 1100
+object = 1
+ai_state = "idle"
+angle = 1.5707963
+tolerance = 0.04
+completed_orders = 2
+
+[[check]]
+frame = 1200
+object = 2
+ai_state = "idle"
+outcome = "success"
+completed_orders = 1

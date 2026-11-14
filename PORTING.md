@@ -1,6 +1,7 @@
 # Porting progress
 
-Milestones are defined in the project plan. Numbers below come from `ih-tools`
+Milestones are defined in [the project plan](docs/plan.md), recovered from Claude's
+`a-long-time-ago-vast-abelson.md` plan. Numbers below come from `ih-tools`
 runs against a local install. No game data is stored in this repository.
 
 ## M0. Foundations (done)
@@ -149,11 +150,213 @@ Of 70,136 HLOD sub-object references in stock data, 45 name objects no file cont
   mappers are not used by stock or Contra data and draw with plain UVs.
 - LOD switching by screen size (the highest-detail LOD is always used), camera-aligned
   meshes (none in stock data), specular (none in stock data), shadows, fog.
-- Lighting matches GameData's afternoon object lights; per-map lighting comes with M3.
+- The model viewer uses GameData's afternoon object lights; M3's map viewer uses
+  per-map lighting.
 
 To compare against the game, see [docs/reference-models.md](docs/reference-models.md).
 
-## M3. Map viewer (next)
+## M3. Map viewer (implemented; visual review pending)
 
 Map loading, terrain with blend tiles and cliffs, roads, bridges, water, trees and props,
 placed objects, map lighting and a tactical camera, in a window.
+
+### Implemented
+
+- Map DataChunk reader, RefPack decompression, height and blend tiles, cliff UVs,
+  objects, polygon triggers, world properties and time-of-day lighting.
+- Terrain atlas and base, blend and extra-blend layers, static vertex lighting,
+  cloud and macro textures. Placed objects use their idle draw condition, including
+  night and snow variants; standing water uses the height map for shore opacity.
+- **Roads** (`crates/ih-render/src/roads.rs` and `roads/topology.rs`), continued from the unfinished
+  working-tree port of `W3DRoadBuffer.cpp`:
+  - adjacent map road-point pairs, reverse-endpoint duplicate suppression and the
+    original 0.25-unit nudge for zero-length segments;
+  - original `RoadWidth` / `RoadWidthInTexture` coordinates, terrain-cell maximum
+    heights, collapsed columns and the original column-removal interpolation;
+  - the shared terrain static lighting, texture alpha, cloud and macro modulation,
+    depth testing without depth writes;
+  - road definitions keep the reverse-creation linked-list order of
+    `TerrainRoadCollection`, with `DefaultRoad` inheritance and ordered field layers.
+  - tee, Y, slanted and four-way junction patches, normal/tight curved corners,
+    angled mitres, cross-type alpha joins and texture stacking. Endpoint groups
+    replace the original's mutable linked runs; the source's geometric calculations
+    and patch UVs are retained.
+- **Bridges** (`bridges.rs`): posed LEFT/SPAN/RIGHT meshes, nearest-span repetition,
+  fixed bridges, horizontal fitting between map points, `BridgeScale` on width and
+  height, terrain lighting, texture alpha testing, depth and projected clouds.
+  Endpoints use the original triangle height interpolation plus 0.25 world units.
+- **Rivers** (`water.rs`, `water.wgsl`): opposite-bank strips using `RiverStart`,
+  per-point heights, original texture repeats and wobble, flowing texture coordinates,
+  alpha-edge texture and sparkle/noise modulation. Standing water retains soft shores.
+- **Windowed viewer** (`ih-game`): winit window and wgpu surface, resizing and surface
+  recovery, terrain-following tactical camera, keyboard and edge pan, drag pan/orbit,
+  wheel zoom, pitch/rotation, reset and overview. Background rendering is throttled;
+  minimised windows wait. `--smoke` verifies setup and three resized/animated frames
+  with a hidden window.
+- Map-local `map.ini` definitions are loaded after startup definitions for rendering.
+- `ih-tools maps` inspects/scans maps; `map-render` renders offscreen without opening
+  a window. `--at X,Y --distance N --yaw N --pitch N` selects a closer view;
+  `--time-ms N` fixes animation time. `map-check` validates road/bridge/water geometry
+  and referenced textures across all mounted maps without a GPU.
+
+### Verification (14 November 2026)
+
+- `cargo test --workspace`: 62 tests passed, covering road geometry and topology,
+  definition order, bridge span layout, river banks, terrain interpolation and
+  camera controls. `cargo fmt --all --check` and workspace Clippy with
+  `-D warnings` passed.
+- All 150 stock maps parsed with no failures or warnings (281,480 map objects).
+- All 333 Contra X maps parsed with no failures or warnings (531,339 map objects).
+- CPU geometry verification: 150 stock maps, zero failures/asset warnings,
+  206,360 road triangles, 508,370 water triangles, 199 bridges, 121 river areas.
+  Contra: 333 maps, zero failures/asset warnings, 424,690 road triangles,
+  1,258,140 water triangles, 248 bridges, 174 river areas.
+- Headless GPU renders inspected: stock Tournament Desert (580 placed objects),
+  stock Alpine Assault (664), and Contra X Tournament Desert (756). Road textures
+  resolved without warnings on all three. These are visual smoke checks, not
+  comparisons against retail screenshots.
+- Further renders inspected: Twilight Flame bridge close-up, Winding River with
+  bridges and flowing river strips, Dark Night. Dark Night contains an undefined
+  `Scorch` object template, which is reported and skipped.
+- Two Winding River renders at the same fixed 5,000 ms animation time produced
+  identical PNG hashes on the local GPU; changing time from 0 to 5,000 ms changed
+  the image. Stock and Contra INI coverage was regenerated and remains 100% with
+  zero invalid values/unknown fields and the existing 69/207 dangling references.
+- Hidden-window surface/configuration and resize/render checks passed on the local
+  NVIDIA RTX 3070 Laptop GPU for stock Tournament Desert, Winding River and Contra
+  Tournament Desert. Visible-window presentation and input feel need user review;
+  Linux/macOS runtime behaviour has not been exercised locally.
+
+### Milestone review
+
+- Follow [the viewer review guide](docs/map-viewer.md): compare stock and Contra
+  maps against the original and check visible presentation and input feel.
+- This is a map viewer: object animations still use their initial idle pose; bridge
+  damage updates, gameplay lights, shadows, shroud and fog remain in later work.
+  Undefined road types are reported and skipped. Complex/degenerate junctions
+  need the visual comparisons in addition to geometry validation.
+
+## M4. Simulation core (movement, traffic and initial AI slices implemented)
+
+- Shared data definitions now live in `ih-ini`; `ih-client` adds render-specific
+  interpretations. `ih-sim` has no dependency on the renderer, client or windowing.
+- New `ih-math` f32/software-transcendental boundary and `ih-sim` logic RNG port
+  (`RandomValue.cpp`), original frame/phase sleepy heap and wake behaviour
+  (`GameLogic.cpp`, `UpdateModule.cpp`). Scheduler ties retain heap behaviour,
+  rather than adding a new FIFO/object-ID ordering.
+- Ordered objects and module slots, field layers/reskins, module-tag namespaces
+  and Add/Remove/ReplaceModule operations. Unknown/unimplemented gameplay remains
+  a data-bearing stub reported by class.
+- Ground navigation and movement slice: 10-unit A*, source cost/turn constants,
+  conservative footprints, cliffs/water/static obstacles, path shortening, parsed
+  per-frame locomotor values, initial steering/integration and spatial buckets.
+- Initial ground hierarchy uses the source's 10x10-cell blocks, local regions,
+  global component equivalence and bridge-end connections. Clearance graphs are
+  cached independently, and coarse corridors narrow fine search. Disconnected
+  destinations skip fine search; transient obstacles may trigger an unrestricted
+  fallback. Derived caches are excluded from state hashes and explicitly
+  invalidated for static edits. `nav-check --from X,Y --to X,Y` reports search work.
+- Pristine bridge navigation layers from posed W3D mesh widths and map endpoints,
+  connected only at end cells. Bank/deck footprint transitions, rail boundaries,
+  plane heights, ground underpass clearance and bridge picking are implemented.
+  `nav-check` inspects CPU-side entry clearance and bank-to-bank routes.
+- Initial live traffic: geometry bounding circles, source ungrouped priority
+  rules, blocked-frame tracking and delayed repathing around transient objects.
+  Swept disc clipping guards the corridor integrator against tunnelling/overlap;
+  headless scenarios assert no overlaps every tick. Partition relocation commits
+  during each physics update. Waiting units use idle art, and scenario cameras
+  initially frame all spawned units.
+- Timestamped spawn/move/stop/destroy commands, a 30 Hz integer clock and versioned
+  canonical v4 state hash including bridge/layer setup, RNG, objects, module state,
+  heap order, queued commands, traffic, AI actions and disabled status. `ih-tools sim-run` replays twice
+  and compares every tick. Prior-version hash logs must be regenerated.
+- Initial AI movement states use the source IDs for idle, move-to, follow-path,
+  face-position and face-object. Success/failure returns to idle; replacement and
+  Stop interrupt old actions. Failed actions remain observable in order counters,
+  including a global count that survives object removal.
+- All thirteen source disabled reasons have independent replacement deadlines,
+  explicit clearing and end-of-frame expiry. Module eligibility uses the source's
+  any-intersection mask (AI allows HELD, physics allows all reasons). The current
+  ground integrator suspends drive while disabled and retains the AI action.
+- Scenario checkpoints assert snapshot positions, stationary state, flags, AI
+  state/outcome, facing and completed orders. They run headlessly, in offscreen
+  scenario renders and in hidden smoke checks, while interactive play remains free.
+- `ih-game --scenario ...` displays interpolated units with idle/MOVING art and
+  animations, selection rings, terrain picking and move/stop/pause controls.
+  `map-render --scenario ... --sim-frame N` produces reproducible movement stills.
+- See [the movement guide](docs/m4-movement.md) and `scenarios/m4-*.toml`.
+
+### Verification
+
+- 110 workspace tests passed; formatting and workspace Clippy pass.
+- Asset-free synthetic fixtures hash to `f3653e098b76c23b` (ground),
+  `eb2e076f238f6b44` (bridge/deck stop), `66512131ec5b2c98` (head-on traffic),
+  and `71e29433699be8fd` (AI/status orders).
+  They pass in debug/release locally and run in
+  the existing three-OS CI test matrix. Only local Windows execution was observed.
+- Stock and Contra scenarios each replay 1,200 ticks twice with matching hashes
+  at every frame and no rejected/unfinished orders. Stock uses Crusader/Ranger;
+  Contra uses Humvee1/Ranger because Contra disables the stock Crusader's movement.
+- Before/after offscreen unit renders inspected; hidden-window scenario smoke
+  checks passed for stock and Contra.
+- Stock and Contra bridge scenarios each complete two opposite-end traversals
+  over 1,200 ticks with matching hashes at every tick, no rejected commands and
+  all orders finished. Final v4 hashes: stock `23669f0448a21c71`, Contra
+  `4e58507f8039d36b`. Desert v4 hashes: stock `5906f49c0df99820`, Contra
+  `b29baf2aa2c7ae30`.
+- Bank-to-bank navigation succeeds on all four stock Winding River crossings and
+  all three retained by Contra for a 15-unit footprint radius. Bridge crossing
+  still inspected offscreen; hidden-window surface/resize checks passed for both
+  bridge scenarios. Contra reports a missing placed building model `CBOldMslm_B`;
+  movement is unaffected and the warning remains visible.
+- Four 1,800-tick traffic replays (stock/Contra, desert/bridge) finish with
+  matching hashes every tick, no overlaps/rejected orders and all orders finished.
+  Each exchanges two vehicles past a parked third vehicle; both bridge runs
+  complete two traversals. Final v4 hashes:
+
+  | Traffic scenario | Stock | Contra |
+  |---|---|---|
+  | Tournament Desert | `25f624d03c84e581` | `2c55d8aedb1921e3` |
+  | Winding River | `ee5bb98597773bd3` | `b3392d3351dd6688` |
+
+- Traffic tests cover off-centre contact escape with stock-sized boxes, parked
+  obstacles, opposing units, followers, blocker removal, occupied-deck underpasses
+  and long-step tunnelling. Open-ground and bridge traffic stills were inspected.
+- Hierarchy tests verify reachability against unrestricted search on seeded grids,
+  reduced fine-cell work on a large detour, disconnected-goal rejection before
+  fine search, alternate-route fallback for transient traffic, separate clearance
+  classes, cache invalidation/clone isolation and unchanged hashes after cache warmup.
+- Both 6,000-tick long-map scenarios finish with every-tick replay equality, no
+  overlaps/rejected orders and completed orders. Stock traverses two bridges;
+  Contra traverses one. Final v4 hashes are `ed48eb0a2350f00d` and
+  `a4e5f69307b55ccb`, respectively. Corner regressions cover reaching intermediate
+  waypoints before turning and retrying terrain-blocked movement.
+- At radius 15, Winding River has 914 zones/17 components in stock and 915/13 in
+  Contra. The cross-map query expands 280 coarse/3,228 fine nodes in stock and
+  304 coarse/3,404 fine nodes in Contra; these counts exclude initial zone building.
+- Two AI/status logs run 1,200 ticks each with matching every-tick hashes, all
+  twenty-four checkpoints passing, no overlaps/rejections/failed actions and all
+  actions finished. They exercise overlapping EMP/HELD expiry, explicit script
+  re-enable, follow-path and both facing states. Final v4 hashes: stock
+  `1d222a39729ab9d7`, Contra `d0970703c7536062`.
+- Disabled and final-facing scenario stills were inspected; AI/status hidden-window
+  surface/resize/render/checkpoint smoke checks pass for both stock and Contra.
+- AI/status regressions cover module exception masks, independent/replaced timers,
+  stop during disable, new-command rejection, moving/destroyed facing targets,
+  later-leg failure, interruption, path visit order and per-tick replay equality.
+
+### Still required for M4
+
+Multi-surface/crusher zone tables and incremental zone updates, bridge damage/destruction/repair,
+full traffic/formation and collision handling,
+remaining locomotor/physics types, combat/guard/transport/mood/temporary AI states,
+disabled gameplay side effects,
+map-wide object lifecycle and complete condition-state drawables. The current
+ground integrator is deliberately labelled an initial slice, not a complete port
+of the original locomotor/physics implementations. Traffic remains conservative
+circle avoidance: shape narrow-phase, forces, crushing, allied move-away requests
+and crowded bottleneck deadlock recovery remain pending. Occupied goals/routes
+without passing room wait until space is available. M3's visual review remains pending.
+Disabled movement currently stops horizontal drive immediately; original inertia,
+gravity/falling, held transports, tint/effects, special-power timers, rider
+propagation and power-system effects need their remaining runtime systems.

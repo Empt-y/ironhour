@@ -10,5 +10,6 @@ ih-vfs.workspace = true
 ih-ini.workspace = true
 ih-formats.workspace = true
 ih-render.workspace = true
+ih-sim.workspace = true
 glam = "0.34"
 thiserror.workspace = true

@@ -21,7 +21,7 @@ struct Globals {
 struct TerrainU {
     // xy: cloud offset; z: use cloud; w: use noise
     cloud: vec4<f32>,
-    // x: 1 for the extra blend layer
+    // x: 0 terrain, 1 extra blend, 2 road, 3 alpha-tested bridge
     mode: vec4<f32>,
 };
 
@@ -77,6 +77,11 @@ fn macro_tint(world: vec2<f32>) -> vec3<f32> {
 fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let base = textureSample(atlas, atlas_samp, i.uv0);
     let tint = macro_tint(i.world);
+    if t.mode.x > 2.5 && base.a < 96.0 / 255.0 { discard; }
+    if t.mode.x > 1.5 {
+        // Roads wrap the texture, retaining its alpha to soften the edges.
+        return vec4<f32>(base.rgb * i.color.rgb * tint, base.a * i.color.a);
+    }
     if t.mode.x > 0.5 {
         // Extra blend layer: alpha from the vertex (texture alpha is opaque).
         return vec4<f32>(base.rgb * i.color.rgb * tint, i.color.a * base.a);

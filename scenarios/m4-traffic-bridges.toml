@@ -1,0 +1,35 @@
+# Opposing traffic over a bridge, with a parked vehicle on the deck.
+map = "Winding River"
+seed = 42
+frames = 1800
+require_idle_at_end = true
+require_no_overlaps = true
+require_bridge_traversals = 2
+require_traffic_repaths = 2
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [2258.3945, 481.0763]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1793.6517, 477.0546]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [2020.0, 480.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "move"
+object = 1
+target = [1793.6517, 477.0546]
+
+[[commands]]
+frame = 1
+kind = "move"
+object = 2
+target = [2258.3945, 481.0763]

@@ -1,0 +1,19 @@
+[package]
+name = "ih-game"
+description = "ironhour windowed tactical map viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ih-vfs.workspace = true
+ih-client.workspace = true
+ih-render.workspace = true
+ih-sim.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+glam = "0.34"
+wgpu = "30"
+winit = "0.30"
+pollster = "1"

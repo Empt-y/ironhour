@@ -14,6 +14,8 @@ ih-ini = { path = "crates/ih-ini" }
 ih-formats = { path = "crates/ih-formats" }
 ih-render = { path = "crates/ih-render" }
 ih-client = { path = "crates/ih-client" }
+ih-math = { path = "crates/ih-math" }
+ih-sim = { path = "crates/ih-sim" }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

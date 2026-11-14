@@ -49,6 +49,54 @@ pub struct World {
 }
 
 impl World {
+    /// Paired bridge points, as `W3DBridgeBuffer::loadBridges`. Stored object z is
+    /// ignored: endpoints sit at terrain height plus `BRIDGE_FLOAT_AMT` (0.25).
+    pub fn add_bridges(&mut self, renderer: &mut Renderer, assets: &mut Assets, defs: &Definitions, scene: &mut Scene) {
+        let meshes = self.bridge_meshes(assets, defs);
+        let night = self.map.lighting.as_ref().is_some_and(|l| l.time_of_day == 4);
+        scene.bridges = renderer.prepare_roads(assets, &meshes, (!night).then_some("TSCloudMed.tga"), None);
+    }
+
+    /// CPU-only bridge construction, also used by the map verification tool.
+    pub fn bridge_meshes(&mut self, assets: &mut Assets, defs: &Definitions) -> Vec<ih_render::roads::RoadMesh> {
+        use ih_formats::map::object_flags as of;
+        let mut meshes = Vec::new();
+        let lights = self.terrain_lights();
+        for pair in self.map.objects.windows(2) {
+            if pair[0].flags & of::BRIDGE_POINT1 == 0 || pair[1].flags & of::BRIDGE_POINT2 == 0 {
+                continue;
+            }
+            let name = &pair[0].name;
+            let field = |f: &str| {
+                defs.field("Bridge", name, f)
+                    .or_else(|| defs.field("Bridge", "DefaultBridge", f))
+                    .and_then(|v| v.into_iter().next())
+            };
+            let Some(model) = field("BridgeModelName") else {
+                self.warnings.push(format!("bridge type {name} has no model"));
+                continue;
+            };
+            let def = ih_render::bridges::BridgeType {
+                model,
+                texture: field("Texture").unwrap_or_default(),
+                scale: field("BridgeScale").and_then(|v| ih_ini::values::scan_real(v.as_bytes()).ok()).unwrap_or(1.0),
+            };
+            let endpoint = |p: [f32; 3]| Vec3::new(p[0], p[1], self.ground_height(p[0], p[1]) + 0.25);
+            match ih_render::bridges::build(
+                assets,
+                &def,
+                endpoint(pair[0].position),
+                endpoint(pair[1].position),
+                &lights,
+                3,
+            ) {
+                Ok(mesh) => meshes.push(mesh),
+                Err(e) => self.warnings.push(format!("bridge {name}: {e}")),
+            }
+        }
+        meshes
+    }
+
     pub fn load(vfs: &Vfs, name: &str) -> Result<World, WorldError> {
         let path = find_map(vfs, name).ok_or_else(|| WorldError::NotFound(name.into()))?;
         let bytes = vfs.read(&path)?.ok_or_else(|| WorldError::NotFound(path.clone()))?;
@@ -68,17 +116,9 @@ impl World {
         ([0.0, 0.0], [b[0] as f32 * MAP_XY_FACTOR, b[1] as f32 * MAP_XY_FACTOR])
     }
 
-    /// Terrain height at world (x, y), bilinear over the height map.
+    /// Terrain height at world (x, y), using the original's triangle interpolation.
     pub fn ground_height(&self, x: f32, y: f32) -> f32 {
-        let m = &self.map;
-        let fx = x / MAP_XY_FACTOR + m.border as f32;
-        let fy = y / MAP_XY_FACTOR + m.border as f32;
-        let (ix, iy) = (fx.floor() as i32, fy.floor() as i32);
-        let (tx, ty) = (fx - ix as f32, fy - iy as f32);
-        let h = |x: i32, y: i32| f32::from(m.height_at(x, y)) * ih_formats::map::MAP_HEIGHT_SCALE;
-        let a = h(ix, iy) + (h(ix + 1, iy) - h(ix, iy)) * tx;
-        let b = h(ix, iy + 1) + (h(ix + 1, iy + 1) - h(ix, iy + 1)) * tx;
-        a + (b - a) * ty
+        self.map.ground_height(x, y)
     }
 
     /// The map's object lights, or GameData's afternoon lights.
@@ -219,5 +259,28 @@ impl World {
         let color = settings.vertex_color(lights.ambient, &pairs);
         let (w, h, data) = ih_render::water::height_image(&self.map);
         scene.water = renderer.prepare_water(assets, &mesh, &settings, color, (w, h, &data), self.map.border);
+    }
+
+    /// Adds the road ribbons (`W3DRoadBuffer::addMapObjects` / `drawRoads`).
+    /// Includes junctions, curves, mitres and cross-type alpha joins.
+    pub fn add_roads(&mut self, renderer: &mut Renderer, assets: &mut Assets, defs: &Definitions, scene: &mut Scene) {
+        let types = defs.road_types();
+        let lights = self.terrain_lights();
+        let meshes =
+            ih_render::roads::road_meshes(&self.map, &types, &lights, TerrainOptions::default().num_global_lights);
+        let night = self.map.lighting.as_ref().is_some_and(|l| l.time_of_day == 4);
+        scene.roads =
+            renderer.prepare_roads(assets, &meshes, (!night).then_some("TSCloudMed.tga"), Some("TSNoiseUrb.tga"));
+        let missing: std::collections::BTreeSet<_> = self
+            .map
+            .objects
+            .iter()
+            .filter(|o| o.flags & ih_formats::map::object_flags::ROAD_POINT1 != 0)
+            .filter(|o| !types.iter().any(|t| t.name == o.name))
+            .map(|o| o.name.as_str())
+            .collect();
+        for name in missing {
+            self.warnings.push(format!("road type {name} is not defined; segment skipped"));
+        }
     }
 }

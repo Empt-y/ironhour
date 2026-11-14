@@ -1,0 +1,14 @@
+[package]
+name = "ih-sim"
+description = "Headless deterministic object and movement simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ih-ini.workspace = true
+ih-formats.workspace = true
+ih-math.workspace = true
+ih-vfs.workspace = true
+thiserror.workspace = true
+serde.workspace = true

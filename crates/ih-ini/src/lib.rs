@@ -14,6 +14,7 @@
 //! The original aborts the load on the first error. Here errors are collected as
 //! [`Diagnostic`]s and parsing resumes, so a whole mod can be checked at once.
 
+pub mod definitions;
 pub mod lexer;
 pub mod load_order;
 pub mod schema;

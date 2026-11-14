@@ -551,22 +551,26 @@ impl<'a> Terrain<'a> {
     /// Vertex lighting at sample (x, y) (`doTheLight` with the normal from
     /// `updateVB`/`getStaticDiffuse`: central differences, clamped at the edges).
     fn light(&self, lights: &TerrainLights, x: i32, y: i32) -> [f32; 3] {
-        let (w, h) = (self.map.width, self.map.height);
+        static_diffuse(self.map, self.opts.num_global_lights, lights, x, y)
+    }
+}
+
+/// Lit colour of height-map sample (x, y) (`getStaticDiffuse`, `doTheLight`).
+pub fn static_diffuse(map: &Map, num_lights: usize, lights: &TerrainLights, x: i32, y: i32) -> [f32; 3] {
+    let height = |x: i32, y: i32| i32::from(map.height_at(x, y));
+    let x = x.clamp(0, map.width - 1);
+    let y = y.clamp(0, map.height - 1);
+    {
+        let (w, h) = (map.width, map.height);
         let (un0, up1) = ((x - 1).max(0), (x + 1).min(w - 1));
         let (vn0, vp1) = ((y - 1).max(0), (y + 1).min(h - 1));
-        let l2r = glam::Vec3::new(
-            2.0 * MAP_XY_FACTOR,
-            0.0,
-            MAP_HEIGHT_SCALE * (self.height(up1, y) - self.height(un0, y)) as f32,
-        );
-        let n2f = glam::Vec3::new(
-            0.0,
-            2.0 * MAP_XY_FACTOR,
-            MAP_HEIGHT_SCALE * (self.height(x, vp1) - self.height(x, vn0)) as f32,
-        );
+        let l2r =
+            glam::Vec3::new(2.0 * MAP_XY_FACTOR, 0.0, MAP_HEIGHT_SCALE * (height(up1, y) - height(un0, y)) as f32);
+        let n2f =
+            glam::Vec3::new(0.0, 2.0 * MAP_XY_FACTOR, MAP_HEIGHT_SCALE * (height(x, vp1) - height(x, vn0)) as f32);
         let n = l2r.cross(n2f).normalize();
         let mut c = glam::Vec3::from(lights.ambient);
-        for i in 0..self.opts.num_global_lights.min(3) {
+        for i in 0..num_lights.min(3) {
             let ray = -glam::Vec3::from(lights.position[i]);
             let shade = ray.dot(n).clamp(0.0, 1.0);
             c += shade * glam::Vec3::from(lights.diffuse[i]);
@@ -575,7 +579,9 @@ impl<'a> Terrain<'a> {
         // REAL_TO_INT truncates when packing the colour.
         [(c.x * 255.0).trunc() / 255.0, (c.y * 255.0).trunc() / 255.0, (c.z * 255.0).trunc() / 255.0]
     }
+}
 
+impl Terrain<'_> {
     /// Builds the terrain geometry in world units: x and y are
     /// `(index - border) * MAP_XY_FACTOR`, z is `height * MAP_HEIGHT_SCALE`.
     pub fn mesh(&self, lights: &TerrainLights) -> TerrainMesh {

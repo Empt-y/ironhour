@@ -35,18 +35,21 @@ struct WaterU {
 @group(1) @binding(4) var heights: texture_2d<f32>;
 @group(1) @binding(5) var wrap_samp: sampler;
 @group(1) @binding(6) var clamp_samp: sampler;
+@group(1) @binding(7) var edge_tex: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv0: vec2<f32>,
     @location(1) noise_uv: vec2<f32>,
     @location(2) world: vec3<f32>,
+    @location(3) edge_uv: vec2<f32>,
+    @location(4) river: f32,
 };
 
 const PI: f32 = 3.14159265;
 
 @vertex
-fn vs_main(@location(0) position: vec3<f32>) -> VsOut {
+fn vs_main(@location(0) position: vec3<f32>, @location(1) river_uv: vec2<f32>) -> VsOut {
     var o: VsOut;
     o.clip = g.view_proj * vec4<f32>(position, 1.0);
     let r = w.params.x;
@@ -56,6 +59,14 @@ fn vs_main(@location(0) position: vec3<f32>) -> VsOut {
         position.y / 150.0 + 0.02 * cos(5.0 * r) * sin(25.0 * r + position.y * d),
     );
     o.noise_uv = position.xy / 16.0 + vec2<f32>(r, r);
+    o.river = 0.0;
+    o.edge_uv = vec2<f32>(0.0);
+    if river_uv.x >= 0.0 {
+        let v = -r + river_uv.y + sin(2.0 * PI * river_uv.y - 3.0 * r) / 22.0;
+        o.uv0 = vec2<f32>(river_uv.x, v);
+        o.edge_uv = vec2<f32>(river_uv.x * 2.0, v);
+        o.river = 1.0;
+    }
     o.world = position;
     return o;
 }
@@ -65,9 +76,11 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let base = textureSample(water_tex, wrap_samp, i.uv0);
     let sparkle = textureSample(sparkle_tex, wrap_samp, i.uv0);
     let noise = textureSample(noise_tex, wrap_samp, i.noise_uv);
-    let rgb = w.color.rgb * base.rgb + sparkle.rgb * noise.rgb;
+    let edge = textureSample(edge_tex, wrap_samp, i.edge_uv);
+    let rgb = w.color.rgb * base.rgb + sparkle.rgb * noise.rgb + edge.rgb * i.river;
     var a = w.color.a * base.a;
-    if w.params.w > 0.5 {
+    if i.river > 0.5 { a = a * edge.a; }
+    if w.params.w > 0.5 && i.river < 0.5 {
         let cell = i.world.xy / 10.0 + vec2<f32>(w.map.x + 0.5);
         let h = textureSampleLevel(heights, clamp_samp, cell / w.map.yz, 0.0).r * 255.0 * 0.625;
         let depth = i.world.z - h;

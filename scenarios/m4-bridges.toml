@@ -1,0 +1,23 @@
+# Cross the west/east bridge in both directions. Contra retains this crossing.
+map = "Winding River"
+seed = 42
+frames = 1200
+require_idle_at_end = true
+require_bridge_traversals = 2
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [2258.3945, 481.0763]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "move"
+object = 1
+target = [1793.6517, 477.0546]
+
+[[commands]]
+frame = 600
+kind = "move"
+object = 1
+target = [2258.3945, 481.0763]

@@ -1,0 +1,34 @@
+# Opposing vehicles must pass one another and a parked vehicle.
+map = "Tournament Desert"
+seed = 42
+frames = 1800
+require_idle_at_end = true
+require_no_overlaps = true
+require_traffic_repaths = 2
+
+[[spawn]]
+template = "Humvee1"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "Humvee1"
+position = [1300.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "Humvee1"
+position = [1150.0, 900.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "move"
+object = 1
+target = [1300.0, 900.0]
+
+[[commands]]
+frame = 1
+kind = "move"
+object = 2
+target = [1000.0, 900.0]

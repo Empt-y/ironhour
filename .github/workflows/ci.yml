@@ -21,3 +21,5 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Tests that need game data are skipped: no install is available in CI.
       - run: cargo test --workspace
+      # Fixed ground, bridge, traffic and AI/status hashes must match in both profiles on each OS.
+      - run: cargo test -p ih-sim --release
