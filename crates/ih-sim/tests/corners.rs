@@ -47,12 +47,14 @@ fn intermediate_corner_is_reached_before_turning_into_the_next_leg() {
 }
 
 #[test]
-fn terrain_blocked_order_repaths_and_finishes_instead_of_waiting_forever() {
+fn obstructed_corridor_is_corrected_by_fix_invalid_position_and_finishes() {
     let mut s = simulation();
     s.grid.ground.blocked[6 * 20 + 8] = true;
     s.grid.invalidate_zones();
     let id = s.spawn("Tank", [25.0, 65.0], 0).unwrap();
-    // A once-valid corridor may become obstructed by a later static edit.
+    // A once-valid corridor may become obstructed by a later static edit. As in the
+    // original, the body is pushed off the invalid cell (fixInvalidPosition) and
+    // carries on, rather than waiting for a repath.
     let o = s.objects.get_mut(&id).unwrap();
     o.target = Some([125.0, 65.0]);
     o.ai.begin(ih_sim::ai::AiState::MoveTo, 0);
@@ -62,7 +64,8 @@ fn terrain_blocked_order_repaths_and_finishes_instead_of_waiting_forever() {
     }
     let o = &s.objects[&id];
     assert!(o.target.is_none(), "{o:?}");
-    assert!(o.traffic_repaths > 0);
+    let cell = |v: f32| (v / 10.0).floor() as i32;
+    assert!(s.grid.passable_on(0, cell(o.position[0]), cell(o.position[1]), 0.0));
     assert!((o.position[0] - 125.0).abs() < 0.5);
     assert!(s.events.is_empty());
 }

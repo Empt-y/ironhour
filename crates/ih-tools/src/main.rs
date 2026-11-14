@@ -127,6 +127,9 @@ enum Cmd {
         /// Print this object's movement every 15 frames.
         #[arg(long)]
         watch: Option<u32>,
+        /// Frames between --watch lines.
+        #[arg(long, default_value_t = 15)]
+        watch_every: u32,
     },
     /// Render a map offscreen to PNG.
     MapRender {
@@ -338,9 +341,13 @@ fn main() -> Result<()> {
         }
         Cmd::Maps { name, near } => maps(&mount(&cli)?, name.as_deref(), near.as_deref())?,
         Cmd::MapCheck { name } => map_check::run(&mount(&cli)?, &Installs::locate().language, name.as_deref())?,
-        Cmd::SimRun { scenario, trace, watch } => {
-            sim_run::run(&mount(&cli)?, &Installs::locate().language, scenario, trace.as_deref(), *watch)?
-        }
+        Cmd::SimRun { scenario, trace, watch, watch_every } => sim_run::run(
+            &mount(&cli)?,
+            &Installs::locate().language,
+            scenario,
+            trace.as_deref(),
+            watch.map(|id| (id, *watch_every)),
+        )?,
         Cmd::MapRender {
             name,
             out,

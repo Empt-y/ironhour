@@ -22,7 +22,7 @@ The headless runner fails on rejected commands or unfinished orders.
 
 Units move with the ported original locomotors and physics (see PORTING.md, "Ground
 locomotion and physics"). To follow one object, add `--watch ID`: it prints position,
-facing, velocity, braking, AI state and blocking every 15 frames.
+facing, velocity, braking, AI state and blocking every 15 frames (`--watch-every N` to change).
 
 Pristine bridge crossings have a separate stock/Contra demo:
 

@@ -173,3 +173,31 @@ mod tests {
         assert!(b.higher_priority(a));
     }
 }
+
+/// `FAST_AS_POSSIBLE`: no speed limit.
+pub const FAST_AS_POSSIBLE: f32 = 999_999.0;
+/// Bodies within this gap of touching are reported as colliding. Swept clipping
+/// keeps ground bodies from overlapping, so the original's overlap test is widened
+/// to contact.
+pub const CONTACT_RANGE: f32 = 1.0;
+
+/// `AIUpdateInterface` traffic state (`m_isBlocked`, `m_isBlockedAndStuck`,
+/// `m_curMaxBlockedSpeed`, `m_bumpSpeedLimit`); `Object::blocked_frames` is
+/// `m_blockedFrames`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrafficState {
+    pub is_blocked: bool,
+    pub stuck: bool,
+    pub max_blocked_speed: f32,
+    pub bump_speed_limit: f32,
+}
+impl Default for TrafficState {
+    fn default() -> Self {
+        Self {
+            is_blocked: false,
+            stuck: false,
+            max_blocked_speed: FAST_AS_POSSIBLE,
+            bump_speed_limit: FAST_AS_POSSIBLE,
+        }
+    }
+}

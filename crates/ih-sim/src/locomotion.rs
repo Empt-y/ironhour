@@ -103,7 +103,7 @@ impl Body<'_> {
     }
 
     /// `applyForce`: while driven, only the lateral part of outside forces counts.
-    fn apply_force(&mut self, f: [f32; 3]) {
+    pub fn apply_force(&mut self, f: [f32; 3]) {
         if f.iter().any(|v| v.is_nan()) {
             return;
         }
@@ -216,7 +216,7 @@ impl Body<'_> {
         goal: [f32; 3],
         mut on_path_dist: f32,
         mut desired_speed: f32,
-        blocked: bool,
+        blocked: &mut bool,
         valid: &dyn Fn([f32; 2]) -> bool,
     ) -> [f32; 2] {
         let max_speed = l.speed;
@@ -225,6 +225,10 @@ impl Body<'_> {
         if on_path_dist > CELL && on_path_dist > stop_at_max {
             self.loco.is_braking = false;
             self.loco.braking_factor = 1.0;
+        }
+        // Ground bodies that have ended up on invalid terrain are pushed back first.
+        if !valid([self.position[0], self.position[1]]) && self.fix_invalid_position(valid) {
+            return [0.0; 2];
         }
         let (dx, dy) = (goal[0] - self.position[0], goal[1] - self.position[1]);
         let dist = ih_math::sqrt(dx * dx + dy * dy);
@@ -235,22 +239,18 @@ impl Body<'_> {
             on_path_dist = dist;
         }
         self.apply_motive_force([0.0; 3]);
-        if blocked {
-            // The `*blocked` branch: stop short of the blocker and turn in place toward
-            // the goal. The original sets it from collision handling and clears it when
-            // slower than desired; collision forces are not ported, so object contact
-            // sets it here, and it lasts only while the body still has to turn (the
-            // original's "blocked = rotating" result). Facing the goal, it drives on
-            // and the contact builds up toward a traffic repath.
-            let rel = if l.wander_width_factor == 0.0 {
-                self.rotate_around_pivot(l, [goal[0], goal[1]], l.turn_rate)
-            } else {
-                0.0
-            };
-            if rel.abs() > l.turn_rate {
-                self.scrub_velocity_2d(0.0);
-                return [0.0; 2];
+        if *blocked && desired_speed > self.velocity_magnitude() {
+            *blocked = false;
+        }
+        if *blocked {
+            // Stop short of the blocking object; turn toward the goal, staying blocked
+            // while still turning.
+            self.scrub_velocity_2d(desired_speed);
+            if l.wander_width_factor == 0.0 {
+                let rel = self.rotate_around_pivot(l, [goal[0], goal[1]], l.turn_rate);
+                *blocked = rel.abs() > l.turn_rate;
             }
+            return [0.0; 2];
         }
         let was_braking = self.physics.braking_status;
         match l.appearance {
@@ -463,6 +463,40 @@ impl Body<'_> {
         self.drive(goal_speed, actual, l.acceleration, l.braking, dir(*self.angle));
     }
 
+    /// `fixInvalidPosition`: count the invalid cells around the body and push away
+    /// from them (dozers are exempt in the original; not distinguished yet).
+    fn fix_invalid_position(&mut self, valid: &dyn Fn([f32; 2]) -> bool) -> bool {
+        let (mut dx, mut dy) = (0i32, 0i32);
+        for j in -1i32..2 {
+            for i in -1i32..2 {
+                let p = [self.position[0] + i as f32 * CELL, self.position[1] + j as f32 * CELL];
+                if !valid(p) {
+                    dx -= i.signum();
+                    dy -= j.signum();
+                }
+            }
+        }
+        if dx == 0 && dy == 0 {
+            return false;
+        }
+        let mass = self.physics.data.mass;
+        let correction = [dx as f32 * mass / 5.0, dy as f32 * mass / 5.0];
+        let len = ih_math::length(correction);
+        let n = [correction[0] / len, correction[1] / len];
+        let v = self.physics.vel;
+        let dot = v[0] * n[0] + v[1] * n[1];
+        if dot > 0.25 {
+            // Already leaving.
+            return false;
+        }
+        if dot < 0.0 {
+            let k = ih_math::sqrt(-dot) * mass;
+            self.apply_motive_force([n[0] * k, n[1] * k, 0.0]);
+        }
+        self.apply_motive_force([correction[0], correction[1], 0.0]);
+        true
+    }
+
     /// `locoUpdate_maintainCurrentPosition` for ground locomotors.
     pub fn maintain_current_position(&mut self) {
         self.loco.donut_timer = self.frame + DONUT_FRAMES;
@@ -570,5 +604,44 @@ mod tests {
         b.clamp_to_ground(0.0);
         assert_eq!(b.position[2], 0.0);
         assert!(b.physics.vel[2] <= 0.0);
+    }
+}
+
+#[cfg(test)]
+mod fix_invalid_tests {
+    use super::*;
+
+    #[test]
+    fn fix_invalid_position_pushes_away_from_invalid_neighbours() {
+        let (mut pos, mut angle) = ([55.0, 55.0, 0.0], 0.0);
+        let mut p = Physics::default();
+        let mut l = LocoState::default();
+        let mut b = Body {
+            position: &mut pos,
+            angle: &mut angle,
+            physics: &mut p,
+            loco: &mut l,
+            major_radius: 1.0,
+            bounding_radius: 1.0,
+            frame: 0,
+        };
+        // Everything west of x = 50 is invalid: the push is east only.
+        let valid = |q: [f32; 2]| q[0] >= 50.0;
+        assert!(b.fix_invalid_position(&valid));
+        assert!(b.physics.accel[0] > 0.0);
+        assert_eq!(b.physics.accel[1], 0.0);
+        // Nothing invalid nearby: no correction.
+        let all = |_: [f32; 2]| true;
+        let mut p2 = Physics::default();
+        let mut b2 = Body {
+            position: &mut [55.0, 55.0, 0.0],
+            angle: &mut 0.0,
+            physics: &mut p2,
+            loco: &mut l,
+            major_radius: 1.0,
+            bounding_radius: 1.0,
+            frame: 0,
+        };
+        assert!(!b2.fix_invalid_position(&all));
     }
 }
