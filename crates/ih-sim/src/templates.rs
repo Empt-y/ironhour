@@ -47,6 +47,23 @@ impl Template {
     }
 }
 
+/// `LocomotorAppearance`, reduced to the ground movement models ported so far.
+/// `HOVER`, `THRUST`, `WINGS` and `CLIMBER` use `Other` until their own ports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Appearance {
+    /// `TWO_LEGS`.
+    Legs,
+    /// `FOUR_WHEELS` and `MOTORCYCLE`.
+    Wheels,
+    Treads,
+    Other,
+}
+
+/// `BIGNUM`: the original's "unlimited" default for braking and turn speed.
+pub const BIGNUM: f32 = 99999.0;
+
+/// Values are per logic frame (speeds), per frame squared (accelerations) and
+/// radians per frame (turn rates), as `INI::parseVelocityReal` etc. convert them.
 #[derive(Clone, Debug)]
 pub struct Locomotor {
     pub name: String,
@@ -56,6 +73,54 @@ pub struct Locomotor {
     pub acceleration: f32,
     pub braking: f32,
     pub turn_rate: f32,
+    pub appearance: Appearance,
+    pub min_turn_speed: f32,
+    pub turn_pivot_offset: f32,
+    /// `Extra2DFriction`, per frame.
+    pub extra_2d_friction: f32,
+    pub stick_to_ground: bool,
+    pub can_move_backward: bool,
+    pub downhill_only: bool,
+    pub wander_width_factor: f32,
+    pub wander_length_factor: f32,
+}
+
+/// `PhysicsBehaviorModuleData` fields the ground integrator uses; frictions per frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhysicsData {
+    pub mass: f32,
+    pub forward_friction: f32,
+    pub lateral_friction: f32,
+    pub z_friction: f32,
+}
+
+impl Default for PhysicsData {
+    /// `DEFAULT_MASS` and the `DEFAULT_*_FRICTION` constants (already per frame).
+    fn default() -> Self {
+        Self { mass: 1.0, forward_friction: 0.15, lateral_friction: 0.15, z_friction: 0.8 }
+    }
+}
+
+impl Template {
+    /// The `PhysicsBehavior` module's data, if the object has one.
+    pub fn physics(&self) -> Option<PhysicsData> {
+        let m = self.modules.iter().find(|m| m.class == "PhysicsBehavior")?;
+        let mut d = PhysicsData::default();
+        for f in m.block.fields() {
+            let Some(v) = f.values().first().and_then(|v| ih_ini::values::scan_real(v.as_bytes()).ok()) else {
+                continue;
+            };
+            match f.name.as_str() {
+                "Mass" => d.mass = v,
+                // parseFrictionPerSec
+                "ForwardFriction" => d.forward_friction = v / 30.0,
+                "LateralFriction" => d.lateral_friction = v / 30.0,
+                "ZFriction" => d.z_friction = v / 30.0,
+                _ => {}
+            }
+        }
+        Some(d)
+    }
 }
 impl Locomotor {
     pub fn ground(&self) -> bool {
@@ -106,6 +171,12 @@ impl Templates {
                     .and_then(|v| ih_ini::values::scan_real(v.as_bytes()).ok())
                     .unwrap_or(default)
             };
+            let flag = |key: &str| {
+                fields
+                    .get(key)
+                    .and_then(|v| v.first())
+                    .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "yes" | "true" | "1"))
+            };
             out.locomotors.insert(
                 name.clone(),
                 Locomotor {
@@ -114,8 +185,27 @@ impl Templates {
                     speed: number("Speed", 0.0) / 30.0,
                     min_speed: number("MinSpeed", 0.0) / 30.0,
                     acceleration: number("Acceleration", 0.0) / (30.0 * 30.0),
-                    braking: number("Braking", 99999.0) / (30.0 * 30.0),
+                    // Unset Braking and MinTurnSpeed stay BIGNUM, unconverted.
+                    braking: if fields.contains_key("Braking") { number("Braking", 0.0) / 900.0 } else { BIGNUM },
                     turn_rate: number("TurnRate", 0.0) * (std::f32::consts::PI / 180.0) / 30.0,
+                    appearance: match fields.get("Appearance").and_then(|v| v.first()).map(String::as_str) {
+                        Some("TWO_LEGS") => Appearance::Legs,
+                        Some("FOUR_WHEELS" | "MOTORCYCLE") => Appearance::Wheels,
+                        Some("TREADS") => Appearance::Treads,
+                        _ => Appearance::Other,
+                    },
+                    min_turn_speed: if fields.contains_key("MinTurnSpeed") {
+                        number("MinTurnSpeed", 0.0) / 30.0
+                    } else {
+                        BIGNUM
+                    },
+                    turn_pivot_offset: number("TurnPivotOffset", 0.0),
+                    extra_2d_friction: number("Extra2DFriction", 0.0) / 30.0,
+                    stick_to_ground: flag("StickToGround"),
+                    can_move_backward: flag("CanMoveBackwards"),
+                    downhill_only: flag("DownhillOnly"),
+                    wander_width_factor: number("WanderWidthFactor", 0.0),
+                    wander_length_factor: number("WanderLengthFactor", 1.0),
                 },
             );
         }
@@ -307,5 +397,22 @@ mod tests {
         assert!(skin.has_kind("VEHICLE"));
         assert!(skin.has_kind("PRELOAD"));
         assert!(!skin.has_kind("SELECTABLE"));
+    }
+}
+#[cfg(test)]
+mod locomotor_defaults {
+    use super::*;
+
+    #[test]
+    fn unset_braking_and_min_turn_speed_stay_unconverted_bignum() {
+        let mut d = Definitions::default();
+        d.add_document(ih_ini::parse(
+            b"Locomotor L\nSurfaces = GROUND\nSpeed = 30\nAppearance = FOUR_WHEELS\nExtra2DFriction = 30\nEnd\n",
+        ));
+        let l = &Templates::from_definitions(&d).locomotors["L"];
+        assert_eq!(l.braking, BIGNUM);
+        assert_eq!(l.min_turn_speed, BIGNUM);
+        assert_eq!(l.appearance, Appearance::Wheels);
+        assert_eq!(l.extra_2d_friction, 1.0);
     }
 }

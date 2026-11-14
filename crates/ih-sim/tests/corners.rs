@@ -31,7 +31,12 @@ fn intermediate_corner_is_reached_before_turning_into_the_next_leg() {
     o.angle = -std::f32::consts::FRAC_PI_2;
     o.target = Some([80.0, 59.8]);
     o.ai.begin(ih_sim::ai::AiState::MoveTo, 0);
-    o.path = VecDeque::from([Waypoint::ground([59.8, 59.8]), Waypoint::ground([80.0, 59.8])]);
+    // Paths start with the current segment start node.
+    o.path = VecDeque::from([
+        Waypoint::ground([59.8, 60.2]),
+        Waypoint::ground([59.8, 59.8]),
+        Waypoint::ground([80.0, 59.8]),
+    ]);
     for _ in 0..180 {
         s.step();
     }
@@ -51,7 +56,7 @@ fn terrain_blocked_order_repaths_and_finishes_instead_of_waiting_forever() {
     let o = s.objects.get_mut(&id).unwrap();
     o.target = Some([125.0, 65.0]);
     o.ai.begin(ih_sim::ai::AiState::MoveTo, 0);
-    o.path = VecDeque::from([Waypoint::ground([125.0, 65.0])]);
+    o.path = VecDeque::from([Waypoint::ground([25.0, 65.0]), Waypoint::ground([125.0, 65.0])]);
     for _ in 0..600 {
         s.step();
     }

@@ -5,6 +5,7 @@
 use crate::{
     ai::{AiMachine, AiState, Outcome},
     disabled::{DisabledReason, DisabledStatus},
+    locomotion::{Body, LocoState, Physics},
     partition::Partition,
     rng::LogicRng,
     scheduler::{FOREVER, Phase, Scheduler},
@@ -95,6 +96,12 @@ pub struct Object {
     pub traffic_repaths: u32,
     pub ai: AiMachine,
     pub disabled: DisabledStatus,
+    /// `PhysicsBehavior` state.
+    pub physics: Physics,
+    /// `Locomotor` state.
+    pub loco: LocoState,
+    /// This frame's braking slide from the locomotor (applied with the physics step).
+    pub slide: [f32; 2],
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -227,6 +234,16 @@ impl Simulation {
             }
             modules.push(Module { class: m.class.clone(), tag: m.tag.clone(), kind, updates: 0 });
         }
+        let mut physics = Physics { data: t.physics().unwrap_or_default(), ..Default::default() };
+        let loco = match t.locomotor().and_then(|n| self.templates.locomotors.get(n)) {
+            Some(l) => {
+                // Locomotor::setPhysicsOptions
+                physics.extra_friction = l.extra_2d_friction;
+                physics.stick_to_ground = l.stick_to_ground;
+                LocoState::new(l, self.frame, &mut self.rng)
+            }
+            None => LocoState::default(),
+        };
         let surface = self.grid.destination(&self.map, p);
         let z = self.grid.height_at(&self.map, surface);
         let position = [p[0], p[1], z];
@@ -251,6 +268,9 @@ impl Simulation {
                 traffic_repaths: 0,
                 ai: AiMachine::default(),
                 disabled: DisabledStatus::default(),
+                physics,
+                loco,
+                slide: [0.0; 2],
             },
         );
         self.rebuild_partition();
@@ -311,6 +331,7 @@ impl Simulation {
                 if o.disabled.any() {
                     o.speed = 0.0;
                     o.velocity = [0.0; 2];
+                    o.physics.vel = [0.0, 0.0, o.physics.vel[2]];
                     o.blocked_frames = 0;
                     o.blocked_by = None;
                 }
@@ -373,6 +394,8 @@ impl Simulation {
         o.ai.begin(state, self.frame);
         o.ai.remaining = remaining;
         o.path = path;
+        // The first node is the start of the current segment (`Path` keeps its start node).
+        o.path.push_front(Waypoint { position: [o.position[0], o.position[1]], layer: o.layer });
         o.target = Some(target);
         o.blocked_frames = 0;
         o.blocked_by = None;
@@ -390,6 +413,7 @@ impl Simulation {
         o.path.clear();
         o.speed = 0.0;
         o.velocity = [0.0; 2];
+        o.physics.vel = [0.0, 0.0, o.physics.vel[2]];
         o.blocked_frames = 0;
         o.blocked_by = None;
         self.wake_ai(id);
@@ -412,6 +436,7 @@ impl Simulation {
         o.path.clear();
         o.speed = 0.0;
         o.velocity = [0.0; 2];
+        o.physics.vel = [0.0, 0.0, o.physics.vel[2]];
         o.blocked_frames = 0;
         o.blocked_by = None;
     }
@@ -483,7 +508,12 @@ impl Simulation {
                 let o = self.objects.get_mut(&id).unwrap();
                 let t = &self.templates.objects[&o.template];
                 if let Some(l) = t.locomotor().and_then(|n| self.templates.locomotors.get(n)) {
-                    steer(o, l, &self.grid, &self.map);
+                    let radii = (
+                        t.number("GeometryMajorRadius", 5.0) * t.number("Scale", 1.0),
+                        t.collision_radius(),
+                        t.radius(),
+                    );
+                    steer(o, l, &self.grid, &self.map, self.frame, radii);
                 }
                 if o.target.is_none() {
                     let next = if o.ai.state == AiState::FollowPath { o.ai.remaining.pop_front() } else { None };
@@ -492,6 +522,9 @@ impl Simulation {
                             Ok(path) => {
                                 let o = self.objects.get_mut(&id).unwrap();
                                 o.path = path;
+                                // The first node is the start of the current segment (`Path` keeps its start node).
+                                o.path
+                                    .push_front(Waypoint { position: [o.position[0], o.position[1]], layer: o.layer });
                                 o.target = Some(target);
                                 o.last_repath = self.frame;
                             }
@@ -550,24 +583,84 @@ impl Simulation {
             let o = self.objects.get_mut(&id).unwrap();
             o.speed = 0.0;
             o.velocity = [0.0; 2];
+            o.physics.vel = [0.0, 0.0, o.physics.vel[2]];
             return;
         }
-        if o.target.is_none() {
+        let resting = o.physics.vel == [0.0; 3] && o.physics.accel == [0.0; 3] && o.slide == [0.0; 2];
+        if o.target.is_none() && resting {
             return;
         }
-        let (from, velocity, layer) = (o.position, o.velocity, o.layer);
-        let to = [from[0] + velocity[0], from[1] + velocity[1]];
+        // PhysicsBehavior::update: forces from this frame's locomotor call, gravity
+        // and friction become velocity; the braking slide moves the body directly.
+        let frame = self.frame;
+        let (from, layer) = (o.position, o.layer);
+        let velocity = {
+            let o = self.objects.get_mut(&id).unwrap();
+            let mut loco = o.loco;
+            let mut body = Body {
+                position: &mut o.position,
+                angle: &mut o.angle,
+                physics: &mut o.physics,
+                loco: &mut loco,
+                major_radius: 0.0,
+                bounding_radius: 0.0,
+                frame,
+            };
+            let step = body.physics_update(crate::locomotion::DEFAULT_GRAVITY, false);
+            let v = [step[0] + o.slide[0], step[1] + o.slide[1]];
+            o.slide = [0.0; 2];
+            v
+        };
+        let o = &self.objects[&id];
+        let mut velocity = velocity;
         let radius = self.templates.objects[&o.template].radius();
+        let open = |v: [f32; 2]| {
+            self.grid.line_on(
+                Waypoint { position: [from[0], from[1]], layer },
+                Waypoint { position: [from[0] + v[0], from[1] + v[1]], layer },
+                radius,
+            )
+        };
+        // The original lets bodies move and pushes them back (fixInvalidPosition).
+        // Until that is ported, a rejected step keeps whichever axis stays
+        // passable, so a turning vehicle cannot wedge itself against a corner.
+        if !open(velocity) {
+            let keep = [[velocity[0], 0.0], [0.0, velocity[1]]].into_iter().find(|v| *v != [0.0; 2] && open(*v));
+            if let Some(v) = keep {
+                let o = self.objects.get_mut(&id).unwrap();
+                for axis in 0..2 {
+                    if v[axis] == 0.0 {
+                        o.physics.vel[axis] = 0.0;
+                    }
+                }
+                velocity = v;
+            }
+        }
+        let to = [from[0] + velocity[0], from[1] + velocity[1]];
         if !self.grid.line_on(
             Waypoint { position: [from[0], from[1]], layer },
             Waypoint { position: to, layer },
             radius,
         ) {
+            let ground = self.grid.height_at(&self.map, Waypoint { position: [from[0], from[1]], layer });
             let o = self.objects.get_mut(&id).unwrap();
             o.velocity = [0.0; 2];
+            o.physics.vel = [0.0, 0.0, o.physics.vel[2]];
             o.speed = 0.0;
             o.blocked_by = None;
             o.blocked_frames = o.blocked_frames.saturating_add(1);
+            // Gravity was applied above; the body still rests on the ground.
+            let mut loco = o.loco;
+            Body {
+                position: &mut o.position,
+                angle: &mut o.angle,
+                physics: &mut o.physics,
+                loco: &mut loco,
+                major_radius: 0.0,
+                bounding_radius: 0.0,
+                frame,
+            }
+            .clamp_to_ground(ground);
             return;
         }
         let mut body = self.collider(id);
@@ -584,15 +677,30 @@ impl Simulation {
             }
         }
         let to = [from[0] + velocity[0] * fraction, from[1] + velocity[1] * fraction];
-        let position = [to[0], to[1], self.grid.height_at(&self.map, Waypoint { position: to, layer })];
+        let ground = self.grid.height_at(&self.map, Waypoint { position: to, layer });
         let o = self.objects.get_mut(&id).unwrap();
-        o.position = position;
+        o.position[0] = to[0];
+        o.position[1] = to[1];
+        let mut loco = o.loco;
+        let mut body = Body {
+            position: &mut o.position,
+            angle: &mut o.angle,
+            physics: &mut o.physics,
+            loco: &mut loco,
+            major_radius: 0.0,
+            bounding_radius: 0.0,
+            frame,
+        };
+        body.clamp_to_ground(ground);
+        if blocker.is_some() {
+            // Contact absorbs the blocked part of the motion.
+            body.scrub_velocity_2d(ih_math::length(velocity) * fraction);
+        }
+        o.speed = body.forward_speed_2d();
+        let position = o.position;
+        o.velocity = [velocity[0] * fraction, velocity[1] * fraction];
         o.blocked_by = blocker;
         o.blocked_frames = if blocker.is_some() { o.blocked_frames.saturating_add(1) } else { 0 };
-        if blocker.is_some() {
-            o.velocity = [velocity[0] * fraction, velocity[1] * fraction];
-            o.speed *= fraction;
-        }
         self.partition.relocate(id, from, position);
     }
     fn repath_traffic(&mut self, id: u32) {
@@ -653,6 +761,8 @@ impl Simulation {
         o.last_repath = self.frame;
         if let Some(path) = path {
             o.path = path.into();
+            // The first node is the start of the current segment (`Path` keeps its start node).
+            o.path.push_front(Waypoint { position: [o.position[0], o.position[1]], layer: o.layer });
             o.traffic_repaths += 1;
             o.blocked_frames = 0;
             o.blocked_by = None;
@@ -673,7 +783,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(4);
+        h.u32(5);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -717,6 +827,22 @@ impl Simulation {
             for v in o.position.into_iter().chain(o.previous_position).chain([o.angle, o.speed]).chain(o.velocity) {
                 h.float(v);
             }
+            for v in o.physics.vel.into_iter().chain(o.slide) {
+                h.float(v);
+            }
+            h.u32(o.physics.motive_expires);
+            h.u32(u32::from(o.physics.braking_status));
+            let l = &o.loco;
+            h.u32(
+                u32::from(l.is_braking)
+                    | u32::from(l.moving_backwards) << 1
+                    | u32::from(l.three_point_turn) << 2
+                    | u32::from(l.offset_increasing) << 3,
+            );
+            for v in [l.braking_factor, l.angle_offset, l.offset_increment] {
+                h.float(v);
+            }
+            h.u32(l.donut_timer);
             h.u32(u32::from(o.target.is_some()));
             if let Some(p) = o.target {
                 for v in p {
@@ -815,12 +941,55 @@ fn hash_command(c: &Command, h: &mut StateHash) {
         }
     }
 }
-fn steer(o: &mut Object, l: &Locomotor, grid: &Terrain, map: &Map) {
+/// The goal point and remaining distance along a path (`Path::computePointOnPath`).
+/// `path[0]` is the start of the current segment. Advances `path` past segments
+/// the object has moved beyond (switching layer where allowed).
+fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, radius: f32) -> ([f32; 3], f32, u32) {
     let pos = [o.position[0], o.position[1]];
-    while o.path.front().is_some_and(|p| {
-        ih_math::length([p.position[0] - pos[0], p.position[1] - pos[1]]) < if o.path.len() == 1 { 0.5 } else { 0.001 }
-    }) {
-        let next = *o.path.front().unwrap();
+    let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
+    let dot = |a: [f32; 2], b: [f32; 2]| a[0] * b[0] + a[1] * b[1];
+    let segment = |a: Waypoint, b: Waypoint| {
+        let d = sub(b.position, a.position);
+        let len = ih_math::length(d);
+        (if len > 0.0 { [d[0] / len, d[1] / len] } else { [0.0; 2] }, len)
+    };
+    // Find the closest segment.
+    let mut close = None;
+    let mut best = f32::MAX;
+    let (mut total, mut to_pos) = (0.0f32, 0.0f32);
+    let n = o.path.len();
+    for i in 0..n - 1 {
+        let (a, b) = (o.path[i], o.path[i + 1]);
+        let (dir, len) = segment(a, b);
+        let mut along = dot(dir, sub(pos, a.position));
+        let p = if along < 0.0 {
+            along = 0.0;
+            a.position
+        } else if along > len {
+            if i + 2 == n {
+                along = len;
+                b.position
+            } else {
+                // Beyond this segment: a sharp bend's next segment claims the point.
+                total += len;
+                continue;
+            }
+        } else {
+            [a.position[0] + along * dir[0], a.position[1] + along * dir[1]]
+        };
+        let off = sub(pos, p);
+        let d2 = dot(off, off);
+        if d2 < best {
+            best = d2;
+            close = Some(i);
+            to_pos = total + along;
+        }
+        total += len;
+    }
+    let mut dist_along = total - to_pos;
+    // Drop the nodes before the closest segment.
+    for _ in 0..close.unwrap_or(0) {
+        let next = o.path[1];
         if next.layer != o.layer {
             if !grid.can_transition(Waypoint { position: pos, layer: o.layer }, next, 0.0) {
                 break;
@@ -830,40 +999,128 @@ fn steer(o: &mut Object, l: &Locomotor, grid: &Terrain, map: &Map) {
         }
         o.path.pop_front();
     }
-    let Some(next) = o.path.front().copied() else {
+    let here = Waypoint { position: pos, layer: o.layer };
+    let (a, b) = (o.path[0], o.path[1]);
+    let (dir, len) = segment(a, b);
+    let mut along = dot(dir, sub(pos, a.position)).max(0.0);
+    let to = sub(pos, a.position);
+    let off2 = dot(to, to) - along * along;
+    let off = if off2 <= 0.0 { 0.0 } else { ih_math::sqrt(off2) };
+    // Basically on the path: aim at the next node. The farther off the path, the
+    // closer the goal moves to the projected point.
+    let mut k = (off / (3.0 * crate::locomotion::CELL)).min(1.0);
+    let mut goal = None;
+    if grid.line_on(here, b, radius) {
+        goal = Some(b.position);
+        let mut try_ahead = along > len * 0.5 && a.layer == b.layer && o.layer == 0;
+        let very_close = len - along < 1.0;
+        if very_close {
+            try_ahead = true;
+        }
+        if try_ahead && let Some(next) = o.path.get(2) {
+            let mid = [(b.position[0] + next.position[0]) * 0.5, (b.position[1] + next.position[1]) * 0.5];
+            // The original skips this check when very close; without fixInvalidPosition
+            // a cut corner would stall against the terrain, so it is always checked.
+            if grid.line_on(
+                Waypoint { position: pos, layer: b.layer },
+                Waypoint { position: mid, layer: b.layer },
+                radius,
+            ) {
+                goal = Some(mid);
+            }
+        }
+    } else if k > 0.5 {
+        let try_dist = along + 0.5 * (len - along);
+        let p = [a.position[0] + try_dist * dir[0], a.position[1] + try_dist * dir[1]];
+        if grid.line_on(here, Waypoint { position: p, layer: o.layer }, radius) {
+            k = 0.5;
+            goal = Some(p);
+        }
+    }
+    along += (1.0 - k) * (len - along);
+    let goal = goal.unwrap_or_else(|| {
+        if along > len {
+            b.position
+        } else {
+            let p = [a.position[0] + along * dir[0], a.position[1] + along * dir[1]];
+            if (pos[0] - p[0]).abs() < 1.0 && (pos[1] - p[1]).abs() < 1.0 && o.path.len() > 2 {
+                o.path[2].position
+            } else {
+                p
+            }
+        }
+    });
+    let delta = ih_math::length(sub(goal, pos));
+    // PATHFIND_CLOSE_ENOUGH
+    if delta > dist_along && dist_along > 1.0 {
+        dist_along = delta;
+    }
+    let layer = b.layer;
+    ([goal[0], goal[1], grid.height_at(map, Waypoint { position: goal, layer })], dist_along, layer)
+}
+
+/// Follows the path with the object's locomotor (`AIUpdate` path following calling
+/// `Locomotor::locoUpdate_moveTowardsPosition`, or `locoUpdate_maintainCurrentPosition`
+/// once the path is done). `radii` are the major, bounding and path radii.
+fn steer(o: &mut Object, l: &Locomotor, grid: &Terrain, map: &Map, frame: u32, radii: (f32, f32, f32)) {
+    let pos = [o.position[0], o.position[1]];
+    let arrived = o.path.len() < 2
+        || (o.path.len() == 2 && {
+            let last = o.path[1];
+            if ih_math::length([last.position[0] - pos[0], last.position[1] - pos[1]]) < 0.5 {
+                if last.layer != o.layer && grid.can_transition(Waypoint { position: pos, layer: o.layer }, last, 0.0) {
+                    o.layer = last.layer;
+                    o.position[2] = grid.height_at(map, Waypoint { position: pos, layer: o.layer });
+                }
+                true
+            } else {
+                false
+            }
+        });
+    if arrived {
+        o.path.clear();
         o.target = None;
+        let mut body = Body {
+            position: &mut o.position,
+            angle: &mut o.angle,
+            physics: &mut o.physics,
+            loco: &mut o.loco,
+            major_radius: radii.0,
+            bounding_radius: radii.1,
+            frame,
+        };
+        body.maintain_current_position();
         o.speed = 0.0;
         o.velocity = [0.0; 2];
         o.blocked_frames = 0;
         o.blocked_by = None;
         return;
+    }
+    let (goal, remaining, _) = point_on_path(o, grid, map, radii.2);
+    let layer = o.layer;
+    // validMovementTerrain: the cell under the point is passable on this layer.
+    let valid = |p: [f32; 2]| {
+        let c = crate::locomotion::CELL;
+        grid.passable_on(layer, (p[0] / c).floor() as i32, (p[1] / c).floor() as i32, 0.0)
     };
-    let delta = [next.position[0] - pos[0], next.position[1] - pos[1]];
-    let distance = ih_math::length(delta);
-    let desired = ih_math::atan2(delta[1], delta[0]);
-    let angle = ih_math::angle_delta(o.angle, desired);
-    let turn = l.turn_rate.max(0.001);
-    o.angle += angle.clamp(-turn, turn);
-    let mut remaining = distance;
-    let mut previous = next;
-    for p in o.path.iter().skip(1) {
-        remaining += ih_math::length([p.position[0] - previous.position[0], p.position[1] - previous.position[1]]);
-        previous = *p;
-    }
-    let stop_margin = if o.path.len() == 1 { 0.25 } else { 0.0 };
-    let desired_speed =
-        l.speed.min(ih_math::sqrt((2.0 * l.braking.max(0.001) * (remaining - stop_margin).max(0.0)) / 1.05));
-    if o.speed < desired_speed {
-        o.speed = (o.speed + l.acceleration.max(0.001)).min(desired_speed);
-    } else {
-        o.speed = (o.speed - l.braking.max(0.001)).max(desired_speed);
-    }
-    let alignment = ih_math::cos(ih_math::angle_delta(o.angle, desired)).max(0.0);
-    let amount = (o.speed * alignment).min(distance);
-    // Follow the path corridor while the body turns toward its direction. The
-    // original force/suspension model will replace this initial ground integrator.
-    let unit = ih_math::normalized(delta);
-    o.velocity = [unit[0] * amount, unit[1] * amount];
+    let mut body = Body {
+        position: &mut o.position,
+        angle: &mut o.angle,
+        physics: &mut o.physics,
+        loco: &mut o.loco,
+        major_radius: radii.0,
+        bounding_radius: radii.1,
+        frame,
+    };
+    let before = [body.position[0], body.position[1]];
+    let blocked = o.blocked_by.is_some();
+    let slide = body.move_towards_position(l, goal, remaining, l.speed, blocked, &valid);
+    // Turning about an off-centre pivot moves the body; that motion goes through
+    // the same collision clipping as the rest of this frame's displacement.
+    let pivot = [o.position[0] - before[0], o.position[1] - before[1]];
+    o.position[0] = before[0];
+    o.position[1] = before[1];
+    o.slide = [slide[0] + pivot[0], slide[1] + pivot[1]];
 }
 
 /// Integer nanosecond accumulator: clients interpolate between 30 Hz snapshots.
@@ -918,7 +1175,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xf3653e098b76c23b, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xad7c868361578d99, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -1039,7 +1296,7 @@ mod tests {
         assert!(a.events.is_empty());
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         assert!(a.objects.values().any(|o| o.traffic_repaths > 0));
-        assert_eq!(a.state_hash(), 0x66512131ec5b2c98, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x30bbd05d6b53bc71, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -1125,7 +1382,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xeb2e076f238f6b44, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x55cdf925078bac67, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

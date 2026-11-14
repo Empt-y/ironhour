@@ -4,7 +4,8 @@ use ih_ini::definitions::Definitions;
 use ih_sim::{scenario::Scenario, templates::Templates};
 use ih_vfs::Vfs;
 use std::{collections::BTreeMap, io::Write, path::Path, sync::Arc};
-pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>) -> Result<()> {
+/// `watch`: print one object's movement state every 15 frames (diagnostics).
+pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: Option<u32>) -> Result<()> {
     let scenario: Scenario = toml::from_str(&std::fs::read_to_string(path)?).context("invalid simulation scenario")?;
     let world = ih_client::World::load(vfs, &scenario.map)?;
     let mut defs = Definitions::load(vfs, language);
@@ -50,6 +51,23 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>) -> Resu
         }
         if let Some(f) = &mut trace {
             writeln!(f, "{frame:08} {ha:016x}")?;
+        }
+        if let Some(o) = watch.and_then(|id| a.objects.get(&id)).filter(|_| frame % 15 == 0) {
+            println!(
+                "{frame:5} pos {:8.2} {:8.2} {:6.2} angle {:6.3} vel {:6.3} {:6.3} speed {:6.3} braking {} {:?} path {} blocked {} by {:?}",
+                o.position[0],
+                o.position[1],
+                o.position[2],
+                o.angle,
+                o.physics.vel[0],
+                o.physics.vel[1],
+                o.speed,
+                o.loco.is_braking,
+                o.ai.state,
+                o.path.len(),
+                o.blocked_frames,
+                o.blocked_by
+            );
         }
         if frame < scenario.frames {
             let previous: BTreeMap<_, _> = a.objects.values().map(|o| (o.id, o.layer)).collect();

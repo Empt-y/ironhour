@@ -236,7 +236,7 @@ placed objects, map lighting and a tactical camera, in a window.
   Undefined road types are reported and skipped. Complex/degenerate junctions
   need the visual comparisons in addition to geometry validation.
 
-## M4. Simulation core (movement, traffic and initial AI slices implemented)
+## M4. Simulation core (movement, locomotion, traffic and initial AI slices implemented)
 
 - Shared data definitions now live in `ih-ini`; `ih-client` adds render-specific
   interpretations. `ih-sim` has no dependency on the renderer, client or windowing.
@@ -286,7 +286,64 @@ placed objects, map lighting and a tactical camera, in a window.
   `map-render --scenario ... --sim-frame N` produces reproducible movement stills.
 - See [the movement guide](docs/m4-movement.md) and `scenarios/m4-*.toml`.
 
-### Verification
+### Ground locomotion and physics (state hash v5)
+
+The initial ground integrator is replaced by ports of the original movement code
+(`crates/ih-sim/src/locomotion.rs`):
+
+- `Locomotor.cpp`: `locoUpdate_moveTowardsPosition` with the `TREADS`,
+  `FOUR_WHEELS`/`MOTORCYCLE` (minimum turn speed, turning only while moving,
+  reversing and three-point turns, the impassable-terrain look-ahead, the "donut"
+  timer), `TWO_LEGS` (wander offset) and `OTHER` models; `rotateObjAroundLocoPivot`
+  with `TurnPivotOffset`; braking factors and the exact braking slide onto the goal;
+  `locoUpdate_maintainCurrentPosition`; the three logic random draws of
+  `Locomotor::Locomotor` at object creation.
+- `PhysicsUpdate.cpp`: motive forces (outside forces keep only their lateral part
+  while driven), forward/lateral friction with `Extra2DFriction`, gravity
+  (`Gravity = -64`), Euler integration, no x/y integration while braking, the
+  ground clamp and `StickToGround`, `getForwardSpeed2D`'s per-axis magnitude,
+  `scrubVelocity2D`. `PhysicsBehavior` mass and friction come from INI.
+- Path following uses `Path::computePointOnPath`: closest segment, the next node
+  or next segment's middle as goal when the line is passable, and the remaining
+  distance along the path. Object paths now begin with the current segment's
+  start node.
+- `Locomotor` INI parsing keeps the original's unconverted `BIGNUM` defaults for
+  unset `Braking` and `MinTurnSpeed` (they were previously divided like set values).
+
+Deviations until the missing systems exist, each marked in the code:
+
+- The terrain gate on each step stays (the original lets bodies move and pushes
+  them back with `fixInvalidPosition`, not yet ported). A rejected step keeps
+  whichever axis remains passable, so turning vehicles cannot wedge themselves.
+  For the same reason the look-ahead to the next segment is always line-checked.
+- Off-centre pivot turning goes through the same collision clipping as the rest
+  of the frame's displacement.
+- The locomotor's `*blocked` branch (stop and turn in place) is driven by object
+  contact, since collision forces are not ported, and only while the body still
+  has to turn toward its goal.
+- Not ported yet: damage-state speed/turn penalties, bouncing, pitch/roll/yaw,
+  falling damage, air/hover/wings/thrust/climber locomotors and `ZAxisBehavior`
+  other than resting on the ground. `HOVER`, `THRUST`, `WINGS` and `CLIMBER`
+  ground movement uses the `OTHER` model.
+- `ih-tools sim-run --watch ID` prints one object's movement state every 15 frames.
+
+All twelve scenarios pass with v5 hashes (every-tick replay equality, no
+overlaps or rejected commands, all orders finished, required bridge traversals):
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `47ec7b77475a544a` | `11b74b869ddaaac4` |
+| AI/status orders | `fdc5115ed9e92151` | `c04660c4a3b586ef` |
+| Bridges | `5a046b14d71591e3` | `ec30ab45b427e298` |
+| Traffic, Tournament Desert | `442539db073d0080` | `e644bc6fe5ddee8d` |
+| Traffic, Winding River | `9bb4bcd1c1e3e213` | `b888135e3a2a073d` |
+| Long map travel | `ae7a7a26522d13f8` | `a43e1ef34ea88661` |
+
+Asset-free fixtures: `ad7c868361578d99` (ground), `55cdf925078bac67`
+(bridge/deck stop), `30bbd05d6b53bc71` (head-on traffic), `fd495eafed52beac`
+(AI/status orders). The v4 hashes below are superseded and kept as history.
+
+### Verification (v4, before the locomotion port)
 
 - 110 workspace tests passed; formatting and workspace Clippy pass.
 - Asset-free synthetic fixtures hash to `f3653e098b76c23b` (ground),
@@ -349,11 +406,9 @@ placed objects, map lighting and a tactical camera, in a window.
 
 Multi-surface/crusher zone tables and incremental zone updates, bridge damage/destruction/repair,
 full traffic/formation and collision handling,
-remaining locomotor/physics types, combat/guard/transport/mood/temporary AI states,
+air/hover/thrust locomotors and the physics pieces listed above, fixInvalidPosition, combat/guard/transport/mood/temporary AI states,
 disabled gameplay side effects,
-map-wide object lifecycle and complete condition-state drawables. The current
-ground integrator is deliberately labelled an initial slice, not a complete port
-of the original locomotor/physics implementations. Traffic remains conservative
+map-wide object lifecycle and complete condition-state drawables. Traffic remains conservative
 circle avoidance: shape narrow-phase, forces, crushing, allied move-away requests
 and crowded bottleneck deadlock recovery remain pending. Occupied goals/routes
 without passing room wait until space is available. M3's visual review remains pending.

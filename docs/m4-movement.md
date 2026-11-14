@@ -20,6 +20,10 @@ stock scenario is not used as the Contra test. Each scenario runs 1,200 ticks
 (40 seconds), moves both units east and returns the vehicle west after frame 480.
 The headless runner fails on rejected commands or unfinished orders.
 
+Units move with the ported original locomotors and physics (see PORTING.md, "Ground
+locomotion and physics"). To follow one object, add `--watch ID`: it prints position,
+facing, velocity, braking, AI state and blocking every 15 frames.
+
 Pristine bridge crossings have a separate stock/Contra demo:
 
 ```powershell
