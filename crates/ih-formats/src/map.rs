@@ -487,13 +487,13 @@ impl Map {
             t.terrain[0] = read_light(r)?;
             t.objects[0] = read_light(r)?;
             if version >= 2 {
-                for j in 1..3 {
-                    t.objects[j] = read_light(r)?;
+                for light in &mut t.objects[1..] {
+                    *light = read_light(r)?;
                 }
             }
             if version >= 3 {
-                for j in 1..3 {
-                    t.terrain[j] = read_light(r)?;
+                for light in &mut t.terrain[1..] {
+                    *light = read_light(r)?;
                 }
             }
         }
