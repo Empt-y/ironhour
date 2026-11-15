@@ -439,13 +439,52 @@ are superseded and kept as history.
   stop during disable, new-command rejection, moving/destroyed facing targets,
   later-leg failure, interruption, path visit order and per-tick replay equality.
 
+### Model condition states (render-only)
+
+Drawables pick their art from the object's condition flags as `W3DModelDraw` does
+(`crates/ih-client/src/condition.rs`):
+
+- Parsing as `parseConditionState`: `DefaultConditionState` copied into later
+  states (animations replaced as soon as a state names its own),
+  `AliasConditionState`, `TransitionState` pairs, `IgnoreConditionStates`,
+  `Model = NONE`, accumulated `Show/HideSubObject` lists, `Animation` /
+  `IdleAnimation` with distance covered and repeat counts, `AnimationMode`,
+  `TransitionKey`, `WaitForStateToFinishIfPossible`, `Flags`,
+  `AnimationSpeedFactorRange` and `WeaponMuzzleFlash`.
+- `findBestInfo` (`SparseMatchFinder`): most shared flags, then fewest flags the
+  object lacks, the first state winning ties.
+- `setModelState`: transition states between transition keys, waiting for the
+  current animation to finish, keeping hidden sub-objects while the model stays the
+  same; `adjustAnimation` (random choice, a different idle animation each time,
+  random/first/last/maintained start frames, speed factor); every animation mode;
+  idle-animation cycling and `RESTART_ANIM_WHEN_COMPLETE`; walk cycles synced to
+  movement speed (`adjustAnimSpeedToMovementSpeed`).
+- Sub-object visibility as `doHideShowSubObjs` (full name, then the part after the
+  container name; sub-objects on bones below a hidden one's bone follow it),
+  muzzle flashes hidden, headlights shown only at night. Models are built once;
+  each instance carries a hidden mask.
+- The viewer and `map-render --scenario` set `MOVING` while a move order is under
+  way and not blocked for more than a quarter second (`AIInternalMoveToState`),
+  plus the map's `NIGHT`/`SNOW`. Placed map objects use the same best-match rule
+  for their idle state.
+- `ih-tools draw-check` parses every template's states. Stock: 2,585 draw modules,
+  23,042 states and 4,774 transitions, all with an idle state; 68 of 5,918 models
+  and 51 of 3,146 animations do not resolve (debug tiles, unshipped snow/night
+  variants, files without the named animation). Contra: 6,040 modules, 37,024
+  states, 7,279 transitions, all with an idle state; 110 of 8,936 models and 129
+  of 4,278 animations do not resolve.
+
+Not yet: turret rotation and recoil, weapon/particle-system bones, the condition
+flags that combat, damage, construction and garrisons set (M5), terrain decals,
+shadows and track marks.
+
 ### Still required for M4
 
 Multi-surface/crusher zone tables and incremental zone updates, bridge damage/destruction/repair,
 full traffic/formation and collision handling,
 air/hover/thrust locomotors, the physics and traffic pieces listed above (vehicle crush damage, moveAllies, overlap handling), combat/guard/transport/mood/temporary AI states,
 disabled gameplay side effects,
-map-wide object lifecycle and complete condition-state drawables. Traffic uses the ported blocked/stuck, move-aside and crush logic on bounding circles;
+map-wide object lifecycle, and the drawable pieces listed above (turrets, recoil, bones). Traffic uses the ported blocked/stuck, move-aside and crush logic on bounding circles;
 shape narrow-phase and crowded bottleneck recovery remain pending. Occupied goals/routes
 without passing room wait until space is available. M3's visual review remains pending.
 Disabled movement currently stops horizontal drive immediately; original inertia,

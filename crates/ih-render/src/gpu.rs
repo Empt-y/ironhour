@@ -130,6 +130,7 @@ const ALPHA_REF: f32 = 96.0 / 255.0;
 /// One draw of a prepared model.
 struct Draw {
     key: PipeKey,
+    sub_object: usize,
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
     count: u32,
@@ -151,6 +152,8 @@ pub struct PreparedModel {
 pub struct Instance {
     model: Arc<PreparedModel>,
     bones: wgpu::BindGroup,
+    /// Per sub-object: hidden.
+    hidden: Option<Arc<[bool]>>,
 }
 
 pub struct PreparedTerrain {
@@ -590,6 +593,7 @@ impl Renderer {
             self.pipeline(key);
             draws.push(Draw {
                 key,
+                sub_object: b.sub_object,
                 vb,
                 ib,
                 count: b.indices.len() as u32,
@@ -606,7 +610,17 @@ impl Renderer {
 
     /// Places a prepared model with one world matrix per hierarchy pivot.
     pub fn instance(&self, model: &Arc<PreparedModel>, bones: &[Mat4]) -> Instance {
-        Instance { model: model.clone(), bones: bones_bind_group(&self.device, &self.bones_layout, bones) }
+        Instance {
+            model: model.clone(),
+            bones: bones_bind_group(&self.device, &self.bones_layout, bones),
+            hidden: None,
+        }
+    }
+
+    /// Places a prepared model with some sub-objects hidden (`hidden[i]` for
+    /// `Model::sub_objects[i]`).
+    pub fn instance_hiding(&self, model: &Arc<PreparedModel>, bones: &[Mat4], hidden: Arc<[bool]>) -> Instance {
+        Instance { hidden: Some(hidden), ..self.instance(model, bones) }
     }
 
     /// Uploads terrain geometry and its atlas. `cloud` and `noise` are the
@@ -925,8 +939,12 @@ impl Renderer {
         }
 
         // Opaque before translucent, each in sort-level order; stable otherwise.
-        let mut order: Vec<(&Instance, &Draw)> =
-            scene.instances.iter().flat_map(|i| i.model.draws.iter().map(move |d| (i, d))).collect();
+        let mut order: Vec<(&Instance, &Draw)> = scene
+            .instances
+            .iter()
+            .flat_map(|i| i.model.draws.iter().map(move |d| (i, d)))
+            .filter(|(i, d)| !i.hidden.as_ref().is_some_and(|h| h.get(d.sub_object).copied().unwrap_or(false)))
+            .collect();
         order.sort_by_key(|(_, d)| (d.translucent, d.sort_level));
         let split = order.iter().position(|(_, d)| d.translucent).unwrap_or(order.len());
 
@@ -1076,7 +1094,7 @@ impl Renderer {
     ) -> Vec<u8> {
         let prepared = self.prepare_model(assets, model);
         let instance = if bones.is_empty() {
-            Instance { model: prepared, bones: self.identity_bones.clone() }
+            Instance { model: prepared, bones: self.identity_bones.clone(), hidden: None }
         } else {
             self.instance(&prepared, bones)
         };

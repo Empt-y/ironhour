@@ -108,52 +108,19 @@ pub fn template_art(defs: &Definitions, name: &str, wanted: &[&str]) -> Option<T
     Some(art)
 }
 
-/// The state block best matching `wanted`: one whose flags equal it, else the
-/// default state, else one with no flags, else the first.
+/// The best state for `wanted` (`W3DModelDraw::findBestInfo`) as a static model:
+/// its hidden sub-objects (plus muzzle flashes) and first animation.
 pub(crate) fn condition_model(d: &Block, wanted: &[&str]) -> Option<DrawModel> {
-    let states: Vec<&Block> = d
-        .blocks()
-        .filter(|b| {
-            b.kind.eq_ignore_ascii_case("ConditionState") || b.kind.eq_ignore_ascii_case("DefaultConditionState")
-        })
-        .collect();
-    let flags = |b: &Block| -> Vec<String> {
-        b.args().into_iter().filter(|a| !a.eq_ignore_ascii_case("NONE")).map(|a| a.to_ascii_uppercase()).collect()
-    };
-    let exact = |b: &&&Block| {
-        if b.kind.eq_ignore_ascii_case("DefaultConditionState") {
-            return wanted.is_empty();
-        }
-        let f = flags(b);
-        f.len() == wanted.len() && wanted.iter().all(|w| f.iter().any(|x| x.eq_ignore_ascii_case(w)))
-    };
-    let state = states
-        .iter()
-        .find(exact)
-        .or_else(|| states.iter().find(|b| b.kind.eq_ignore_ascii_case("DefaultConditionState")))
-        .or_else(|| states.iter().find(|b| flags(b).is_empty()))
-        .or_else(|| states.first())?;
-    // A ConditionState starts as a copy of the DefaultConditionState before it.
-    let default = states.iter().find(|b| b.kind.eq_ignore_ascii_case("DefaultConditionState"));
-    let model = field_values(state, "Model")
-        .last()
-        .or_else(|| default.and_then(|d| field_values(d, "Model").last()))
-        .and_then(|v| v.into_iter().next())?;
-    if model.eq_ignore_ascii_case("NONE") {
+    use crate::condition::{Flags, ModelDrawData};
+    let data = ModelDrawData::parse(d);
+    let flags: Flags = wanted.iter().map(|w| w.to_ascii_uppercase()).collect();
+    let state = &data.states[data.find_best(&flags)?];
+    if state.model.is_empty() {
         return None;
     }
-    let mut hide: Vec<String> = field_values(state, "HideSubObject").flatten().collect();
-    // Muzzle flashes start hidden (W3DModelDraw::hideAllMuzzleFlashes); the field is
-    // `WeaponMuzzleFlash = SLOT BONE`.
-    for v in field_values(state, "WeaponMuzzleFlash") {
-        if let Some(bone) = v.get(1) {
-            hide.push(bone.clone());
-        }
-    }
-    let show = field_values(state, "ShowSubObject").flatten().collect();
-    let animation = field_values(state, "IdleAnimation")
-        .chain(field_values(state, "Animation"))
-        .next()
-        .and_then(|v| v.into_iter().next());
-    Some(DrawModel { module: String::new(), model, hide, show, animation })
+    let mut hide: Vec<String> = state.hide_show.iter().filter(|(_, h)| *h).map(|(n, _)| n.clone()).collect();
+    hide.extend(state.muzzle_flashes.iter().cloned());
+    let show = state.hide_show.iter().filter(|(_, h)| !*h).map(|(n, _)| n.clone()).collect();
+    let animation = state.animations.first().map(|a| a.name.clone());
+    Some(DrawModel { module: String::new(), model: state.model.clone(), hide, show, animation })
 }

@@ -1,6 +1,7 @@
 //! `ih-tools`: inspect game data through the same file system the engine uses.
 
 mod coverage;
+mod draw_check;
 mod map_check;
 mod nav_check;
 mod sim_run;
@@ -109,6 +110,8 @@ enum Cmd {
     },
     /// Build and validate road, bridge and water geometry without a GPU.
     MapCheck { name: Option<String> },
+    /// Parse every object's model condition states and check their models and animations.
+    DrawCheck,
     /// Inspect bridge navigation layers, entry clearance and bank-to-bank routes.
     NavCheck {
         name: String,
@@ -341,6 +344,7 @@ fn main() -> Result<()> {
         }
         Cmd::Maps { name, near } => maps(&mount(&cli)?, name.as_deref(), near.as_deref())?,
         Cmd::MapCheck { name } => map_check::run(&mount(&cli)?, &Installs::locate().language, name.as_deref())?,
+        Cmd::DrawCheck => draw_check::run(&mount(&cli)?, &Installs::locate().language)?,
         Cmd::SimRun { scenario, trace, watch, watch_every } => sim_run::run(
             &mount(&cli)?,
             &Installs::locate().language,
@@ -419,6 +423,7 @@ fn main() -> Result<()> {
                     &world.condition_flags(),
                     scene.instances.len(),
                 );
+                let mut draw = draw;
                 draw.update(&renderer, &mut scene, &sim, 1.0, *sim_frame as f32 * 1000.0 / 30.0, Some(1));
                 eprintln!("simulation frame {}: {:016x}", sim.frame, sim.state_hash());
             }

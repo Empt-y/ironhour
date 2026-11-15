@@ -261,7 +261,7 @@ impl App {
                     if !sim.events.is_empty() {
                         bail!("simulation smoke rejected commands: {:?}", sim.events);
                     }
-                    if let Some(draw) = &s.sim_draw {
+                    if let Some(draw) = &mut s.sim_draw {
                         draw.update(&s.renderer, &mut s.scene, sim, 1.0, step as f32 * 1000.0, s.selected);
                     }
                 }
@@ -325,7 +325,7 @@ impl State {
                     sim.step();
                 }
             }
-            if let Some(draw) = &self.sim_draw {
+            if let Some(draw) = &mut self.sim_draw {
                 draw.update(
                     &self.renderer,
                     &mut self.scene,

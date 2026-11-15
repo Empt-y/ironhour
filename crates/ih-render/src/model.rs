@@ -200,6 +200,8 @@ fn parse_args(text: &str) -> Vec<(String, String)> {
 #[derive(Debug, Clone)]
 pub struct Batch {
     pub mesh: String,
+    /// Index into `Model::sub_objects`.
+    pub sub_object: usize,
     pub pass: usize,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
@@ -226,6 +228,15 @@ pub struct Model {
     pub batches: Vec<Batch>,
     /// House colour for `ZHC` textures (see [`crate::house_color`]).
     pub house_color: Option<u32>,
+    /// Sub-objects in HLOD order; batches refer to them for per-instance hiding.
+    pub sub_objects: Vec<SubObject>,
+}
+
+/// An HLOD sub-object (or a plain mesh model's one mesh): its full name and bone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubObject {
+    pub name: String,
+    pub bone: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -248,8 +259,13 @@ pub struct BuildOptions {
 
 pub fn build(assets: &mut Assets, name: &str, opts: &BuildOptions) -> Result<Model, ModelError> {
     let file = assets.w3d(name).ok_or_else(|| ModelError::NoFile(name.into()))?;
-    let mut model =
-        Model { name: name.to_string(), hierarchy: None, batches: Vec::new(), house_color: opts.house_color };
+    let mut model = Model {
+        name: name.to_string(),
+        hierarchy: None,
+        batches: Vec::new(),
+        house_color: opts.house_color,
+        sub_objects: Vec::new(),
+    };
 
     if let Some(hlod) = file.hlods.iter().find(|h| h.name.eq_ignore_ascii_case(name)) {
         model.hierarchy = assets.hierarchy(&hlod.hierarchy, Some(&file));
@@ -262,7 +278,11 @@ pub fn build(assets: &mut Assets, name: &str, opts: &BuildOptions) -> Result<Mod
                 continue;
             }
             match assets.mesh(&sub.name, &file) {
-                Some((f, i)) => add_mesh(&mut model, &f.meshes[i], sub.bone, opts),
+                Some((f, i)) => {
+                    model.sub_objects.push(SubObject { name: sub.name.clone(), bone: sub.bone });
+                    let index = model.sub_objects.len() - 1;
+                    add_mesh(&mut model, &f.meshes[i], sub.bone, index, opts)
+                }
                 None => {
                     // Boxes and other helpers are not drawn; anything else is missing.
                     let helper = file.boxes.iter().any(|b| b.name.eq_ignore_ascii_case(&sub.name));
@@ -281,7 +301,8 @@ pub fn build(assets: &mut Assets, name: &str, opts: &BuildOptions) -> Result<Mod
         .iter()
         .find(|m| m.full_name().eq_ignore_ascii_case(name) || m.name.eq_ignore_ascii_case(name))
         .ok_or_else(|| ModelError::NoObject(name.into()))?;
-    add_mesh(&mut model, mesh, 0, opts);
+    model.sub_objects.push(SubObject { name: mesh.full_name(), bone: 0 });
+    add_mesh(&mut model, mesh, 0, 0, opts);
     Ok(model)
 }
 
@@ -313,7 +334,7 @@ enum Src {
     Vertex,
 }
 
-fn add_mesh(model: &mut Model, mesh: &Mesh, bone: u32, opts: &BuildOptions) {
+fn add_mesh(model: &mut Model, mesh: &Mesh, bone: u32, sub_object: usize, opts: &BuildOptions) {
     if mesh.attributes & mesh_flags::HIDDEN != 0 {
         return;
     }
@@ -480,6 +501,7 @@ fn add_mesh(model: &mut Model, mesh: &Mesh, bone: u32, opts: &BuildOptions) {
             };
             model.batches.push(Batch {
                 mesh: mesh.full_name(),
+                sub_object,
                 pass: pi,
                 vertices: vertices.clone(),
                 indices,

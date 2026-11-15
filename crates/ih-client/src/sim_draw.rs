@@ -1,24 +1,61 @@
-//! Client snapshots for the initial M4 movement slice. Logic remains in ih-sim;
-//! interpolation, MOVING/idle art and animation are render-only (`W3DModelDraw.cpp`).
-use crate::drawable::condition_model;
+//! Drawables for simulated objects. Logic stays in ih-sim; interpolation, model
+//! condition states, animation and sub-object visibility are render-only
+//! (`W3DModelDraw.cpp`, see [`crate::condition`]).
+use crate::condition::{ArtSource, Flags, ModelDrawData, ModelDrawState, SubObjects};
 use glam::{Mat4, Vec3};
 use ih_formats::w3d::{Animation, Hierarchy};
 use ih_render::{Assets, BuildOptions, PreparedModel, Renderer, Scene};
 use ih_sim::{Simulation, templates::Templates};
 use std::{collections::BTreeMap, sync::Arc};
 
-struct Art {
-    model: Arc<PreparedModel>,
+/// A loaded model: GPU geometry, skeleton and sub-objects.
+struct ModelArt {
+    prepared: Arc<PreparedModel>,
     hierarchy: Option<Hierarchy>,
-    animation: Option<Animation>,
+    subs: Vec<(String, u32)>,
+    parents: Vec<Option<u32>>,
+}
+
+/// Every model and animation the spawned templates' states can use, loaded up
+/// front so states can switch while the viewer runs.
+#[derive(Default)]
+struct ArtCache {
+    models: BTreeMap<String, ModelArt>,
+    animations: BTreeMap<String, Arc<Animation>>,
+}
+
+impl ArtSource for ArtCache {
+    fn animation_info(&mut self, name: &str) -> Option<(u32, f32)> {
+        self.animations.get(name).map(|a| (a.num_frames, a.frame_rate as f32))
+    }
+    fn sub_objects(&mut self, model: &str) -> Option<SubObjects> {
+        self.models.get(model).map(|m| (m.subs.clone(), m.parents.clone()))
+    }
+}
+
+/// A template's draw modules.
+struct TemplateDraws {
+    modules: Vec<ModelDrawData>,
     scale: f32,
 }
+
+struct ObjectDraw {
+    states: Vec<ModelDrawState>,
+    flags: Option<Flags>,
+    last_ms: f32,
+}
+
 pub struct SimDrawables {
-    art: BTreeMap<(String, bool), Vec<Art>>,
+    templates: BTreeMap<String, TemplateDraws>,
+    art: ArtCache,
+    objects: BTreeMap<u32, ObjectDraw>,
+    base_flags: Flags,
     static_instances: usize,
     rings: BTreeMap<String, Arc<PreparedModel>>,
 }
+
 impl SimDrawables {
+    /// `flags` are the map-wide condition flags (`NIGHT`, `SNOW`).
     pub fn new(
         renderer: &mut Renderer,
         assets: &mut Assets,
@@ -27,47 +64,77 @@ impl SimDrawables {
         flags: &[&str],
         static_instances: usize,
     ) -> Self {
-        let mut out = Self { art: BTreeMap::new(), static_instances, rings: BTreeMap::new() };
+        let mut out = Self {
+            templates: BTreeMap::new(),
+            art: ArtCache::default(),
+            objects: BTreeMap::new(),
+            base_flags: flags.iter().map(|f| f.to_string()).collect(),
+            static_instances,
+            rings: BTreeMap::new(),
+        };
         for name in names {
-            let Some(t) = templates.objects.get(&name) else { continue };
-            if !out.rings.contains_key(&name) {
-                out.rings.insert(name.clone(), renderer.prepare_model(assets, &ring(t.radius().max(4.0))));
+            if out.templates.contains_key(&name) {
+                continue;
             }
-            for moving in [false, true] {
-                if out.art.contains_key(&(name.clone(), moving)) {
-                    continue;
-                }
-                let mut wanted = flags.to_vec();
-                if moving {
-                    wanted.push("MOVING");
-                }
-                let mut draws = vec![];
-                for m in t.modules.iter().filter(|m| m.kind == "Draw") {
-                    let dm = condition_model(&m.block, &wanted);
-                    let Some(dm) = dm else { continue };
-                    let mut hide = dm.hide;
-                    hide.extend(["TURRETFX".into(), "MUZZLE".into()]);
-                    let options = BuildOptions { house_color: Some(0x1e5aff), hide };
-                    match ih_render::build(assets, &dm.model, &options) {
-                        Ok(model) => {
-                            let animation = dm.animation.as_deref().and_then(|a| assets.animation(a));
-                            draws.push(Art {
-                                model: renderer.prepare_model(assets, &model),
-                                hierarchy: model.hierarchy,
-                                animation,
-                                scale: t.number("Scale", 1.0),
-                            });
+            let Some(t) = templates.objects.get(&name) else { continue };
+            out.rings.insert(name.clone(), renderer.prepare_model(assets, &ring(t.radius().max(4.0))));
+            let modules: Vec<ModelDrawData> = t
+                .modules
+                .iter()
+                .filter(|m| m.kind == "Draw")
+                .map(|m| ModelDrawData::parse(&m.block))
+                .filter(|d| !d.states.is_empty())
+                .collect();
+            for d in &modules {
+                for s in d.states.iter().chain(d.transitions.values()) {
+                    out.load_model(renderer, assets, &s.model);
+                    for a in &s.animations {
+                        if !out.art.animations.contains_key(&a.name) {
+                            match assets.animation(&a.name) {
+                                Some(anim) => {
+                                    out.art.animations.insert(a.name.clone(), Arc::new(anim));
+                                }
+                                None => assets.warnings.push(format!("{name}: animation {} not found", a.name)),
+                            }
                         }
-                        Err(e) => assets.warnings.push(format!("{}: {e}", dm.model)),
                     }
                 }
-                out.art.insert((name.clone(), moving), draws);
             }
+            out.templates.insert(name.clone(), TemplateDraws { modules, scale: t.number("Scale", 1.0) });
         }
         out
     }
+
+    fn load_model(&mut self, renderer: &mut Renderer, assets: &mut Assets, model: &str) {
+        if model.is_empty() || self.art.models.contains_key(model) {
+            return;
+        }
+        let options = BuildOptions { house_color: Some(0x1e5aff), hide: vec![] };
+        match ih_render::build(assets, model, &options) {
+            Ok(m) => {
+                let parents =
+                    m.hierarchy.as_ref().map(|h| h.pivots.iter().map(|p| p.parent).collect()).unwrap_or_default();
+                let subs = m.sub_objects.iter().map(|s| (s.name.clone(), s.bone)).collect();
+                let prepared = renderer.prepare_model(assets, &m);
+                self.art.models.insert(model.to_string(), ModelArt { prepared, hierarchy: m.hierarchy, subs, parents });
+            }
+            Err(e) => assets.warnings.push(format!("{model}: {e}")),
+        }
+    }
+
+    /// The object's condition flags: map-wide ones plus `MOVING` while a move order
+    /// is underway and not blocked for more than a quarter second
+    /// (`AIInternalMoveToState`).
+    fn flags_for(&self, o: &ih_sim::simulation::Object) -> Flags {
+        let mut f = self.base_flags.clone();
+        if o.target.is_some() && o.blocked_frames <= 7 && !o.disabled.any() {
+            f.insert("MOVING".into());
+        }
+        f
+    }
+
     pub fn update(
-        &self,
+        &mut self,
         renderer: &Renderer,
         scene: &mut Scene,
         sim: &Simulation,
@@ -76,25 +143,40 @@ impl SimDrawables {
         selected: Option<u32>,
     ) {
         scene.instances.truncate(self.static_instances);
+        self.objects.retain(|id, _| sim.objects.contains_key(id));
         for o in sim.objects.values() {
-            let moving = o.velocity[0] * o.velocity[0] + o.velocity[1] * o.velocity[1] > 0.000001;
-            let Some(art) = self.art.get(&(o.template.clone(), moving)) else { continue };
+            let Some(td) = self.templates.get(&o.template) else { continue };
+            let flags = self.flags_for(o);
+            let entry = self.objects.entry(o.id).or_insert_with(|| ObjectDraw {
+                states: (0..td.modules.len()).map(|i| ModelDrawState::new(u64::from(o.id) << 8 | i as u64)).collect(),
+                flags: None,
+                last_ms: time_ms,
+            });
+            let dt = (time_ms - entry.last_ms).max(0.0);
+            entry.last_ms = time_ms;
+            let changed = entry.flags.as_ref() != Some(&flags);
+            let speed = Vec3::new(o.physics.vel[0], o.physics.vel[1], 0.0).length();
             let previous = Vec3::from(o.previous_position);
             let current = Vec3::from(o.position);
             let p = previous.lerp(current, alpha.clamp(0.0, 1.0));
-            for a in art {
-                let root =
-                    Mat4::from_translation(p) * Mat4::from_rotation_z(o.angle) * Mat4::from_scale(Vec3::splat(a.scale));
-                let bones = match (&a.hierarchy, &a.animation) {
-                    (Some(h), Some(anim)) => {
-                        let frame = (time_ms * anim.frame_rate as f32 / 1000.0) % (anim.num_frames.max(1) as f32);
-                        ih_render::pose::animated_pose(h, anim, frame, root).0
-                    }
+            let root =
+                Mat4::from_translation(p) * Mat4::from_rotation_z(o.angle) * Mat4::from_scale(Vec3::splat(td.scale));
+            for (state, data) in entry.states.iter_mut().zip(&td.modules) {
+                if changed {
+                    state.set_conditions(data, &flags, &mut self.art);
+                }
+                state.update(data, dt, speed, &mut self.art);
+                let Some(art) = self.art.models.get(&state.model) else { continue };
+                let anim = state.playback.anim.as_ref().and_then(|a| self.art.animations.get(a));
+                let bones = match (&art.hierarchy, anim) {
+                    (Some(h), Some(a)) => ih_render::pose::animated_pose(h, a, state.playback.frame, root).0,
                     (Some(h), None) => ih_render::pose::base_pose(h, root),
                     _ => vec![root],
                 };
-                scene.instances.push(renderer.instance(&a.model, &bones));
+                let hidden: Arc<[bool]> = state.hidden.clone().into();
+                scene.instances.push(renderer.instance_hiding(&art.prepared, &bones, hidden));
             }
+            entry.flags = Some(flags);
             if selected == Some(o.id)
                 && let Some(ring) = self.rings.get(&o.template)
             {
@@ -129,8 +211,10 @@ fn ring(radius: f32) -> ih_render::Model {
         name: "selection".into(),
         hierarchy: None,
         house_color: None,
+        sub_objects: vec![ih_render::model::SubObject { name: "selection".into(), bone: 0 }],
         batches: vec![Batch {
             mesh: "selection".into(),
+            sub_object: 0,
             pass: 0,
             vertices,
             indices,
