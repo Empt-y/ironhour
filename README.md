@@ -12,7 +12,8 @@ M4 is well under way: a renderer-independent 30 Hz simulation with the original
 logic RNG and sleepy scheduler, hierarchical ground and bridge paths, the original
 locomotors and physics (ground vehicles, infantry and helicopters), collisions,
 blocked traffic, moving out of the way and crushing, movement AI orders and timed
-disabled status, and drawables that follow the original model condition states.
+disabled status, the map's own objects with obstacle cells under its structures,
+and drawables that follow the original model condition states.
 Command logs replay with identical per-tick state hashes. The
 [movement demo](docs/m4-movement.md) supports selection and move orders and has a
 review checklist.

@@ -378,27 +378,78 @@ Air locomotion (state hash v8), from `Locomotor.cpp`, `PhysicsUpdate.cpp`,
   (`JetAIUpdate`), the `CIRCLE_FOR_LANDING` code path, `ULTRA_ACCURATE`, damage-state
   lift, and the over-water model condition. `THRUST` and `CLIMBER` use `OTHER`.
 
-All sixteen scenarios pass with v8 hashes (every-tick replay equality, no
-overlaps or rejected commands, all orders finished, required bridge traversals):
+### The map's own objects (state hash v9)
+
+From `GameLogic::startNewGame` (GameLogic.cpp), `SidesList::ParseSidesDataChunk`
+(SidesList.cpp), `PlayerList::newGame`/`validateTeam` (PlayerList.cpp) and
+`Pathfinder::classifyObjectFootprint` (AIPathfind.cpp):
+
+- Maps' `SidesList` chunks are read: side dictionaries, build lists (with the
+  version 3 fields) and teams. Player scripts in it are left for M7. All 150
+  stock and 333 Contra maps parse.
+- `Simulation::load_map_objects` creates the map's logic objects in map order,
+  at the stored height above the ground, with their facing (`normalizeAngle`),
+  on the layer nearest that height. Road/bridge points, objects without
+  templates, `OPTIMIZED_TREE`s, `PROP`s and `CLEARED_BY_BUILD` fluff without a
+  fence are skipped. ironhour always takes the multiplayer setting (`useTrees` on,
+  `forceFluffToProp` on), so the result does not depend on detail settings.
+  `handleNameChange`'s two renames are applied.
+- Owners: player 0 is neutral, then each side with a player name. An object's
+  `originalOwner` team gives its `teamOwner`; a player's default team is
+  `team<playerName>`; unknown owners are neutral.
+- Obstacle cells: each immobile, not-small `STRUCTURE` on the ground marks its
+  `BOX` (rotated, sampled every half cell) or circle footprint as obstacle cells,
+  then closes off pinched clear cells nearby (`CELL_IMPASSABLE`) and marks
+  the border as pinched (`MARK_BORDER_PINCHED`); `FenceWidth` objects mark a fence line
+  without pinching. Mines, projectiles and bridge towers are skipped. Obstacles
+  are added after the terrain and bridges, one object at a time, as the original
+  does. This replaces the earlier stand-in, which blocked a disc for every
+  structure or immobile object.
+- Units are kept out of structures by those cells, as in the original, where AI
+  units get no collision force from them: the no-overlap clipping and the overlap
+  check apply to mobile bodies only. Pairs of immobile objects are left out of
+  the collision pass.
+- The partition registers immobile objects in every bucket their bounding circle
+  covers, clipped to the map, so large ones no longer widen every query. Contra's
+  water planes (`WTR_800C`, radius 5657) had made each query scan the whole map.
+  Collision shapes are worked out once per object.
+- Scenario spawns keep IDs 1..n and the map's objects follow. The window still
+  draws the map's objects as static scenery, and only scenario objects can be
+  selected, until objects can change (M5).
+- `sim-run` reports how the map's objects were sorted and the obstacle-cell counts.
+- Not yet: landmark bridges and wall pieces (`IsBridge`, `WALK_ON_TOP_OF_WALL`),
+  object properties from the map (`objectName`, initial health and the rest of
+  `updateObjValuesFromMapProperties`), `onBuildComplete`, team activation, build
+  lists turned into players' bases, removing obstacles when objects die,
+  rubble cells, and sleepy physics (`SLEEPY_PHYSICS`: resting `PhysicsBehavior`s
+  sleep until a force wakes them; here they still update every frame).
+
+All sixteen scenarios pass with v9 hashes (every-tick replay equality, no
+overlaps or rejected commands, all orders finished, required bridge traversals),
+now with every map object loaded: 142 logic objects on Tournament Desert (756 with
+Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `6670381116b5d301` | `ff7ccd746556c99c` |
-| AI/status orders | `7822880c98fc0b0a` | `52cf70ec95244921` |
-| Bridges | `39bb58a68e90d5b8` | `84a08e174514be9f` |
-| Traffic, Tournament Desert (one move-aside each) | `0e3283163999665c` | `1102fe478f6b3872` |
-| Traffic, Winding River | `04457882986a86c1` | `09406607b2846817` |
-| Long map travel | `6c420f15d5dd523e` | `5e09e4aba3699b78` |
-| Crusader through an enemy Ranger (crushed at frame 131) | `569df12760e2c34a` | |
-| Crusader through an allied Ranger (steps aside) | `f411dd90ca356012` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `c95cfb50d77e94d1` | `9235cd4d3ed46e88` |
+| Desert (`m4-desert` / `m4-contra`) | `7e014823afddb987` | `7513510a1214e35a` |
+| AI/status orders | `e2dfdbcefb0d8ee8` | `afcd596a413b6153` |
+| Bridges | `a996d11efd2d83b1` | `7525264be6a268a5` |
+| Traffic, Tournament Desert (one move-aside each) | `68bc0d2754a50735` | `b2b8fec0e5ad48e3` |
+| Traffic, Winding River | `3e4f83c8d867bc72` | `380048807b00e778` |
+| Long map travel | `d07bae1480ca3e8d` | `a0bca4babaf59f71` |
+| Crusader through an enemy Ranger (crushed at frame 131) | `2db045bb7655c894` | |
+| Crusader through an allied Ranger (steps aside) | `0549ff572155a036` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `09123036562bd307` | `028006ec2c9d2e32` |
 
-Asset-free fixtures: `da1e14a1ec06fdce` (ground), `162e800bc2eb8fd8`
-(bridge/deck stop), `e7b6cd77d8dcf719` (head-on traffic, resolved by a
-move-aside), `8cf1519746aab6ff` (AI/status orders). Unit tests also cover a tank
-squishing enemy infantry, allied infantry stepping aside, and a hovering body
-climbing to and holding its preferred height (over ground and water). The v4
-hashes below are superseded and kept as history.
+Asset-free fixtures: `708c2e2ed940c9a5` (ground), `994d9fa88cde7d1b`
+(bridge/deck stop), `2d905876dbd7cf08` (head-on traffic, resolved by a
+move-aside), `09b00996be9bcfb0` (AI/status orders). Unit tests also cover a tank
+squishing enemy infantry, allied infantry stepping aside, a hovering body
+climbing to and holding its preferred height (over ground and water), box,
+circle and fence footprints with pinched-gap closing, map-object sorting and
+owners, and a tank routing around a map structure. Earlier hash tables are
+superseded.
+
 
 ### Verification (v4, before the locomotion port)
 
@@ -516,7 +567,8 @@ been made on Windows. Remaining M4 work:
   space is free.
 - AI: combat, guard, transport, mood and other temporary states; disabled side
   effects (inertia, held transports, tint, special-power timers, riders, power).
-- Objects: creating the map's own objects in the simulation and their lifecycle.
+- Objects: landmark bridges and walls, map object properties, build lists and
+  players' bases, obstacle removal and rubble on death, sleepy physics.
 - Drawables: turrets, recoil, weapon and particle-system bones.
 
 Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the

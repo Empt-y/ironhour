@@ -19,3 +19,16 @@ pub fn angle_delta(from: f32, to: f32) -> f32 {
     }
     v
 }
+/// `normalizeAngle` (GameCommon.cpp): into (-PI, PI].
+pub fn normalize_angle(mut angle: f32) -> f32 {
+    if !angle.is_finite() {
+        return 0.0;
+    }
+    while angle > std::f32::consts::PI {
+        angle -= TAU;
+    }
+    while angle <= -std::f32::consts::PI {
+        angle += TAU;
+    }
+    angle
+}

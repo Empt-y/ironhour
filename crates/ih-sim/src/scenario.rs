@@ -80,6 +80,8 @@ impl Scenario {
         for s in &self.spawn {
             sim.spawn(&s.template, s.position, s.owner)?;
         }
+        // Scenario spawns keep IDs 1..n; the map's own objects follow them.
+        sim.load_map_objects()?;
         for c in &self.commands {
             if c.frame >= self.frames {
                 return Err(SimError(format!("command at {} is beyond scenario's {} frames", c.frame, self.frames)));

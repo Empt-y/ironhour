@@ -105,6 +105,10 @@ pub struct Object {
     pub slide: [f32; 2],
     /// `AIUpdateInterface` blocked state from collisions.
     pub traffic: traffic::TrafficState,
+    /// Index into `Map::objects` for the map's own objects.
+    pub map_index: Option<usize>,
+    /// Collision shape from the template.
+    pub body: traffic::BodyShape,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -217,6 +221,43 @@ impl Simulation {
         if !p.iter().all(|v| v.is_finite()) {
             return Err(SimError("non-finite spawn position".into()));
         }
+        let surface = self.grid.destination(&self.map, p);
+        let z = self.grid.height_at(&self.map, surface);
+        self.create(name, [p[0], p[1], z], 0.0, surface.layer, owner, None)
+    }
+
+    /// Creates the map's own logic objects, in map order (`GameLogic::startNewGame`):
+    /// at the stored height above the ground, facing, on the layer nearest that
+    /// height, owned by the player whose team is the object's `originalOwner`.
+    /// Their obstacle cells are already in the terrain (`Terrain::from_map`).
+    /// Returns the number created.
+    pub fn load_map_objects(&mut self) -> Result<usize, SimError> {
+        let placements = crate::map_objects::placements(&self.map, &self.templates);
+        for p in &placements {
+            let xy = [p.position[0], p.position[1]];
+            let ground = self.map.ground_height(xy[0], xy[1]);
+            let z = p.position[2] + ground;
+            // getLayerForDestination: a deck only when the object is nearer it than the ground.
+            let deck = self.grid.destination(&self.map, xy);
+            let layer = if deck.layer != 0 && (self.grid.height_at(&self.map, deck) - z).abs() < (ground - z).abs() {
+                deck.layer
+            } else {
+                0
+            };
+            self.create(&p.template, [xy[0], xy[1], z], p.angle, layer, p.owner, Some(p.index))?;
+        }
+        Ok(placements.len())
+    }
+
+    fn create(
+        &mut self,
+        name: &str,
+        position: [f32; 3],
+        angle: f32,
+        layer: u32,
+        owner: u32,
+        map_index: Option<usize>,
+    ) -> Result<u32, SimError> {
         let t =
             self.templates.objects.get(name).ok_or_else(|| SimError(format!("object template {name} is missing")))?;
         let id = self.next_id;
@@ -254,9 +295,7 @@ impl Simulation {
             }
             None => LocoState::default(),
         };
-        let surface = self.grid.destination(&self.map, p);
-        let z = self.grid.height_at(&self.map, surface);
-        let position = [p[0], p[1], z];
+        let body = traffic::BodyShape::new(t, &modules, &self.templates);
         self.objects.insert(
             id,
             Object {
@@ -265,8 +304,8 @@ impl Simulation {
                 owner,
                 position,
                 previous_position: position,
-                layer: surface.layer,
-                angle: 0.0,
+                layer,
+                angle,
                 speed: 0.0,
                 velocity: [0.0; 2],
                 target: None,
@@ -282,6 +321,8 @@ impl Simulation {
                 loco,
                 slide: [0.0; 2],
                 traffic: traffic::TrafficState::default(),
+                map_index,
+                body,
             },
         );
         self.rebuild_partition();
@@ -681,17 +722,32 @@ impl Simulation {
     }
 
     fn rebuild_partition(&mut self) {
-        self.partition.rebuild(self.objects.values().map(|o| (o.id, o.position)));
-        self.collision_radius_bound = self.objects.values().map(|o| self.collider(o.id).radius).fold(0.0, f32::max);
+        let entries = self.objects.values().map(|o| crate::partition::Entry {
+            id: o.id,
+            position: o.position,
+            radius: o.body.radius,
+            immobile: o.body.immobile,
+        });
+        // The map plus a margin; immobile objects are clipped to it.
+        let margin = 4.0 * crate::partition::BUCKET;
+        let size = [self.grid.width as f32 * CELL, self.grid.height as f32 * CELL];
+        self.partition.rebuild(entries, ([-margin, -margin], [size[0] + margin, size[1] + margin]));
+        // Only mobile radii widen queries (`Partition`).
+        self.collision_radius_bound =
+            self.objects.values().filter(|o| !o.body.immobile).map(|o| o.body.radius).fold(0.0, f32::max);
     }
     fn collider(&self, id: u32) -> Collider {
         let o = &self.objects[&id];
-        Collider::object(o, &self.templates.objects[&o.template], &self.templates)
+        Collider::object(o)
     }
     fn nearby(&self, id: u32, distance: f32) -> Vec<Collider> {
         let body = self.collider(id);
         self.partition
-            .candidates([body.position[0], body.position[1]], body.radius + self.collision_radius_bound + distance)
+            .candidates(
+                [body.position[0], body.position[1]],
+                body.radius + distance,
+                body.radius + self.collision_radius_bound + distance,
+            )
             .into_iter()
             .filter(|other| *other != id)
             .map(|other| self.collider(other))
@@ -770,7 +826,12 @@ impl Simulation {
         body.bottom += dz.min(0.0);
         body.top += dz.max(0.0);
         let others: Vec<Collider> =
-            self.nearby(id, ih_math::length(velocity)).into_iter().filter(|c| !self.crush_pair(id, c.id)).collect();
+            // Structures are kept out of by their obstacle cells (and fixInvalidPosition):
+            // AI units get no collision force from them (`processCollision`).
+            self.nearby(id, ih_math::length(velocity))
+                .into_iter()
+                .filter(|c| !c.immobile && !self.crush_pair(id, c.id))
+                .collect();
         let clip = |start: Collider, v: [f32; 2]| {
             let mut fraction = 1.0f32;
             let mut blocker = None;
@@ -835,16 +896,17 @@ impl Simulation {
         let mut pairs = Vec::new();
         for a in self.objects.keys().copied() {
             let ca = self.collider(a);
-            if !ca.enabled {
+            if !ca.enabled || ca.immobile {
                 continue;
             }
+            // Pairs of immobile objects are left out (nothing moves either of them).
             for cb in self.nearby(a, traffic::CONTACT_RANGE) {
-                if cb.id <= a || !ca.interacts(cb) {
+                if (cb.id <= a && !cb.immobile) || !ca.interacts(cb) {
                     continue;
                 }
                 let d = ih_math::length([cb.position[0] - ca.position[0], cb.position[1] - ca.position[1]]);
                 if d <= ca.radius + cb.radius + traffic::CONTACT_RANGE {
-                    pairs.push((a, cb.id));
+                    pairs.push((a.min(cb.id), a.max(cb.id)));
                 }
             }
         }
@@ -935,6 +997,11 @@ impl Simulation {
     /// and returns whether physics should push it (never, for these cases).
     fn process_collision(&mut self, a: u32, b: u32) -> bool {
         if !self.has_ai(b) {
+            return false;
+        }
+        // isDoingGroundMovement: the other needs a ground locomotor.
+        let tb = &self.templates.objects[&self.objects[&b].template];
+        if tb.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_none_or(|l| !l.ground()) {
             return false;
         }
         if self.objects[&a].traffic.ignore_until > self.frame {
@@ -1380,8 +1447,11 @@ impl Simulation {
         let mut pairs = Vec::new();
         for id in self.objects.keys().copied() {
             let a = self.collider(id);
+            if a.immobile {
+                continue;
+            }
             for b in self.nearby(id, 0.0) {
-                if id < b.id && traffic::overlaps(a, b) && !self.crush_pair(id, b.id) {
+                if id < b.id && !a.immobile && !b.immobile && traffic::overlaps(a, b) && !self.crush_pair(id, b.id) {
                     pairs.push((id, b.id));
                 }
             }
@@ -1390,7 +1460,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(8);
+        h.u32(9);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1411,6 +1481,7 @@ impl Simulation {
             h.u32(o.id);
             h.text(&o.template);
             h.u32(o.owner);
+            h.u32(o.map_index.map_or(0, |i| i as u32 + 1));
             h.u32(o.layer);
             h.u32(o.blocked_frames);
             h.u32(o.blocked_by.unwrap_or(0));
@@ -1813,7 +1884,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xda1e14a1ec06fdce, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x708c2e2ed940c9a5, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -1992,7 +2063,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xe7b6cd77d8dcf719, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x2d905876dbd7cf08, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2078,7 +2149,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x162e800bc2eb8fd8, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x994d9fa88cde7d1b, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

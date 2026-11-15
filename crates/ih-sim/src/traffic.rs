@@ -21,21 +21,31 @@ pub struct Collider {
     pub priority: u8,
     pub moving: bool,
     pub enabled: bool,
+    /// `KINDOF_IMMOBILE` or a structure: kept out of by obstacle cells, not by clipping.
+    pub immobile: bool,
 }
-impl Collider {
-    pub fn object(o: &Object, t: &Template, templates: &Templates) -> Self {
+/// The template-derived part of a collider, worked out once when the object is
+/// created (`GeometryInfo::calcBoundingStuff` and the collision filters).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BodyShape {
+    pub radius: f32,
+    pub bottom: f32,
+    pub top: f32,
+    pub priority: u8,
+    pub collides: bool,
+    pub immobile: bool,
+}
+impl BodyShape {
+    pub fn new(t: &Template, modules: &[crate::simulation::Module], templates: &Templates) -> Self {
         let scale = t.number("Scale", 1.0).max(0.0);
         let radius = t.collision_radius();
         let sphere = t.values("Geometry").first().is_some_and(|v| v == "SPHERE");
         let height = if sphere { radius } else { t.number("GeometryHeight", 5.0).max(0.01) * scale };
         let immobile = t.has_kind("IMMOBILE") || t.has_kind("STRUCTURE");
         Self {
-            id: o.id,
-            position: o.position,
             radius,
             bottom: if sphere { -radius } else { 0.0 },
             top: height,
-            angle: o.angle,
             priority: if t.has_kind("DOZER") {
                 2
             } else if t.has_kind("VEHICLE") {
@@ -43,11 +53,28 @@ impl Collider {
             } else {
                 0
             },
-            moving: o.target.is_some() && !o.disabled.any(),
-            enabled: !t.has_kind("NO_COLLIDE")
+            collides: !t.has_kind("NO_COLLIDE")
                 && (immobile
-                    || (o.modules.iter().any(|m| m.kind == ModuleKind::Physics)
+                    || (modules.iter().any(|m| m.kind == ModuleKind::Physics)
                         && t.locomotor().and_then(|n| templates.locomotors.get(n)).is_some_and(|l| l.ground()))),
+            immobile,
+        }
+    }
+}
+impl Collider {
+    pub fn object(o: &Object) -> Self {
+        let s = o.body;
+        Self {
+            id: o.id,
+            position: o.position,
+            radius: s.radius,
+            bottom: s.bottom,
+            top: s.top,
+            angle: o.angle,
+            priority: s.priority,
+            moving: o.target.is_some() && !o.disabled.any(),
+            enabled: s.collides,
+            immobile: s.immobile,
         }
     }
     pub fn with_position(self, position: [f32; 3]) -> Self {
@@ -137,6 +164,7 @@ mod tests {
             priority: 1,
             moving: true,
             enabled: true,
+            immobile: false,
         }
     }
     #[test]

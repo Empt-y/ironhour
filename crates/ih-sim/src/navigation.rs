@@ -3,7 +3,6 @@
 //! ties and line-of-sight path optimisation. `terrain` adds bridge layers and
 //! transient queries; `zones` adds the initial ground hierarchy. Crushing and
 //! multi-surface terrain classification remain pending.
-use crate::templates::Templates;
 use ih_formats::map::{MAP_HEIGHT_SCALE, Map};
 use std::{cmp::Reverse, collections::BinaryHeap};
 pub const CELL: f32 = 10.0;
@@ -15,7 +14,8 @@ pub struct Grid {
     pub blocked: Vec<bool>,
 }
 impl Grid {
-    pub fn from_map(map: &Map, templates: &Templates) -> Self {
+    /// Terrain cells only; structures are added by `Terrain::from_map` (`footprint`).
+    pub fn from_map(map: &Map) -> Self {
         let bounds =
             map.boundaries.first().copied().unwrap_or([map.width - 2 * map.border, map.height - 2 * map.border]);
         let (w, h) = (bounds[0].max(1), bounds[1].max(1));
@@ -42,17 +42,6 @@ impl Grid {
                     below && inside(p, &t.points)
                 });
                 out.blocked[(y * w + x) as usize] = slope > 9.8 || stored_cliff || wet;
-            }
-        }
-        for o in &map.objects {
-            if o.flags & 0x36 != 0 {
-                continue;
-            }
-            if let Some(t) = templates.objects.get(&o.name)
-                && (t.has_kind("STRUCTURE") || t.has_kind("IMMOBILE"))
-                && !t.has_kind("NO_COLLIDE")
-            {
-                out.block_disc([o.position[0], o.position[1]], t.radius().max(0.0));
             }
         }
         out

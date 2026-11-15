@@ -219,6 +219,38 @@ pub struct PolygonTrigger {
     pub points: Vec<[i32; 3]>,
 }
 
+/// A build-list entry of a side (`BuildListInfo`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuildListEntry {
+    pub building_name: String,
+    pub template: String,
+    /// z is forced to ground level on load.
+    pub position: [f32; 3],
+    pub angle: f32,
+    pub initially_built: bool,
+    pub rebuilds: i32,
+    pub script: String,
+    pub health: i32,
+    pub whiner: bool,
+    pub unsellable: bool,
+    pub repairable: bool,
+}
+
+/// A side (`SidesList::addSide`): its player dictionary and build list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Side {
+    pub dict: Dict,
+    pub build_list: Vec<BuildListEntry>,
+}
+
+/// `SidesList` (`SidesList.cpp`), without the nested player scripts.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SidesList {
+    pub sides: Vec<Side>,
+    /// Team dictionaries (`teamName`, `teamOwner`, ...).
+    pub teams: Vec<Dict>,
+}
+
 /// A top-level chunk as found in the file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChunkSummary {
@@ -242,6 +274,7 @@ pub struct Map {
     pub objects: Vec<MapObject>,
     pub triggers: Vec<PolygonTrigger>,
     pub lighting: Option<Lighting>,
+    pub sides: SidesList,
     /// Every top-level chunk, in order.
     pub chunks: Vec<ChunkSummary>,
     /// Problems the original tolerates (debug asserts, patched indexes).
@@ -267,6 +300,7 @@ impl Map {
                 "ObjectsList" => map.parse_objects(&mut c, &toc)?,
                 "PolygonTriggers" => map.parse_triggers(&mut c, chunk.version)?,
                 "GlobalLighting" => map.parse_lighting(&mut c, chunk.version)?,
+                "SidesList" => map.parse_sides(&mut c, &toc, chunk.version)?,
                 _ => {}
             }
         }
@@ -446,6 +480,62 @@ impl Map {
                 continue;
             }
             self.objects.push(MapObject { position, angle, flags, name, properties });
+        }
+        Ok(())
+    }
+
+    /// `SidesList::ParseSidesDataChunk`. At most `MAX_PLAYER_COUNT` (16) sides are kept;
+    /// the `PlayerScriptsList` that follows is left for the script engine.
+    fn parse_sides(&mut self, r: &mut Reader, toc: &Toc, version: u16) -> Result<(), MapError> {
+        const MAX_PLAYER_COUNT: usize = 16;
+        let count = r.i32()?;
+        for i in 0..count.max(0) as usize {
+            if i >= MAX_PLAYER_COUNT {
+                // The original stops reading sides here (and fails on the rest).
+                self.warnings.push(format!("{count} sides: only {MAX_PLAYER_COUNT} are read"));
+                return Ok(());
+            }
+            let dict = r.dict(toc)?;
+            let n = r.i32()?;
+            let mut build_list = Vec::new();
+            for _ in 0..n.max(0) {
+                let building_name = r.ascii()?;
+                let template = r.ascii()?;
+                let position = [r.f32()?, r.f32()?, {
+                    r.f32()?;
+                    0.0
+                }];
+                let angle = r.f32()?;
+                let initially_built = r.u8()? != 0;
+                let rebuilds = r.i32()?;
+                let (script, health, whiner, unsellable, repairable) = if version >= 3 {
+                    (r.ascii()?, r.i32()?, r.u8()? != 0, r.u8()? != 0, r.u8()? != 0)
+                } else {
+                    // BuildListInfo defaults.
+                    (String::new(), 100, true, false, true)
+                };
+                build_list.push(BuildListEntry {
+                    building_name,
+                    template,
+                    position,
+                    angle,
+                    initially_built,
+                    rebuilds,
+                    script,
+                    health,
+                    whiner,
+                    unsellable,
+                    repairable,
+                });
+            }
+            self.sides.sides.push(Side { dict, build_list });
+        }
+        if version >= 2 {
+            let n = r.i32()?;
+            for _ in 0..n.max(0) {
+                let d = r.dict(toc)?;
+                self.sides.teams.push(d);
+            }
         }
         Ok(())
     }
@@ -737,5 +827,51 @@ mod tests {
         assert_eq!(o.position, [10.0, 20.0, 5.0]);
         assert_eq!(o.properties.ascii("objectName"), Some("Hi"));
         assert!(map.warnings.is_empty(), "{:?}", map.warnings);
+    }
+
+    #[test]
+    fn sides_build_lists_and_teams() {
+        let mut w = W { names: vec![], out: vec![] };
+        let s = |b: &mut Vec<u8>, v: &str| {
+            b.extend_from_slice(&(v.len() as u16).to_le_bytes());
+            b.extend_from_slice(v.as_bytes());
+        };
+        let player = w.id("playerName");
+        let (team, owner) = (w.id("teamName"), w.id("teamOwner"));
+        let mut b = Vec::new();
+        b.extend_from_slice(&i(1));
+        // Side dict: playerName = "civilian"
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&i(((player as i32) << 8) | 3));
+        s(&mut b, "civilian");
+        // One build-list entry (version 3 fields).
+        b.extend_from_slice(&i(1));
+        s(&mut b, "Barracks 1");
+        s(&mut b, "AmericaBarracks");
+        for f in [100.0f32, 200.0, 7.0, 0.5] {
+            b.extend_from_slice(&f.to_le_bytes());
+        }
+        b.push(1);
+        b.extend_from_slice(&i(2));
+        s(&mut b, "");
+        b.extend_from_slice(&i(75));
+        b.extend_from_slice(&[0, 1, 0]);
+        // One team.
+        b.extend_from_slice(&i(1));
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&i(((team as i32) << 8) | 3));
+        s(&mut b, "teamCivilian");
+        b.extend_from_slice(&i(((owner as i32) << 8) | 3));
+        s(&mut b, "civilian");
+        w.chunk("SidesList", 3, &b);
+        let map = Map::parse(&w.finish()).unwrap();
+        let sides = &map.sides;
+        assert_eq!(sides.sides.len(), 1);
+        assert_eq!(sides.sides[0].dict.ascii("playerName"), Some("civilian"));
+        let e = &sides.sides[0].build_list[0];
+        assert_eq!((e.template.as_str(), e.position, e.angle), ("AmericaBarracks", [100.0, 200.0, 0.0], 0.5));
+        assert_eq!((e.initially_built, e.rebuilds, e.health), (true, 2, 75));
+        assert_eq!((e.whiner, e.unsellable, e.repairable), (false, true, false));
+        assert_eq!(sides.teams[0].ascii("teamOwner"), Some("civilian"));
     }
 }

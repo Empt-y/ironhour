@@ -2,7 +2,9 @@
 pub mod ai;
 pub mod bridges;
 pub mod disabled;
+pub mod footprint;
 pub mod locomotion;
+pub mod map_objects;
 pub mod navigation;
 pub mod partition;
 pub mod rng;

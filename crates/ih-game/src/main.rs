@@ -194,10 +194,10 @@ impl App {
         );
         let mut camera = TacticalCamera::new(self.world.playable_bounds(), &self.defs);
         if let Some(sim) = &simulation
-            && !sim.objects.is_empty()
+            && sim.objects.values().any(|o| o.map_index.is_none())
         {
             let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-            for o in sim.objects.values() {
+            for o in sim.objects.values().filter(|o| o.map_index.is_none()) {
                 let p = Vec2::new(o.position[0], o.position[1]);
                 lo = lo.min(p);
                 hi = hi.max(p);
@@ -479,6 +479,7 @@ impl ApplicationHandler for App {
                         s.selected = sim
                             .objects
                             .values()
+                            .filter(|o| o.map_index.is_none())
                             .filter_map(|o| {
                                 let p = vp * glam::Vec3::from(o.position).extend(1.0);
                                 if p.w <= 0.0 {

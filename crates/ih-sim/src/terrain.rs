@@ -3,6 +3,7 @@
 //! their ground cells when the deck has at least ten units of vertical clearance.
 use crate::{
     bridges::Bridge,
+    footprint::Obstacles,
     navigation::{CELL, Grid},
     templates::Templates,
     zones::{NO_ZONE, ZoneCache, ZoneSummary},
@@ -38,6 +39,8 @@ pub struct BridgeLayer {
 pub struct Terrain {
     pub ground: Grid,
     pub layers: Vec<BridgeLayer>,
+    /// Obstacle cells under the map's structures (`footprint`).
+    pub obstacles: Obstacles,
     nodes: Vec<(u32, i32, i32)>,
     zones: ZoneCache,
 }
@@ -60,7 +63,19 @@ impl Deref for Terrain {
 }
 impl Terrain {
     pub fn from_map(map: &Map, templates: &Templates) -> Self {
-        Self::new(Grid::from_map(map, templates), templates.bridges.clone(), map)
+        // Terrain and bridges first (`TheAI->pathfinder()->newMap`), then each map
+        // object as it is created (`addObjectToPathfindMap`).
+        let mut t = Self::new(Grid::from_map(map), templates.bridges.clone(), map);
+        for p in crate::map_objects::placements(map, templates) {
+            let template = &templates.objects[&p.template];
+            let key = p.index as u32 + 1;
+            if let Some(f) =
+                crate::map_objects::footprint(template, [p.position[0], p.position[1]], p.angle, p.position[2], key)
+            {
+                t.obstacles.insert(&mut t.ground, &f);
+            }
+        }
+        t
     }
     pub fn new(mut ground: Grid, bridges: Vec<Bridge>, map: &Map) -> Self {
         let mut nodes: Vec<_> = (0..ground.height).flat_map(|y| (0..ground.width).map(move |x| (0, x, y))).collect();
@@ -89,7 +104,8 @@ impl Terrain {
             }
             layers.push(BridgeLayer { bridge, cells });
         }
-        Self { ground, layers, nodes, zones: ZoneCache::default() }
+        let obstacles = Obstacles::new(&ground);
+        Self { ground, layers, obstacles, nodes, zones: ZoneCache::default() }
     }
     pub(crate) fn node_coordinates(&self) -> &[(u32, i32, i32)] {
         &self.nodes

@@ -24,6 +24,20 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
         a.grid.blocked.iter().filter(|b| **b).count(),
         a.grid.layers.len()
     );
+    {
+        use ih_sim::footprint::CellType;
+        let o = &a.grid.obstacles;
+        let mut fates = std::collections::BTreeMap::new();
+        for m in &a.map.objects {
+            *fates.entry(ih_sim::map_objects::fate(m, &a.templates)).or_insert(0usize) += 1;
+        }
+        eprintln!(
+            "map objects: {fates:?}; obstacle cells {}, pinched shut {}, border pinched {}",
+            o.count(CellType::Obstacle),
+            o.count(CellType::Impassable),
+            o.pinched.iter().filter(|p| **p).count()
+        );
+    }
     let mut trace = trace
         .map(|p| -> Result<_> {
             if let Some(parent) = p.parent() {

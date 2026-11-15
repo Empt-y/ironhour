@@ -172,7 +172,7 @@ cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml --smoke
   `NO_COLLIDE` objects do not block. A waiting unit displays idle art.
 - Spawn/move/stop/destroy commands, integer time accumulation, spatial buckets,
   canonical versioned state hashes covering pending commands and scheduler order.
-  State-hash format v8 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
+  State-hash format v9 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
   facing targets and disabled masks/deadlines, along with previous movement state.
   Earlier hash logs are obsolete and need regenerating.
 - Movement AI states use the original IDs for idle, move-to, follow-path,
@@ -190,7 +190,7 @@ cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml --smoke
 ## Verification and remaining work
 
 All sixteen stock and Contra scenarios replay every tick twice with matching state
-hashes (v8), finish every order, never overlap ground bodies and complete their
+hashes (v9) with every map object loaded, finish every order, never overlap ground bodies and complete their
 required bridge crossings; `PORTING.md` lists the final hashes. Asset-free
 fixtures (ground, bridge deck, head-on traffic, AI/status) assert fixed hashes in
 the Windows/Linux/macOS CI matrix, so the simulation is checked for cross-platform
@@ -199,15 +199,16 @@ equality there. Runs on installed game data have only been made on Windows.
 Movement now uses ports of the original code: the ground and hover/wings
 locomotors with lift, `PhysicsBehavior` forces and friction, path following by
 `computePointOnPath`, collisions with the original blocked/stuck logic, moving out
-of the way, crushing and `fixInvalidPosition`. Drawables pick their model,
+of the way, crushing and `fixInvalidPosition`. The map's own objects are created
+as the game creates them, with owners from the map's teams, and its structures
+mark obstacle cells (`classifyObjectFootprint`) that units route around. Drawables pick their model,
 animation and visible sub-objects from condition flags as `W3DModelDraw` does.
 `PORTING.md` lists every remaining stand-in.
 
 Still to come in M4: thrust locomotors and airfields, multi-surface and crusher
 zone tables with incremental updates, bridge damage and repair, formations,
 narrow-phase shapes instead of bounding circles, the combat/guard/transport/mood
-AI states, disabled side effects, creating the map's own objects in the
-simulation, and turrets, recoil and weapon bones on drawables. Combat, economy
+AI states, disabled side effects, landmark bridges and map object properties, and turrets, recoil and weapon bones on drawables. Combat, economy
 and construction are M5.
 
 ## Review checklist
@@ -232,6 +233,8 @@ Things only you can judge, in the window (`cargo run --release -p ih-game --
 7. Right-click orders: units turn, accelerate and stop the way you remember from
    the game. Anything that feels off is worth a note, with the map and roughly
    where.
+8. Buildings: units drive around the map's buildings instead of through them.
+   Note any that clip a corner or refuse a gap they should fit through.
 
 ## Moving out of the way and crushing
 

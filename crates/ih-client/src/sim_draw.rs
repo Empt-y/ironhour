@@ -144,7 +144,9 @@ impl SimDrawables {
     ) {
         scene.instances.truncate(self.static_instances);
         self.objects.retain(|id, _| sim.objects.contains_key(id));
-        for o in sim.objects.values() {
+        // The map's own objects are still drawn by the static scene (they cannot
+        // change until M5), so only objects created by commands or scenarios draw here.
+        for o in sim.objects.values().filter(|o| o.map_index.is_none()) {
             let Some(td) = self.templates.get(&o.template) else { continue };
             let flags = self.flags_for(o);
             let entry = self.objects.entry(o.id).or_insert_with(|| ObjectDraw {
