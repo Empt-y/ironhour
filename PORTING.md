@@ -354,31 +354,51 @@ Deviations until the missing systems exist, each marked in the code:
   look-ahead to the next path segment (the original skips it when very close).
 - Off-centre pivot turning goes through the same clipping as the rest of the step.
 - Not ported yet: damage-state speed/turn penalties, bouncing, pitch/roll/yaw,
-  falling damage, air/hover/wings/thrust/climber locomotors and `ZAxisBehavior`
-  other than resting on the ground. `HOVER`, `THRUST`, `WINGS` and `CLIMBER`
-  ground movement uses the `OTHER` model.
+  falling damage, and the thrust and climber locomotors (see air locomotion below).
 - `ih-tools sim-run --watch ID [--watch-every N]` prints one object's movement
   state every N frames (default 15); `sim-run` also reports crushes and move-asides.
 
-All fourteen scenarios pass with v7 hashes (every-tick replay equality, no
+Air locomotion (state hash v8), from `Locomotor.cpp`, `PhysicsUpdate.cpp`,
+`AIUpdate.cpp` and `Thing.cpp`:
+
+- `HOVER` (helicopters) and `WINGS` (fixed-wing flight) steer in 2D as `OTHER`
+  does; `AllowAirborneMotiveForce` gates motive force once airborne (higher than
+  three frames of falling, `-9 * Gravity`); airborne flyers are never blocked.
+- `handleBehaviorZ` for every `ZAxisBehavior` and `calcLiftToUseAtPt`: lift toward
+  `PreferredHeight` over the surface (water where the point is in a water area),
+  with `PreferredHeightDamping`, `SpeedLimitZ` and `Lift`.
+- `locoUpdate_maintainCurrentPosition` for hover (brake to a stop) and wings
+  (circle the held position at `CirclingRadius` or the minimum turn radius);
+  flyers keep calling it while idle, so they stay up (`doLocomotor`).
+- Aerodynamic friction (`AerodynamicFriction`) instead of ground friction when
+  significantly above the terrain, unless `Apply2DFrictionWhenAirborne`.
+- Flyers take straight paths (`computeQuickPath`) and are not collided with ground
+  units. `map-render --at X,Y,Z` aims the camera at a height.
+- Not yet: `THRUST` (needs pitch/roll orientation), airfield take-off and landing
+  (`JetAIUpdate`), the `CIRCLE_FOR_LANDING` code path, `ULTRA_ACCURATE`, damage-state
+  lift, and the over-water model condition. `THRUST` and `CLIMBER` use `OTHER`.
+
+All sixteen scenarios pass with v8 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `8890b2e94036cc18` | `dad945a5f61bde9f` |
-| AI/status orders | `346ef704b8d1e187` | `0a7df79f6788bfea` |
-| Bridges | `08391e0ac9bc1e81` | `c7676cae944eed22` |
-| Traffic, Tournament Desert (one move-aside each) | `faecd6efbb0a34dd` | `c60b7d5e669a59b7` |
-| Traffic, Winding River | `e42e0da698af6360` | `d0c02bc7475ead52` |
-| Long map travel | `2fce2fab1ba1961f` | `842c52c64e964722` |
-| Crusader through an enemy Ranger (crushed at frame 131) | `eaf7c20f02e28bfb` | |
-| Crusader through an allied Ranger (steps aside) | `9c5f8ac52f1b512f` | |
+| Desert (`m4-desert` / `m4-contra`) | `6670381116b5d301` | `ff7ccd746556c99c` |
+| AI/status orders | `7822880c98fc0b0a` | `52cf70ec95244921` |
+| Bridges | `39bb58a68e90d5b8` | `84a08e174514be9f` |
+| Traffic, Tournament Desert (one move-aside each) | `0e3283163999665c` | `1102fe478f6b3872` |
+| Traffic, Winding River | `04457882986a86c1` | `09406607b2846817` |
+| Long map travel | `6c420f15d5dd523e` | `5e09e4aba3699b78` |
+| Crusader through an enemy Ranger (crushed at frame 131) | `569df12760e2c34a` | |
+| Crusader through an allied Ranger (steps aside) | `f411dd90ca356012` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `c95cfb50d77e94d1` | `9235cd4d3ed46e88` |
 
-Asset-free fixtures: `5f5f68319f62cf7f` (ground), `5f866c9f7c83c1b5`
-(bridge/deck stop), `6a39c8d0cf2cd386` (head-on traffic, resolved by a
-move-aside), `19c96d8f45ef7ec6` (AI/status orders). Unit tests also cover a tank
-squishing enemy infantry and allied infantry stepping aside. The v4 hashes below
-are superseded and kept as history.
+Asset-free fixtures: `da1e14a1ec06fdce` (ground), `162e800bc2eb8fd8`
+(bridge/deck stop), `e7b6cd77d8dcf719` (head-on traffic, resolved by a
+move-aside), `8cf1519746aab6ff` (AI/status orders). Unit tests also cover a tank
+squishing enemy infantry, allied infantry stepping aside, and a hovering body
+climbing to and holding its preferred height (over ground and water). The v4
+hashes below are superseded and kept as history.
 
 ### Verification (v4, before the locomotion port)
 
@@ -482,7 +502,7 @@ shadows and track marks.
 
 Multi-surface/crusher zone tables and incremental zone updates, bridge damage/destruction/repair,
 full traffic/formation and collision handling,
-air/hover/thrust locomotors, the physics and traffic pieces listed above (vehicle crush damage, moveAllies, overlap handling), combat/guard/transport/mood/temporary AI states,
+thrust locomotors and airfields, the physics and traffic pieces listed above (vehicle crush damage, moveAllies, overlap handling), combat/guard/transport/mood/temporary AI states,
 disabled gameplay side effects,
 map-wide object lifecycle, and the drawable pieces listed above (turrets, recoil, bones). Traffic uses the ported blocked/stuck, move-aside and crush logic on bounding circles;
 shape narrow-phase and crowded bottleneck recovery remain pending. Occupied goals/routes

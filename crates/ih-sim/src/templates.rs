@@ -48,11 +48,15 @@ impl Template {
 }
 
 /// `LocomotorAppearance`, reduced to the ground movement models ported so far.
-/// `HOVER`, `THRUST`, `WINGS` and `CLIMBER` use `Other` until their own ports.
+/// `THRUST` and `CLIMBER` use `Other` until their own ports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Appearance {
     /// `TWO_LEGS`.
     Legs,
+    /// `HOVER`: helicopters.
+    Hover,
+    /// `WINGS`: fixed-wing flight once airborne.
+    Wings,
     /// `FOUR_WHEELS` and `MOTORCYCLE`.
     Wheels,
     Treads,
@@ -83,6 +87,35 @@ pub struct Locomotor {
     pub downhill_only: bool,
     pub wander_width_factor: f32,
     pub wander_length_factor: f32,
+    /// `Lift`, per frame squared.
+    pub lift: f32,
+    pub preferred_height: f32,
+    pub preferred_height_damping: f32,
+    /// `SpeedLimitZ`, per frame.
+    pub speed_limit_z: f32,
+    pub behavior_z: BehaviorZ,
+    pub circling_radius: f32,
+    pub allow_airborne_motive_force: bool,
+    pub apply_2d_friction_when_airborne: bool,
+}
+
+/// `LocomotorBehaviorZ` (`TheLocomotorBehaviorZNames`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BehaviorZ {
+    #[default]
+    NoZMotiveForce,
+    SeaLevel,
+    SurfaceRelativeHeight,
+    AbsoluteHeight,
+    FixedSurfaceRelativeHeight,
+    FixedAbsoluteHeight,
+    FixedRelativeToGroundAndBuildings,
+    RelativeToHighestLayer,
+}
+impl Locomotor {
+    pub fn air(&self) -> bool {
+        self.surfaces.iter().any(|s| s == "AIR")
+    }
 }
 
 /// `PhysicsBehaviorModuleData` fields the ground integrator uses; frictions per frame.
@@ -92,12 +125,14 @@ pub struct PhysicsData {
     pub forward_friction: f32,
     pub lateral_friction: f32,
     pub z_friction: f32,
+    /// `AerodynamicFriction`, per frame.
+    pub aerodynamic_friction: f32,
 }
 
 impl Default for PhysicsData {
     /// `DEFAULT_MASS` and the `DEFAULT_*_FRICTION` constants (already per frame).
     fn default() -> Self {
-        Self { mass: 1.0, forward_friction: 0.15, lateral_friction: 0.15, z_friction: 0.8 }
+        Self { mass: 1.0, forward_friction: 0.15, lateral_friction: 0.15, z_friction: 0.8, aerodynamic_friction: 0.0 }
     }
 }
 
@@ -116,6 +151,7 @@ impl Template {
                 "ForwardFriction" => d.forward_friction = v / 30.0,
                 "LateralFriction" => d.lateral_friction = v / 30.0,
                 "ZFriction" => d.z_friction = v / 30.0,
+                "AerodynamicFriction" => d.aerodynamic_friction = v / 30.0,
                 _ => {}
             }
         }
@@ -190,6 +226,8 @@ impl Templates {
                     turn_rate: number("TurnRate", 0.0) * (std::f32::consts::PI / 180.0) / 30.0,
                     appearance: match fields.get("Appearance").and_then(|v| v.first()).map(String::as_str) {
                         Some("TWO_LEGS") => Appearance::Legs,
+                        Some("HOVER") => Appearance::Hover,
+                        Some("WINGS") => Appearance::Wings,
                         Some("FOUR_WHEELS" | "MOTORCYCLE") => Appearance::Wheels,
                         Some("TREADS") => Appearance::Treads,
                         _ => Appearance::Other,
@@ -206,6 +244,27 @@ impl Templates {
                     downhill_only: flag("DownhillOnly"),
                     wander_width_factor: number("WanderWidthFactor", 0.0),
                     wander_length_factor: number("WanderLengthFactor", 1.0),
+                    lift: number("Lift", 0.0) / 900.0,
+                    preferred_height: number("PreferredHeight", 0.0),
+                    preferred_height_damping: number("PreferredHeightDamping", 1.0),
+                    speed_limit_z: if fields.contains_key("SpeedLimitZ") {
+                        number("SpeedLimitZ", 0.0) / 30.0
+                    } else {
+                        999_999.0
+                    },
+                    behavior_z: match fields.get("ZAxisBehavior").and_then(|v| v.first()).map(String::as_str) {
+                        Some("SEA_LEVEL") => BehaviorZ::SeaLevel,
+                        Some("SURFACE_RELATIVE_HEIGHT") => BehaviorZ::SurfaceRelativeHeight,
+                        Some("ABSOLUTE_HEIGHT") => BehaviorZ::AbsoluteHeight,
+                        Some("FIXED_SURFACE_RELATIVE_HEIGHT") => BehaviorZ::FixedSurfaceRelativeHeight,
+                        Some("FIXED_ABSOLUTE_HEIGHT") => BehaviorZ::FixedAbsoluteHeight,
+                        Some("FIXED_RELATIVE_TO_GROUND_AND_BUILDINGS") => BehaviorZ::FixedRelativeToGroundAndBuildings,
+                        Some("RELATIVE_TO_HIGHEST_LAYER") => BehaviorZ::RelativeToHighestLayer,
+                        _ => BehaviorZ::NoZMotiveForce,
+                    },
+                    circling_radius: number("CirclingRadius", 0.0),
+                    allow_airborne_motive_force: flag("AllowAirborneMotiveForce"),
+                    apply_2d_friction_when_airborne: flag("Apply2DFrictionWhenAirborne"),
                 },
             );
         }

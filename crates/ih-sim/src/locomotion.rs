@@ -16,7 +16,7 @@
 //! hover, wings, thrust and climber locomotors, and `ZAxisBehavior` other than
 //! resting on the ground.
 
-use crate::templates::{Appearance, Locomotor, PhysicsData};
+use crate::templates::{Appearance, BehaviorZ, Locomotor, PhysicsData};
 
 /// `PATHFIND_CELL_SIZE_F`.
 pub const CELL: f32 = 10.0;
@@ -41,6 +41,8 @@ pub struct Physics {
     /// `m_extraFriction` from the locomotor (`Extra2DFriction`).
     pub extra_friction: f32,
     pub stick_to_ground: bool,
+    /// `Apply2DFrictionWhenAirborne`.
+    pub airborne_friction: bool,
     /// The template's `PhysicsBehavior` data.
     pub data: PhysicsData,
 }
@@ -56,6 +58,8 @@ pub struct LocoState {
     pub angle_offset: f32,
     pub offset_increment: f32,
     pub offset_increasing: bool,
+    /// `m_maintainPos` (`MAINTAIN_POS_IS_VALID` when set).
+    pub maintain_pos: Option<[f32; 3]>,
 }
 
 impl LocoState {
@@ -74,8 +78,17 @@ impl LocoState {
             angle_offset,
             offset_increment,
             offset_increasing,
+            maintain_pos: None,
         }
     }
+}
+
+/// Surface heights under a body: the layer it is on (`getLayerHeight`) and the
+/// surface it would hover over (water where it is underwater, `getSurfaceHtAtPt`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Heights {
+    pub ground: f32,
+    pub surface: f32,
 }
 
 /// The parts of an object the locomotor and physics read and write.
@@ -210,6 +223,7 @@ impl Body<'_> {
     /// `locoUpdate_moveTowardsPosition` for ground locomotors. `valid` is
     /// `validMovementTerrain` on the object's layer. Returns the braking slide to
     /// add to this frame's displacement.
+    #[allow(clippy::too_many_arguments)]
     pub fn move_towards_position(
         &mut self,
         l: &Locomotor,
@@ -218,7 +232,9 @@ impl Body<'_> {
         mut desired_speed: f32,
         blocked: &mut bool,
         valid: &dyn Fn([f32; 2]) -> bool,
+        z: Heights,
     ) -> [f32; 2] {
+        self.loco.maintain_pos = None;
         let max_speed = l.speed;
         desired_speed = desired_speed.min(max_speed);
         let stop_at_max = (max_speed / l.braking) * max_speed / 2.0;
@@ -227,7 +243,7 @@ impl Body<'_> {
             self.loco.braking_factor = 1.0;
         }
         // Ground bodies that have ended up on invalid terrain are pushed back first.
-        if !valid([self.position[0], self.position[1]]) && self.fix_invalid_position(valid) {
+        if !l.air() && !valid([self.position[0], self.position[1]]) && self.fix_invalid_position(valid) {
             return [0.0; 2];
         }
         let (dx, dy) = (goal[0] - self.position[0], goal[1] - self.position[1]);
@@ -238,8 +254,10 @@ impl Body<'_> {
             }
             on_path_dist = dist;
         }
+        // High enough to stay up for three frames: airborne.
+        let airborne = self.position[2] - z.ground > -9.0 * DEFAULT_GRAVITY;
         self.apply_motive_force([0.0; 3]);
-        if *blocked && desired_speed > self.velocity_magnitude() {
+        if *blocked && (desired_speed > self.velocity_magnitude() || (airborne && l.air())) {
             *blocked = false;
         }
         if *blocked {
@@ -250,16 +268,25 @@ impl Body<'_> {
                 let rel = self.rotate_around_pivot(l, [goal[0], goal[1]], l.turn_rate);
                 *blocked = rel.abs() > l.turn_rate;
             }
+            self.handle_behavior_z(l, goal, z);
             return [0.0; 2];
         }
-        let was_braking = self.physics.braking_status;
-        match l.appearance {
-            Appearance::Treads => self.treads(l, goal, on_path_dist, desired_speed),
-            Appearance::Wheels => self.wheels(l, goal, on_path_dist, desired_speed, valid),
-            Appearance::Legs => self.legs(l, goal, on_path_dist, desired_speed),
-            Appearance::Other => self.other(l, goal, on_path_dist, desired_speed),
+        if l.appearance == Appearance::Wings {
+            self.loco.is_braking = false;
         }
-        // Ground ZAxisBehavior: physics keeps the body on the surface.
+        let was_braking = self.physics.braking_status;
+        if l.allow_airborne_motive_force || !airborne {
+            match l.appearance {
+                Appearance::Treads => self.treads(l, goal, on_path_dist, desired_speed),
+                Appearance::Wheels => self.wheels(l, goal, on_path_dist, desired_speed, valid),
+                Appearance::Legs => self.legs(l, goal, on_path_dist, desired_speed),
+                // moveTowardsPositionHover and ...Wings handle the 2D part as OTHER does.
+                Appearance::Other | Appearance::Hover | Appearance::Wings => {
+                    self.other(l, goal, on_path_dist, desired_speed)
+                }
+            }
+        }
+        self.handle_behavior_z(l, goal, z);
         self.physics.braking_status = self.loco.is_braking;
         if was_braking && dist > 0.001 {
             // MIN_VEL: one cell per second.
@@ -498,24 +525,161 @@ impl Body<'_> {
     }
 
     /// `locoUpdate_maintainCurrentPosition` for ground locomotors.
-    pub fn maintain_current_position(&mut self) {
+    /// Returns whether it must keep being called (hovering or circling).
+    pub fn maintain_current_position(&mut self, l: &Locomotor, z: Heights) -> bool {
+        let pos = *self.maintain_pos_or_here();
         self.loco.donut_timer = self.frame + DONUT_FRAMES;
         self.loco.is_braking = false;
-        if self.is_motive() {
-            self.scrub_velocity_2d(0.0);
+        let mut constant = match l.appearance {
+            Appearance::Hover => {
+                self.maintain_hover(l);
+                true
+            }
+            Appearance::Wings => {
+                self.maintain_wings(l, pos, z);
+                true
+            }
+            _ => {
+                if self.is_motive() {
+                    self.scrub_velocity_2d(0.0);
+                }
+                l.appearance == Appearance::Other
+            }
+        };
+        if self.handle_behavior_z(l, pos, z) {
+            constant = true;
         }
+        constant
+    }
+
+    fn maintain_pos_or_here(&mut self) -> &[f32; 3] {
+        let here = *self.position;
+        self.loco.maintain_pos.get_or_insert(here)
+    }
+
+    /// `maintainCurrentPositionHover`: brake to a stop.
+    fn maintain_hover(&mut self, l: &Locomotor) {
+        if !self.is_motive() {
+            return;
+        }
+        let min_speed = l.min_speed.max(1.0e-10);
+        let actual = self.forward_speed_2d();
+        let delta = min_speed - actual;
+        if delta.abs() > min_speed {
+            let mass = self.physics.data.mass;
+            let a = if delta > 0.0 { l.acceleration } else { -l.braking };
+            let mut force = mass * a;
+            if force.abs() > (mass * delta).abs() {
+                force = mass * delta;
+            }
+            let d = dir(*self.angle);
+            self.apply_motive_force([force * d[0], force * d[1], 0.0]);
+        }
+    }
+
+    /// `maintainCurrentPositionWings`: circle the maintain position.
+    fn maintain_wings(&mut self, l: &Locomotor, pos: [f32; 3], z: Heights) {
+        if !(self.is_motive() && self.position[2] > z.ground) {
+            return;
+        }
+        let mut radius = l.circling_radius;
+        if radius == 0.0 {
+            // calcMinTurnRadius
+            radius = if l.turn_rate > 0.0 { l.min_speed / l.turn_rate } else { 99999.0 };
+        }
+        let (dx, dy) = (pos[0] - self.position[0], pos[1] - self.position[1]);
+        let mut angle = if dx.abs() < 1e-4 && dy.abs() < 1e-4 { *self.angle } else { ih_math::atan2(dy, dx) };
+        let mut aim = std::f32::consts::PI - std::f32::consts::PI / 8.0;
+        if radius < 0.0 {
+            radius = -radius;
+            aim = -aim;
+        }
+        angle += aim;
+        let desired = [pos[0] + ih_math::cos(angle) * radius, pos[1] + ih_math::sin(angle) * radius, pos[2]];
+        self.other(l, desired, 0.0, l.min_speed);
+    }
+
+    /// `handleBehaviorZ`: true when the behaviour needs calling every frame.
+    fn handle_behavior_z(&mut self, l: &Locomotor, goal: [f32; 3], z: Heights) -> bool {
+        let pref = l.preferred_height;
+        match l.behavior_z {
+            BehaviorZ::NoZMotiveForce => false,
+            BehaviorZ::SeaLevel => {
+                self.position[2] = z.surface;
+                true
+            }
+            BehaviorZ::FixedSurfaceRelativeHeight => {
+                self.position[2] = pref + z.surface;
+                true
+            }
+            BehaviorZ::FixedAbsoluteHeight => {
+                self.position[2] = pref;
+                true
+            }
+            BehaviorZ::FixedRelativeToGroundAndBuildings => {
+                // Structure heights are not tracked yet: the ground alone.
+                self.position[2] = pref + z.ground;
+                true
+            }
+            BehaviorZ::SurfaceRelativeHeight | BehaviorZ::AbsoluteHeight | BehaviorZ::RelativeToHighestLayer => {
+                if pref != 0.0 {
+                    let surface = match l.behavior_z {
+                        BehaviorZ::SurfaceRelativeHeight => z.surface,
+                        BehaviorZ::RelativeToHighestLayer => z.ground,
+                        _ => 0.0,
+                    };
+                    let _ = goal;
+                    let cur = self.position[2];
+                    let preferred = cur + (pref + surface - cur) * l.preferred_height_damping;
+                    let lift = self.lift_to_use(l, cur, preferred);
+                    if lift != 0.0 {
+                        let mass = self.physics.data.mass;
+                        self.apply_motive_force([0.0, 0.0, lift * mass]);
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// `calcLiftToUseAtPt` (not ULTRA_ACCURATE).
+    fn lift_to_use(&self, l: &Locomotor, cur_z: f32, preferred: f32) -> f32 {
+        let gravity = DEFAULT_GRAVITY;
+        let max_net = (l.lift + gravity).max(0.0);
+        let vz = self.physics.vel[2];
+        let max_accel = if vz < 0.0 { max_net } else { gravity };
+        let desired = if max_accel.abs() > 0.001 {
+            let dz = preferred - cur_z;
+            let brake = vz * vz / max_accel.abs();
+            if brake.abs() > dz.abs() {
+                max_accel
+            } else if vz.abs() > l.speed_limit_z {
+                l.speed_limit_z - vz
+            } else {
+                2.0 * (dz - vz)
+            }
+        } else {
+            0.0
+        };
+        (desired - gravity).clamp(0.0, l.lift.max(0.0))
     }
 
     /// `PhysicsBehavior::update` for a body on the ground: gravity and friction,
     /// Euler integration, and the ground clamp. Returns the x/y displacement
     /// (none while braking) and sets z from `ground` at the new position.
-    pub fn physics_update(&mut self, gravity: f32, held: bool) -> [f32; 2] {
+    pub fn physics_update(&mut self, gravity: f32, held: bool, ground: f32) -> [f32; 2] {
         let mut step = [0.0; 2];
         if !held {
             self.physics.accel[2] += gravity;
-            // applyFrictionalForces, on the ground.
             let v = self.physics.vel;
-            if v[0] != 0.0 || v[1] != 0.0 {
+            let significantly_airborne = self.position[2] - ground > -9.0 * gravity;
+            if !self.physics.airborne_friction && significantly_airborne {
+                // applyFrictionalForces in the air: drag against the velocity.
+                let aero = -self.physics.data.aerodynamic_friction.clamp(0.0, MAX_FRICTION);
+                for (a, v) in self.physics.accel.iter_mut().zip(v) {
+                    *a += v * aero;
+                }
+            } else if v[0] != 0.0 || v[1] != 0.0 {
                 let d = dir(*self.angle);
                 let mass = self.physics.data.mass;
                 let lateral = v[0] * -d[1] + v[1] * d[0];
@@ -599,7 +763,7 @@ mod tests {
         b.apply_force([2.0, 3.0, 0.0]);
         assert_eq!(b.physics.accel, [0.0, 3.0, 0.0]);
         // Gravity accumulates in z; resting on the ground clamps it back.
-        let step = b.physics_update(DEFAULT_GRAVITY, false);
+        let step = b.physics_update(DEFAULT_GRAVITY, false, 0.0);
         assert_eq!(step[0], 0.0);
         b.clamp_to_ground(0.0);
         assert_eq!(b.position[2], 0.0);
@@ -643,5 +807,57 @@ mod fix_invalid_tests {
             frame: 0,
         };
         assert!(!b2.fix_invalid_position(&all));
+    }
+}
+
+#[cfg(test)]
+mod air_tests {
+    use super::*;
+    use crate::templates::Templates;
+    use ih_ini::definitions::Definitions;
+
+    #[test]
+    fn hover_lifts_to_and_holds_preferred_height() {
+        let mut d = Definitions::default();
+        d.add_document(ih_ini::parse(b"Locomotor H\nSurfaces = AIR\nSpeed = 120\nAcceleration = 60\nBraking = 60\nTurnRate = 90\nLift = 120\nPreferredHeight = 100\nZAxisBehavior = SURFACE_RELATIVE_HEIGHT\nAppearance = HOVER\nAllowAirborneMotiveForce = Yes\nEnd\n"));
+        let l = &Templates::from_definitions(&d).locomotors["H"];
+        assert_eq!(l.appearance, Appearance::Hover);
+        assert_eq!(l.behavior_z, BehaviorZ::SurfaceRelativeHeight);
+        let (mut pos, mut angle) = ([0.0, 0.0, 10.0], 0.0);
+        let mut p = Physics::default();
+        let mut s = LocoState::default();
+        let z = Heights { ground: 10.0, surface: 10.0 };
+        for frame in 0..300 {
+            let mut b = Body {
+                position: &mut pos,
+                angle: &mut angle,
+                physics: &mut p,
+                loco: &mut s,
+                major_radius: 1.0,
+                bounding_radius: 1.0,
+                frame,
+            };
+            assert!(b.maintain_current_position(l, z), "hovering needs calling every frame");
+            b.physics_update(DEFAULT_GRAVITY, false, z.ground);
+            b.clamp_to_ground(z.ground);
+        }
+        assert!((pos[2] - 110.0).abs() < 1.0, "{pos:?}");
+        // Water raises the surface it hovers over.
+        let wet = Heights { ground: 10.0, surface: 30.0 };
+        for frame in 300..600 {
+            let mut b = Body {
+                position: &mut pos,
+                angle: &mut angle,
+                physics: &mut p,
+                loco: &mut s,
+                major_radius: 1.0,
+                bounding_radius: 1.0,
+                frame,
+            };
+            b.maintain_current_position(l, wet);
+            b.physics_update(DEFAULT_GRAVITY, false, wet.ground);
+            b.clamp_to_ground(wet.ground);
+        }
+        assert!((pos[2] - 130.0).abs() < 1.0, "{pos:?}");
     }
 }

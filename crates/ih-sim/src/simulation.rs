@@ -249,6 +249,7 @@ impl Simulation {
                 // Locomotor::setPhysicsOptions
                 physics.extra_friction = l.extra_2d_friction;
                 physics.stick_to_ground = l.stick_to_ground;
+                physics.airborne_friction = l.apply_2d_friction_when_airborne;
                 LocoState::new(l, self.frame, &mut self.rng)
             }
             None => LocoState::default(),
@@ -368,21 +369,59 @@ impl Simulation {
             return Err(SimError(format!("object {id} is immobile or disabled")));
         }
         let l = t.locomotor().and_then(|n| self.templates.locomotors.get(n));
-        if l.is_none_or(|l| !l.ground() || l.speed <= 0.0 || (face && (l.min_speed != 0.0 || l.turn_rate <= 0.0)))
-            || !o.modules.iter().any(|m| m.kind == ModuleKind::Steering)
+        if l.is_none_or(|l| {
+            !(l.ground() || l.air()) || l.speed <= 0.0 || (face && (l.min_speed != 0.0 || l.turn_rate <= 0.0))
+        }) || !o.modules.iter().any(|m| m.kind == ModuleKind::Steering)
             || !o.modules.iter().any(|m| m.kind == ModuleKind::Physics)
         {
             return Err(SimError(format!(
-                "{} has no implemented ground {}",
+                "{} has no implemented {}",
                 o.template,
                 if face { "turning in place" } else { "movement" }
             )));
         }
         Ok(())
     }
+    /// Air-only locomotion (`LOCOMOTORSURFACE_AIR` without ground).
+    fn flyer(&self, id: u32) -> bool {
+        let o = &self.objects[&id];
+        self.templates.objects[&o.template]
+            .locomotor()
+            .and_then(|n| self.templates.locomotors.get(n))
+            .is_some_and(|l| l.air() && !l.ground())
+    }
+
+    /// `doLocomotor` with no goal: `locoUpdate_maintainCurrentPosition`. Hovering and
+    /// circling need it every frame; anything resting on the ground can sleep.
+    fn idle_locomotor(&mut self, id: u32) -> u32 {
+        let frame = self.frame;
+        let o = self.objects.get_mut(&id).unwrap();
+        let t = &self.templates.objects[&o.template];
+        let Some(l) = t.locomotor().and_then(|n| self.templates.locomotors.get(n)) else { return FOREVER };
+        if !l.air() {
+            return FOREVER;
+        }
+        let z = heights(&self.grid, &self.map, [o.position[0], o.position[1]], o.layer);
+        let constant = Body {
+            position: &mut o.position,
+            angle: &mut o.angle,
+            physics: &mut o.physics,
+            loco: &mut o.loco,
+            major_radius: 0.0,
+            bounding_radius: 0.0,
+            frame,
+        }
+        .maintain_current_position(l, z);
+        if constant { 1 } else { FOREVER }
+    }
+
     fn route_to(&self, id: u32, target: [f32; 2]) -> Result<VecDeque<Waypoint>, SimError> {
         let o = &self.objects[&id];
         let t = &self.templates.objects[&o.template];
+        if self.flyer(id) {
+            // canComputeQuickPath / computeQuickPath: flyers go straight to the goal.
+            return Ok(VecDeque::from([Waypoint { position: target, layer: 0 }]));
+        }
         self.grid
             .path(
                 Waypoint { position: [o.position[0], o.position[1]], layer: o.layer },
@@ -526,7 +565,7 @@ impl Simulation {
             return 1;
         }
         match o.ai.state {
-            AiState::Idle => return FOREVER,
+            AiState::Idle => return self.idle_locomotor(id),
             AiState::MoveTo | AiState::FollowPath => {
                 self.repath_traffic(id);
                 self.drive(id);
@@ -573,7 +612,16 @@ impl Simulation {
                 }
             }
         }
-        if self.objects[&id].ai.active() { 1 } else { FOREVER }
+        if self.objects[&id].ai.active() {
+            1
+        } else {
+            // doLocomotor keeps hovering and circling flyers going once idle.
+            let air = self.templates.objects[&self.objects[&id].template]
+                .locomotor()
+                .and_then(|n| self.templates.locomotors.get(n))
+                .is_some_and(|l| l.air());
+            if air { 1 } else { FOREVER }
+        }
     }
     /// `AIUpdateInterface::doLocomotor` for path following: collisions found last
     /// frame block this frame's drive, capped to how fast the blocker moves away.
@@ -667,6 +715,7 @@ impl Simulation {
         // and friction become velocity; the braking slide moves the body directly.
         let frame = self.frame;
         let (from, layer) = (o.position, o.layer);
+        let ground_here = self.grid.height_at(&self.map, Waypoint { position: [from[0], from[1]], layer });
         let velocity = {
             let o = self.objects.get_mut(&id).unwrap();
             let mut loco = o.loco;
@@ -679,7 +728,7 @@ impl Simulation {
                 bounding_radius: 0.0,
                 frame,
             };
-            let step = body.physics_update(crate::locomotion::DEFAULT_GRAVITY, false);
+            let step = body.physics_update(crate::locomotion::DEFAULT_GRAVITY, false, ground_here);
             let v = [step[0] + o.slide[0], step[1] + o.slide[1]];
             o.slide = [0.0; 2];
             v
@@ -1341,7 +1390,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(7);
+        h.u32(8);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1676,7 +1725,7 @@ fn steer(
             bounding_radius: radii.1,
             frame,
         };
-        body.maintain_current_position();
+        body.maintain_current_position(l, heights(grid, map, pos, o.layer));
         o.speed = 0.0;
         o.velocity = [0.0; 2];
         o.blocked_frames = 0;
@@ -1684,6 +1733,7 @@ fn steer(
         o.traffic.stuck = false;
         return;
     }
+    // Flyers take the straight line (`computeQuickPath`): their path is start and goal.
     let (goal, remaining, _) = point_on_path(o, grid, map, radii.2);
     let layer = o.layer;
     // validMovementTerrain: the cell under the point is passable on this layer.
@@ -1701,7 +1751,8 @@ fn steer(
         frame,
     };
     let before = [body.position[0], body.position[1]];
-    let slide = body.move_towards_position(l, goal, remaining, speed, blocked, &valid);
+    let z = heights(grid, map, before, layer);
+    let slide = body.move_towards_position(l, goal, remaining, speed, blocked, &valid, z);
     // Turning about an off-centre pivot moves the body; that motion goes through
     // the same collision clipping as the rest of this frame's displacement.
     let pivot = [o.position[0] - before[0], o.position[1] - before[1]];
@@ -1762,7 +1813,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x5f5f68319f62cf7f, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xda1e14a1ec06fdce, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -1941,7 +1992,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x6a39c8d0cf2cd386, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xe7b6cd77d8dcf719, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2027,7 +2078,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x5f866c9f7c83c1b5, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x162e800bc2eb8fd8, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {
@@ -2075,4 +2126,35 @@ fn segment_in_box(a: [f32; 2], b: [f32; 2], lo: [f32; 2], hi: [f32; 2]) -> bool 
         }
     }
     true
+}
+
+/// Heights under a body: its layer's surface and, over water, the water level
+/// (`TerrainLogic::isUnderwater`, water polygon areas).
+fn heights(grid: &Terrain, map: &Map, p: [f32; 2], layer: u32) -> crate::locomotion::Heights {
+    let ground = grid.height_at(map, Waypoint { position: p, layer });
+    let water = map
+        .triggers
+        .iter()
+        .filter(|t| t.is_water && t.points.len() > 2 && point_in_polygon(p, &t.points))
+        .map(|t| t.points[0][2] as f32)
+        .fold(None, |m: Option<f32>, z| Some(m.map_or(z, |m| m.max(z))));
+    let surface = match water {
+        Some(w) if w > ground => w,
+        _ => ground,
+    };
+    crate::locomotion::Heights { ground, surface }
+}
+
+fn point_in_polygon(p: [f32; 2], poly: &[[i32; 3]]) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[j]);
+        let (ax, ay, bx, by) = (a[0] as f32, a[1] as f32, b[0] as f32, b[1] as f32);
+        if (ay > p[1]) != (by > p[1]) && p[0] < (bx - ax) * (p[1] - ay) / (by - ay) + ax {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }

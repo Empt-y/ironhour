@@ -244,3 +244,14 @@ cargo run --release -p ih-game -- --scenario scenarios/m4-crush-ally.toml
 ```
 
 `sim-run` reports crushes as (frame, victim, crusher) and counts move-asides.
+
+## Helicopters
+
+A Comanche lifts off to its preferred height (100 above the ground; Contra's 70),
+flies out and back, and hovers at each goal:
+
+```powershell
+cargo run --release -p ih-tools -- sim-run scenarios/m4-air.toml --watch 1 --watch-every 60
+cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-air-contra.toml
+cargo run --release -p ih-game -- --scenario scenarios/m4-air.toml
+```

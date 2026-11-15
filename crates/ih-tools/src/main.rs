@@ -144,7 +144,7 @@ enum Cmd {
         width: u32,
         #[arg(long, default_value_t = 1000)]
         height: u32,
-        /// Camera target as world x,y (defaults to the map centre).
+        /// Camera target as world x,y[,z] (defaults to the map centre, on the ground).
         #[arg(long, value_delimiter = ',')]
         at: Option<Vec<f32>>,
         /// Distance from the target; defaults to fitting the whole map.
@@ -430,10 +430,13 @@ fn main() -> Result<()> {
             let t_build = t0.elapsed();
             let (lo, hi) = world.playable_bounds();
             let center = match at {
-                Some(v) if v.len() == 2 => glam::Vec2::new(v[0], v[1]),
+                Some(v) if v.len() >= 2 => glam::Vec2::new(v[0], v[1]),
                 _ => (glam::Vec2::from(lo) + glam::Vec2::from(hi)) * 0.5,
             };
-            let target = center.extend(world.ground_height(center.x, center.y));
+            // An optional third value is the height to aim at (default: the ground).
+            let target = center.extend(
+                at.as_ref().and_then(|v| v.get(2).copied()).unwrap_or_else(|| world.ground_height(center.x, center.y)),
+            );
             let fov_y = 50f32.to_radians();
             let dist = distance.unwrap_or_else(|| {
                 let extent = (glam::Vec2::from(hi) - glam::Vec2::from(lo)).length() * 0.5;

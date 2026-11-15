@@ -1,0 +1,23 @@
+# A Contra Comanche (AirF_AmericaVehicleComanche) lifts off to its preferred height, flies out and back over the
+# desert, and hovers at each goal.
+map = "Tournament Desert"
+seed = 42
+frames = 1200
+require_idle_at_end = true
+
+[[spawn]]
+template = "AirF_AmericaVehicleComanche"
+position = [1000.0, 900.0]
+owner = 1
+
+[[commands]]
+frame = 30
+kind = "move"
+object = 1
+target = [1500.0, 1200.0]
+
+[[commands]]
+frame = 600
+kind = "move"
+object = 1
+target = [1000.0, 900.0]
