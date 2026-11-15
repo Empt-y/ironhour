@@ -158,21 +158,21 @@ cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml --smoke
   connected searches. Transient traffic can trigger an unrestricted fallback.
   Zone caches are derived data, omitted from logic hashes; warming them does not
   change paths or simulation state. Static terrain edits must invalidate them.
-- Initial steering/ground integration uses parsed speed, acceleration, braking
-  and turn rate. It follows a path corridor while the body turns. This is not yet
-  the full original force, suspension and collision model.
-  Intermediate waypoints must be reached before the next turn; terrain-blocked
-  movement retries through the same repath pipeline as live traffic.
-- Live traffic uses geometry bounding circles, source ungrouped path priority
-  (dozers, vehicles, front unit, object-ID ties), blocked-frame accounting and
-  delayed transient-obstacle repathing. Physics updates partition buckets as
+- Movement uses the ported locomotors (treads, wheels, legs, other, hover, wings)
+  and `PhysicsBehavior` forces, friction, gravity and lift; path following aims at
+  the original `computePointOnPath` goal point, and `fixInvalidPosition` pushes
+  bodies off invalid cells. Suspension and pitch/roll are not modelled yet.
+- Live traffic uses geometry bounding circles with the original collision pass,
+  `processCollision`/`blockedBy` blocked and stuck logic, path priority (dozers,
+  vehicles, front unit, object-ID ties), moving out of the way, crushing and
+  repathing when stuck. Physics updates partition buckets as
   each position commits, so later updates in the same tick see current positions.
-  Swept disc clipping prevents tunnelling and overlap while this initial corridor
-  integrator is in use. Deck/underpass traffic is separated by vertical geometry;
+  Swept disc clipping prevents tunnelling and overlap (sliding along contacts);
+  the original lets bodies overlap slightly. Deck/underpass traffic is separated by vertical geometry;
   `NO_COLLIDE` objects do not block. A waiting unit displays idle art.
 - Spawn/move/stop/destroy commands, integer time accumulation, spatial buckets,
   canonical versioned state hashes covering pending commands and scheduler order.
-  State-hash format v4 includes AI states, queued path points, outcomes/counters,
+  State-hash format v8 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
   facing targets and disabled masks/deadlines, along with previous movement state.
   Earlier hash logs are obsolete and need regenerating.
 - Movement AI states use the original IDs for idle, move-to, follow-path,
@@ -181,55 +181,57 @@ cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml --smoke
   is reported as failure, and `require_no_failed_orders` defaults to true.
 - Disabled module eligibility follows the source's any-intersection mask rule:
   AI callbacks allow HELD, physics callbacks allow all reasons. Active ground
-  actions are suspended while disabled in this integrator. This is separate from
+  actions are suspended while disabled (horizontal drive stops at once). This is separate from
   the stored AI action, so clearing a timer does not discard its order.
-- Render-only interpolation, idle/MOVING art and animations, selection and ground
+- Render-only interpolation, model condition states (`W3DModelDraw` best match,
+  transitions, animation modes, hidden sub-objects), selection and ground
   picking. Background/minimised scenario windows continue logic without drawing.
 
 ## Verification and remaining work
 
-Stock and Contra command logs each complete all orders with every-tick replay
-hash equality locally. The tests include a fixed synthetic movement hash that
-also runs in the existing Windows/Linux/macOS CI matrix without game assets.
-Cross-platform runtime equality on installed game data has not yet been exercised.
-Locally, all 110 workspace tests pass, including fixed ground, bridge, traffic and AI/status hashes
-in debug/release. Stock and Contra bridge replays complete both crossings, with
-every-tick equality and no rejected or unfinished orders. Hidden-window bridge
-smoke checks pass; the stock crossing still was inspected offscreen. Contra's
-Winding River reports a missing scenery model `CBOldMslm_B`, which remains a
-visible asset warning.
-The four traffic scenarios complete all orders over 1,800 ticks, with no overlaps
-at any checked frame and matching replay hashes. Both bridge runs complete two
-opposite-end traversals past a parked vehicle. Offscreen traffic stills were
-inspected. Native scenario cameras initially frame all spawned units.
-Hierarchy checks cover disconnected-goal rejection, reduced fine search work,
-traffic corridor fallback, footprint-specific connectivity, cache invalidation,
-clone isolation and seeded-grid reachability against unrestricted search. Cache
-warmup leaves simulation hashes and movement unchanged.
-Both long-route scenarios complete with every-tick replay equality and no overlaps
-or rejected orders. The stock unit traverses two bridges; Contra uses one.
-Both AI/status scenarios complete all orders with every-tick equality and all
-twenty-four checkpoints passing across stock and Contra.
-Disabled/final facing renders were inspected; both AI/status native hidden-window
-surface, resize, rendering and encountered-checkpoint checks pass.
+All sixteen stock and Contra scenarios replay every tick twice with matching state
+hashes (v8), finish every order, never overlap ground bodies and complete their
+required bridge crossings; `PORTING.md` lists the final hashes. Asset-free
+fixtures (ground, bridge deck, head-on traffic, AI/status) assert fixed hashes in
+the Windows/Linux/macOS CI matrix, so the simulation is checked for cross-platform
+equality there. Runs on installed game data have only been made on Windows.
 
-The traffic slice is conservative circle avoidance, not complete retail collision
-parity. Rectangle narrow-phase contacts, collision forces, crushing, formations,
-allied move-away requests and crowded bottleneck deadlock recovery remain pending.
-An occupied destination or a route with no passing room stays pending until space
-becomes available; this slice does not silently move parked units out of the way.
+Movement now uses ports of the original code: the ground and hover/wings
+locomotors with lift, `PhysicsBehavior` forces and friction, path following by
+`computePointOnPath`, collisions with the original blocked/stuck logic, moving out
+of the way, crushing and `fixInvalidPosition`. Drawables pick their model,
+animation and visible sub-objects from condition flags as `W3DModelDraw` does.
+`PORTING.md` lists every remaining stand-in.
 
-M4 still needs multi-surface/crusher zone equivalence and incremental terrain-zone
-updates, bridge damage/destruction and
-repair transitions, the remaining traffic behavior, locomotor types and physics,
-combat/guard/transport/mood/temporary AI states, disabled gameplay side effects,
-map-wide object creation/lifecycle and
-full condition-state drawable handling. Combat, economy and construction remain
-M5 work. These are implementation tasks, not a claim that all registered module
-classes already simulate gameplay.
-The present ground integrator stops horizontal drive immediately on disable;
-retail inertia/friction, falling/held transport behavior, disabled tint/effects,
-special-power pausing, rider propagation and power-system effects remain pending.
+Still to come in M4: thrust locomotors and airfields, multi-surface and crusher
+zone tables with incremental updates, bridge damage and repair, formations,
+narrow-phase shapes instead of bounding circles, the combat/guard/transport/mood
+AI states, disabled side effects, creating the map's own objects in the
+simulation, and turrets, recoil and weapon bones on drawables. Combat, economy
+and construction are M5.
+
+## Review checklist
+
+Things only you can judge, in the window (`cargo run --release -p ih-game --
+--scenario <file>`):
+
+1. `m4-desert.toml`: the Crusader accelerates, brakes and stops on its goal
+   without overshooting; the Ranger runs (walk cycle in step with its speed) and
+   goes back to its idle animations when it stops.
+2. `m4-traffic.toml`: the two tanks pass the parked one; the head-on pair resolves
+   by one stepping aside, without visibly jittering.
+3. `m4-crush-ally.toml`: the Ranger steps off the road and the Crusader drives
+   past; with `m4-crush-enemy.toml` the Ranger disappears under the tank (it is
+   removed outright until death effects exist).
+4. `m4-bridges.toml`: the crossing looks level with the deck, with no bounce at
+   the ends.
+5. `m4-air.toml`: the Comanche climbs smoothly, flies with spinning-rotor art, and
+   hovers at each goal without drifting or sinking.
+6. Contra variants (`--profile profiles/contra-x-beta2.toml`, `*-contra.toml`):
+   the Humvee's reversing and three-point turns look sensible.
+7. Right-click orders: units turn, accelerate and stop the way you remember from
+   the game. Anything that feels off is worth a note, with the map and roughly
+   where.
 
 ## Moving out of the way and crushing
 

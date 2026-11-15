@@ -8,11 +8,14 @@ ironhour is an unofficial project. It is not affiliated with or endorsed by Elec
 
 Milestones M0 to M2 are done. M3's map viewer is implemented and ready for visual review: terrain, road junctions and curves, bridges, flowing rivers, standing water, placed objects and map lighting render offscreen or in a native window with a tactical camera. Stock Zero Hour and Contra X are checked against local game data. See [PORTING.md](PORTING.md) for progress, [the viewer guide](docs/map-viewer.md) to try it, and [the project plan](docs/plan.md) for the remaining milestones.
 
-M4 has started: a renderer-independent 30 Hz simulation, the original logic RNG and
-sleepy scheduler, hierarchical ground/bridge paths, live traffic avoidance,
-movement AI orders and timed disabled status, command logs and per-tick
-state hashes. The [movement demo](docs/m4-movement.md) supports selection and move
-orders; the full simulation milestone is still in progress.
+M4 is well under way: a renderer-independent 30 Hz simulation with the original
+logic RNG and sleepy scheduler, hierarchical ground and bridge paths, the original
+locomotors and physics (ground vehicles, infantry and helicopters), collisions,
+blocked traffic, moving out of the way and crushing, movement AI orders and timed
+disabled status, and drawables that follow the original model condition states.
+Command logs replay with identical per-tick state hashes. The
+[movement demo](docs/m4-movement.md) supports selection and move orders and has a
+review checklist.
 
 ## You need the game
 

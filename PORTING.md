@@ -500,13 +500,24 @@ shadows and track marks.
 
 ### Still required for M4
 
-Multi-surface/crusher zone tables and incremental zone updates, bridge damage/destruction/repair,
-full traffic/formation and collision handling,
-thrust locomotors and airfields, the physics and traffic pieces listed above (vehicle crush damage, moveAllies, overlap handling), combat/guard/transport/mood/temporary AI states,
-disabled gameplay side effects,
-map-wide object lifecycle, and the drawable pieces listed above (turrets, recoil, bones). Traffic uses the ported blocked/stuck, move-aside and crush logic on bounding circles;
-shape narrow-phase and crowded bottleneck recovery remain pending. Occupied goals/routes
-without passing room wait until space is available. M3's visual review remains pending.
-Disabled movement currently stops horizontal drive immediately; original inertia,
-gravity/falling, held transports, tint/effects, special-power timers, rider
-propagation and power-system effects need their remaining runtime systems.
+The milestone check (units path across a map on command; a command log gives the
+same state hashes everywhere) is met for ground and helicopter movement: sixteen
+stock and Contra scenarios replay identically, and the asset-free fixtures assert
+fixed hashes on Windows, Linux and macOS in CI. Runs on installed data have only
+been made on Windows. Remaining M4 work:
+
+- Movement: thrust locomotors, airfield take-off and landing, pitch/roll and
+  suspension, damage-state speed penalties, bouncing and falling.
+- Navigation: multi-surface and crusher zone tables, incremental zone updates,
+  bridge damage, destruction and repair.
+- Traffic: narrow-phase shapes instead of bounding circles, overlapping bodies
+  (and with them vehicle crush damage), `moveAllies`, formations, crowded
+  bottleneck recovery. Occupied goals or routes with no passing room wait until
+  space is free.
+- AI: combat, guard, transport, mood and other temporary states; disabled side
+  effects (inertia, held transports, tint, special-power timers, riders, power).
+- Objects: creating the map's own objects in the simulation and their lifecycle.
+- Drawables: turrets, recoil, weapon and particle-system bones.
+
+Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the
+M3 visual review ([docs/map-viewer.md](docs/map-viewer.md)).
