@@ -162,6 +162,27 @@ impl Locomotor {
     pub fn ground(&self) -> bool {
         self.surfaces.iter().any(|s| s == "GROUND")
     }
+    /// `getLegalSurfaces` (`LocomotorSurfaceType` bits; unknown names are ignored).
+    pub fn surface_mask(&self) -> u8 {
+        use crate::footprint::surface::*;
+        self.surfaces
+            .iter()
+            .map(|s| match s.to_ascii_uppercase().as_str() {
+                "GROUND" => GROUND,
+                "WATER" => WATER,
+                "CLIFF" => CLIFF,
+                "AIR" => AIR,
+                "RUBBLE" => RUBBLE,
+                _ => 0,
+            })
+            .fold(0, |a, b| a | b)
+    }
+    /// `isDoingGroundMovement`: any surface locomotor without `AIR` (boats and
+    /// cliff climbers included).
+    pub fn surface_movement(&self) -> bool {
+        let m = self.surface_mask();
+        m != 0 && m & crate::footprint::surface::AIR == 0
+    }
 }
 
 #[derive(Clone, Default)]

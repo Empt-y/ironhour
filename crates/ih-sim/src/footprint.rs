@@ -5,15 +5,48 @@
 //! closes off pinched cells around it and marks the border cells as pinched.
 use crate::navigation::{CELL, Grid};
 
-/// The cell types the footprint code distinguishes (`PathfindCell::CellType`).
+/// `PathfindCell::CellType`, with the original values: `classifyMap` tests
+/// cliffs with `type & CELL_CLIFF`, which rubble and impassable cells also pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum CellType {
-    Clear,
-    /// Cliff, water or a bridge's underside: never turned into an obstacle.
-    Terrain,
-    Obstacle,
-    /// `CELL_IMPASSABLE`: a clear cell pinched shut between obstacles.
-    Impassable,
+    Clear = 0,
+    Water = 1,
+    /// A steep altitude change (and the clear cells next to one).
+    Cliff = 2,
+    Rubble = 3,
+    /// Occupied by a structure.
+    Obstacle = 4,
+    /// A bridge's underside where the deck is too low to pass under.
+    BridgeImpassable = 5,
+    /// Plain impassable except for aircraft: a clear cell pinched shut between obstacles.
+    Impassable = 6,
+}
+
+/// `LocomotorSurfaceType` bits.
+pub mod surface {
+    pub const GROUND: u8 = 1 << 0;
+    pub const WATER: u8 = 1 << 1;
+    pub const CLIFF: u8 = 1 << 2;
+    pub const AIR: u8 = 1 << 3;
+    pub const RUBBLE: u8 = 1 << 4;
+}
+
+impl CellType {
+    /// `Pathfinder::validLocomotorSurfacesForCellType`.
+    pub fn surfaces(self) -> u8 {
+        use surface::*;
+        match self {
+            CellType::Obstacle | CellType::Impassable | CellType::BridgeImpassable => AIR,
+            CellType::Clear => GROUND | AIR,
+            CellType::Water => WATER | AIR,
+            CellType::Rubble => RUBBLE | AIR,
+            CellType::Cliff => CLIFF | AIR,
+        }
+    }
+    pub fn allows(self, surfaces: u8) -> bool {
+        self.surfaces() & surfaces != 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,14 +84,19 @@ fn floor_cell(v: f32) -> i32 {
 }
 
 impl Obstacles {
+    /// From a grid alone (tests and hand-made grids): blocked cells count as cliffs.
     pub fn new(grid: &Grid) -> Self {
-        let n = grid.blocked.len();
-        Self {
-            kind: grid.blocked.iter().map(|b| if *b { CellType::Terrain } else { CellType::Clear }).collect(),
-            owner: vec![0; n],
-            fence: vec![false; n],
-            pinched: vec![false; n],
-        }
+        let kind = grid.blocked.iter().map(|b| if *b { CellType::Cliff } else { CellType::Clear }).collect();
+        Self::from_kinds(kind, vec![false; grid.blocked.len()])
+    }
+    /// From the terrain classification (`classifyMap`).
+    pub fn from_kinds(kind: Vec<CellType>, pinched: Vec<bool>) -> Self {
+        let n = kind.len();
+        Self { kind, owner: vec![0; n], fence: vec![false; n], pinched }
+    }
+    /// The grid's `blocked` flags for a locomotor with these surfaces.
+    pub fn blocked_for(&self, surfaces: u8) -> Vec<bool> {
+        self.kind.iter().map(|k| !k.allows(surfaces)).collect()
     }
     pub fn count(&self, kind: CellType) -> usize {
         self.kind.iter().filter(|k| **k == kind).count()
@@ -202,9 +240,10 @@ impl Obstacles {
         self.write_back(grid);
     }
 
+    /// `Terrain::ground` is the view for `GROUND` locomotors.
     fn write_back(&self, grid: &mut Grid) {
         for (b, k) in grid.blocked.iter_mut().zip(&self.kind) {
-            *b = *k != CellType::Clear;
+            *b = !k.allows(surface::GROUND);
         }
     }
 }
@@ -267,7 +306,7 @@ mod tests {
             &mut g,
             &Footprint { position: [150.0, 150.0], angle: 0.0, shape: Shape::Circle { radius: 20.0 }, key: 3 },
         );
-        assert_eq!(o.kind[15 * 30 + 15], CellType::Terrain);
+        assert_eq!(o.kind[15 * 30 + 15], CellType::Cliff);
         assert_eq!(o.kind[15 * 30 + 13], CellType::Obstacle);
         assert_eq!(o.kind[15 * 30 + 19], CellType::Clear);
         let before = o.count(CellType::Impassable);

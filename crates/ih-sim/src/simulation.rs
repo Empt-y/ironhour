@@ -127,6 +127,8 @@ pub struct Simulation {
     pub map: Arc<Map>,
     pub templates: Arc<Templates>,
     pub grid: Terrain,
+    /// `grid` as seen by locomotors with other surfaces (water, cliff, ...), by mask.
+    pub views: BTreeMap<u8, Terrain>,
     pub stub_counts: BTreeMap<String, usize>,
     pub events: Vec<String>,
     pub failed_orders: u32,
@@ -143,6 +145,14 @@ pub struct Simulation {
 impl Simulation {
     pub fn new(map: Arc<Map>, templates: Arc<Templates>, seed: u32) -> Self {
         let grid = Terrain::from_map(&map, &templates);
+        // One view per distinct locomotor surface mask that sees the cells differently.
+        let mut views = BTreeMap::new();
+        for l in templates.locomotors.values().filter(|l| l.surface_movement()) {
+            let mask = l.surface_mask();
+            if !views.contains_key(&mask) && grid.obstacles.blocked_for(mask) != grid.ground.blocked {
+                views.insert(mask, grid.view(mask));
+            }
+        }
         let mut h = StateHash::default();
         h.u32(4);
         h.u32(map.width as u32);
@@ -153,6 +163,9 @@ impl Simulation {
         h.u32(grid.height as u32);
         for b in &grid.blocked {
             h.u32(u32::from(*b));
+        }
+        for k in &grid.obstacles.kind {
+            h.u32(*k as u32);
         }
         h.u64(grid.layers.len() as u64);
         for layer in &grid.layers {
@@ -204,6 +217,7 @@ impl Simulation {
             partition: Partition::default(),
             map,
             templates,
+            views,
             grid,
             stub_counts: BTreeMap::new(),
             events: vec![],
@@ -411,7 +425,7 @@ impl Simulation {
         }
         let l = t.locomotor().and_then(|n| self.templates.locomotors.get(n));
         if l.is_none_or(|l| {
-            !(l.ground() || l.air()) || l.speed <= 0.0 || (face && (l.min_speed != 0.0 || l.turn_rate <= 0.0))
+            l.surface_mask() == 0 || l.speed <= 0.0 || (face && (l.min_speed != 0.0 || l.turn_rate <= 0.0))
         }) || !o.modules.iter().any(|m| m.kind == ModuleKind::Steering)
             || !o.modules.iter().any(|m| m.kind == ModuleKind::Physics)
         {
@@ -456,6 +470,14 @@ impl Simulation {
         if constant { 1 } else { FOREVER }
     }
 
+    /// The terrain view for the object's locomotor surfaces (`grid` for ground units).
+    fn terrain(&self, id: u32) -> &Terrain {
+        let t = &self.templates.objects[&self.objects[&id].template];
+        t.locomotor()
+            .and_then(|n| self.templates.locomotors.get(n))
+            .and_then(|l| self.views.get(&l.surface_mask()))
+            .unwrap_or(&self.grid)
+    }
     fn route_to(&self, id: u32, target: [f32; 2]) -> Result<VecDeque<Waypoint>, SimError> {
         let o = &self.objects[&id];
         let t = &self.templates.objects[&o.template];
@@ -463,7 +485,7 @@ impl Simulation {
             // canComputeQuickPath / computeQuickPath: flyers go straight to the goal.
             return Ok(VecDeque::from([Waypoint { position: target, layer: 0 }]));
         }
-        self.grid
+        self.terrain(id)
             .path(
                 Waypoint { position: [o.position[0], o.position[1]], layer: o.layer },
                 self.grid.destination(&self.map, target),
@@ -735,7 +757,8 @@ impl Simulation {
             }
             speed = speed.min(tr.bump_speed_limit);
         }
-        steer(o, l, &self.grid, &self.map, self.frame, radii, speed, &mut blocked);
+        let grid = self.views.get(&l.surface_mask()).unwrap_or(&self.grid);
+        steer(o, l, grid, &self.map, self.frame, radii, speed, &mut blocked);
         if !blocked && o.blocked_frames > 1 {
             o.blocked_frames = 1;
         }
@@ -840,7 +863,7 @@ impl Simulation {
         // fixInvalidPosition pushes them off invalid cells. Deck edges still stop a
         // step, since falling off a bridge is not modelled yet.
         if layer != 0
-            && !self.grid.line_on(
+            && !self.terrain(id).line_on(
                 Waypoint { position: [from[0], from[1]], layer },
                 Waypoint { position: to, layer },
                 radius,
@@ -1045,7 +1068,7 @@ impl Simulation {
         }
         // isDoingGroundMovement: the other needs a ground locomotor.
         let tb = &self.templates.objects[&self.objects[&b].template];
-        if tb.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_none_or(|l| !l.ground()) {
+        if tb.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_none_or(|l| !l.surface_movement()) {
             return false;
         }
         if self.objects[&a].traffic.ignore_until > self.frame {
@@ -1187,7 +1210,7 @@ impl Simulation {
             return false;
         }
         let mut probe = o.clone();
-        let (goal, _, _) = point_on_path(&mut probe, &self.grid, &self.map, t.radius());
+        let (goal, _, _) = point_on_path(&mut probe, self.terrain(id), &self.map, t.radius());
         let rel = ih_math::angle_delta(o.angle, ih_math::atan2(goal[1] - o.position[1], goal[0] - o.position[0]));
         rel.abs() > std::f32::consts::PI / 30.0
     }
@@ -1205,7 +1228,7 @@ impl Simulation {
             let t = &self.templates.objects[&o.template];
             self.has_ai(id)
                 && !t.has_kind("IMMOBILE")
-                && t.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_some_and(|l| l.ground())
+                && t.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_some_and(|l| l.surface_movement())
                 && !o.disabled.any()
         };
         if !mobile {
@@ -1343,7 +1366,7 @@ impl Simulation {
                 [(1, 0, 10), (-1, 0, 10), (0, 1, 10), (0, -1, 10), (1, 1, 14), (1, -1, 14), (-1, 1, 14), (-1, -1, 14)]
             {
                 let n = (cell.0 + dx, cell.1 + dy);
-                if !self.grid.passable_on(layer, n.0, n.1, body_radius) {
+                if !self.terrain(id).passable_on(layer, n.0, n.1, body_radius) {
                     continue;
                 }
                 let c = cost + step;
@@ -1472,8 +1495,13 @@ impl Simulation {
             let velocity = [b.position[0] - a.position[0], b.position[1] - a.position[1]];
             obstacles.iter().all(|other| traffic::step_fraction(candidate, velocity, *other) >= 1.0)
         };
-        let path =
-            self.grid.path_avoiding(from, goal, self.templates.objects[&o.template].radius(), &blocked, &segment_clear);
+        let path = self.terrain(id).path_avoiding(
+            from,
+            goal,
+            self.templates.objects[&o.template].radius(),
+            &blocked,
+            &segment_clear,
+        );
         let o = self.objects.get_mut(&id).unwrap();
         o.last_repath = self.frame;
         if let Some(path) = path {
@@ -1504,7 +1532,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(10);
+        h.u32(11);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1928,7 +1956,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x57d086ead747d4ee, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xc43c1aec5d1675a0, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2141,7 +2169,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x62349faed71e433d, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x2b95715fc4e5b451, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2227,7 +2255,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x8d23a9f1242793c2, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xc8d798e2102d6555, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {
@@ -2281,29 +2309,11 @@ fn segment_in_box(a: [f32; 2], b: [f32; 2], lo: [f32; 2], hi: [f32; 2]) -> bool 
 /// (`TerrainLogic::isUnderwater`, water polygon areas).
 fn heights(grid: &Terrain, map: &Map, p: [f32; 2], layer: u32) -> crate::locomotion::Heights {
     let ground = grid.height_at(map, Waypoint { position: p, layer });
-    let water = map
-        .triggers
-        .iter()
-        .filter(|t| t.is_water && t.points.len() > 2 && point_in_polygon(p, &t.points))
-        .map(|t| t.points[0][2] as f32)
-        .fold(None, |m: Option<f32>, z| Some(m.map_or(z, |m| m.max(z))));
+    // getWaterHandle: the highest water area over the point.
+    let water = crate::navigation::water_height(map, p[0], p[1]);
     let surface = match water {
         Some(w) if w > ground => w,
         _ => ground,
     };
     crate::locomotion::Heights { ground, surface }
-}
-
-fn point_in_polygon(p: [f32; 2], poly: &[[i32; 3]]) -> bool {
-    let mut inside = false;
-    let mut j = poly.len() - 1;
-    for i in 0..poly.len() {
-        let (a, b) = (poly[i], poly[j]);
-        let (ax, ay, bx, by) = (a[0] as f32, a[1] as f32, b[0] as f32, b[1] as f32);
-        if (ay > p[1]) != (by > p[1]) && p[0] < (bx - ax) * (p[1] - ay) / (by - ay) + ax {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
 }

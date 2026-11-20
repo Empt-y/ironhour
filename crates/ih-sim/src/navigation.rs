@@ -1,9 +1,11 @@
 //! First ground navigation layer from `AIPathfind.cpp`: 10-unit cells,
 //! orthogonal/diagonal costs (10/14), turn penalties (4/8/16), stable open-list
 //! ties and line-of-sight path optimisation. `terrain` adds bridge layers and
-//! transient queries; `zones` adds the initial ground hierarchy. Crushing and
-//! multi-surface terrain classification remain pending.
-use ih_formats::map::{MAP_HEIGHT_SCALE, Map};
+//! transient queries; `zones` adds the initial ground hierarchy. Cells are
+//! classified as `classifyMap` does (cliff state, water corners, cliff expansion);
+//! crusher zones remain pending.
+use crate::footprint::CellType;
+use ih_formats::map::{MAP_HEIGHT_SCALE, MAP_XY_FACTOR, Map};
 use std::{cmp::Reverse, collections::BinaryHeap};
 pub const CELL: f32 = 10.0;
 
@@ -14,37 +16,15 @@ pub struct Grid {
     pub blocked: Vec<bool>,
 }
 impl Grid {
-    /// Terrain cells only; structures are added by `Terrain::from_map` (`footprint`).
+    /// Terrain cells for `GROUND` locomotors; structures are added by
+    /// `Terrain::from_map` (`footprint`) and other surfaces use `Terrain::view`.
     pub fn from_map(map: &Map) -> Self {
-        let bounds =
-            map.boundaries.first().copied().unwrap_or([map.width - 2 * map.border, map.height - 2 * map.border]);
-        let (w, h) = (bounds[0].max(1), bounds[1].max(1));
-        let mut out = Self { width: w, height: h, blocked: vec![false; (w * h) as usize] };
-        for y in 0..h {
-            for x in 0..w {
-                let (mx, my) = (x + map.border, y + map.border);
-                let heights = [
-                    map.height_at(mx, my),
-                    map.height_at(mx + 1, my),
-                    map.height_at(mx + 1, my + 1),
-                    map.height_at(mx, my + 1),
-                ];
-                let slope = f32::from(heights.iter().max().unwrap() - heights.iter().min().unwrap()) * MAP_HEIGHT_SCALE;
-                let stored_cliff = map.tiles.as_ref().is_some_and(|t| {
-                    let row = ((map.width + 7) / 8) as usize;
-                    t.cliff_state
-                        .get(my as usize * row + (mx as usize >> 3))
-                        .is_some_and(|bits| bits & (1 << (mx & 7)) != 0)
-                });
-                let p = [(x as f32 + 0.5) * CELL, (y as f32 + 0.5) * CELL];
-                let wet = map.triggers.iter().filter(|t| t.is_water && t.points.len() > 2).any(|t| {
-                    let below = t.points.iter().map(|p| p[2]).min().unwrap() as f32 > map.ground_height(p[0], p[1]);
-                    below && inside(p, &t.points)
-                });
-                out.blocked[(y * w + x) as usize] = slope > 9.8 || stored_cliff || wet;
-            }
+        let c = classify_map(map);
+        Self {
+            width: c.width,
+            height: c.height,
+            blocked: c.kind.iter().map(|k| !k.allows(crate::footprint::surface::GROUND)).collect(),
         }
-        out
     }
     pub fn block_disc(&mut self, p: [f32; 2], radius: f32) {
         let minx = ((p[0] - radius) / CELL).floor() as i32;
@@ -195,19 +175,143 @@ impl Grid {
         None
     }
 }
-fn inside(p: [f32; 2], points: &[[i32; 3]]) -> bool {
+/// `PolygonTrigger::pointInTrigger`: bounds check, then a crossing test that
+/// ignores horizontal edges, on integer points.
+pub fn point_in_trigger(points: &[[i32; 3]], p: [i32; 2]) -> bool {
+    let Some(first) = points.first() else { return false };
+    let (mut lo, mut hi) = ([first[0], first[1]], [first[0], first[1]]);
+    for q in points {
+        lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+        hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+    }
+    if p[0] < lo[0] || p[1] < lo[1] || p[0] > hi[0] || p[1] > hi[1] {
+        return false;
+    }
     let mut inside = false;
-    let mut j = points.len() - 1;
-    for i in 0..points.len() {
-        let (a, b) = (points[i], points[j]);
-        if (a[1] as f32 > p[1]) != (b[1] as f32 > p[1])
-            && p[0] < (b[0] - a[0]) as f32 * (p[1] - a[1] as f32) / (b[1] - a[1]) as f32 + a[0] as f32
-        {
+    for (i, a) in points.iter().enumerate() {
+        let b = points[(i + 1) % points.len()];
+        if a[1] == b[1] {
+            continue;
+        }
+        if (a[1] < p[1] && b[1] < p[1]) || (a[1] >= p[1] && b[1] >= p[1]) || (a[0] < p[0] && b[0] < p[0]) {
+            continue;
+        }
+        let (dy, dx) = (b[1] - a[1], b[0] - a[0]);
+        let x = a[0] as f32 + (dx * (p[1] - a[1])) as f32 / dy as f32;
+        if x >= p[0] as f32 {
             inside = !inside;
         }
-        j = i;
     }
     inside
+}
+
+/// `TerrainLogic::getWaterHandle` and `getWaterHeight`: the highest water area
+/// containing the point (water at or above z 0 only). Grid water is not supported.
+pub fn water_height(map: &Map, x: f32, y: f32) -> Option<f32> {
+    let p = [(x + 0.5).floor() as i32, (y + 0.5).floor() as i32];
+    let mut best: Option<i32> = None;
+    for t in map.triggers.iter().filter(|t| t.is_water) {
+        let z = t.points[0][2];
+        if point_in_trigger(&t.points, p) && z >= best.unwrap_or(0) {
+            best = Some(z);
+        }
+    }
+    best.map(|z| z as f32)
+}
+
+/// `TerrainLogic::isUnderwater`.
+pub fn is_underwater(map: &Map, x: f32, y: f32) -> bool {
+    water_height(map, x, y).is_some_and(|w| map.ground_height(x, y) < w)
+}
+
+/// `WorldHeightMap::getCliffState` for a heightmap cell: the stored flip-state
+/// bits, or `setCellCliffFlagFromHeights` when the map does not store them.
+fn cliff_state(map: &Map, ix: i32, iy: i32) -> bool {
+    if let Some(t) = map.tiles.as_ref().filter(|t| t.cliff_state_stored) {
+        let row = ((map.width + 7) / 8) as usize;
+        return t.cliff_state.get(iy as usize * row + (ix as usize >> 3)).is_some_and(|b| b & (1 << (ix & 7)) != 0);
+    }
+    if ix >= map.width - 1 || iy >= map.height - 1 {
+        return false;
+    }
+    let h =
+        [map.height_at(ix, iy), map.height_at(ix + 1, iy), map.height_at(ix, iy + 1), map.height_at(ix + 1, iy + 1)]
+            .map(|v| f32::from(v) * MAP_HEIGHT_SCALE);
+    let (min, max) = h.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+    // PATHFIND_CLIFF_SLOPE_LIMIT_F
+    max - min > 9.8
+}
+
+/// `BaseHeightMapRenderObjClass::isCliffCell`: the heightmap cell under the point.
+pub fn is_cliff_cell(map: &Map, x: f32, y: f32) -> bool {
+    if map.width < 2 || map.height < 2 {
+        return false;
+    }
+    // `Int iX = x / MAP_XY_FACTOR` truncates.
+    let ix = ((x / MAP_XY_FACTOR) as i32 + map.border).clamp(0, map.width - 2);
+    let iy = ((y / MAP_XY_FACTOR) as i32 + map.border).clamp(0, map.height - 2);
+    cliff_state(map, ix, iy)
+}
+
+/// The classified ground cells (`Pathfinder::classifyMap`), before objects.
+pub struct Classified {
+    pub width: i32,
+    pub height: i32,
+    pub kind: Vec<CellType>,
+    /// The pinched border `classifyMap` leaves around cliffs.
+    pub pinched: Vec<bool>,
+}
+
+/// `Pathfinder::classifyMap` over the playable area: `classifyMapCell` (a cliff
+/// at the top-left corner, water if any corner is underwater), then cliffs grown
+/// one cell into clear ground and a pinched border added around them.
+pub fn classify_map(map: &Map) -> Classified {
+    let bounds = map.boundaries.first().copied().unwrap_or([map.width - 2 * map.border, map.height - 2 * map.border]);
+    let (w, h) = (bounds[0].max(1), bounds[1].max(1));
+    let mut kind = vec![CellType::Clear; (w * h) as usize];
+    for j in 0..h {
+        for i in 0..w {
+            let (x0, y0) = (i as f32 * CELL, j as f32 * CELL);
+            let (x1, y1) = (x0 + CELL, y0 + CELL);
+            let mut t = CellType::Clear;
+            if is_cliff_cell(map, x0, y0) {
+                t = CellType::Cliff;
+            }
+            if [(x0, y0), (x0, y1), (x1, y1), (x1, y0)].into_iter().any(|(x, y)| is_underwater(map, x, y)) {
+                t = CellType::Water;
+            }
+            kind[(j * w + i) as usize] = t;
+        }
+    }
+    let index = |i: i32, j: i32| (j * w + i) as usize;
+    let cliff_like = |k: CellType| k as u8 & CellType::Cliff as u8 != 0;
+    let mark_border = |kind: &[CellType], pinched: &mut [bool]| {
+        for j in 0..h {
+            for i in 0..w {
+                if !cliff_like(kind[index(i, j)]) {
+                    continue;
+                }
+                for k in (i - 1).max(0)..=(i + 1).min(w - 1) {
+                    for l in (j - 1).max(0)..=(j + 1).min(h - 1) {
+                        if kind[index(k, l)] == CellType::Clear {
+                            pinched[index(k, l)] = true;
+                        }
+                    }
+                }
+            }
+        }
+    };
+    // Expand all cliff cells one step (marked pinched, then converted).
+    let mut pinched = vec![false; kind.len()];
+    mark_border(&kind, &mut pinched);
+    for (k, p) in kind.iter_mut().zip(&pinched) {
+        if *p && *k == CellType::Clear {
+            *k = CellType::Cliff;
+        }
+    }
+    // Then a border of pinched cells around the cliffs.
+    mark_border(&kind, &mut pinched);
+    Classified { width: w, height: h, kind, pinched }
 }
 #[cfg(test)]
 mod tests {

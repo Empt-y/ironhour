@@ -443,26 +443,51 @@ profile ironhour mounts them, as the original game would. The Contra profile's
 excludes now match any extension, so its result does not depend on how the
 launcher last left the install.
 
-All sixteen scenarios pass with v10 hashes (every-tick replay equality, no
+### Terrain cells and locomotor surfaces (state hash v11)
+
+From `AIPathfind.cpp` (`classifyMap`, `classifyMapCell`,
+`validLocomotorSurfacesForCellType`, `validMovementTerrain`), `TerrainLogic.cpp`
+(`getWaterHandle`, `isUnderwater`), `PolygonTrigger::pointInTrigger` and
+`WorldHeightMap.cpp`/`BaseHeightMap.cpp` (cliff state):
+
+- Cells have the original types and values (clear, water, cliff, rubble,
+  obstacle, bridge-impassable, impassable). A cell is a cliff when the map's stored
+  cliff state says so; only maps without it fall back to the 9.8 slope rule. The
+  stand-in before this ORed the two. A cell is water when any corner is under
+  the highest water area over it (integer `pointInTrigger`, water at z 0 or above).
+  Cliffs then grow one cell into clear ground, and a pinched border is kept
+  around them. The `type & CELL_CLIFF` test is kept as written.
+- Each locomotor's `Surfaces` decide which cells it may use: the simulation keeps
+  one terrain view per distinct surface mask (ground units use the base grid),
+  for paths, steering, `fixInvalidPosition`, moving out of the way and repaths.
+  Boats stay on water, cliff climbers may use cliffs, and ground units use
+  neither. Collisions and blocking apply to any locomotor without `AIR`
+  (`isDoingGroundMovement`), boats included.
+- Hover lift over water uses the same water lookup. Grid water (`getWaterGridHeight`)
+  is not supported. Cell types are part of the setup hash.
+- Not yet: rubble from destroyed buildings, wall layers, crusher and per-surface
+  zone tables (zones are still computed per view and radius).
+
+All sixteen scenarios pass with v11 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals),
 now with every map object loaded: 142 logic objects on Tournament Desert (756 with
 Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `4d2150daafa4f6a0` | `241a2841598167b6` |
-| AI/status orders | `bcb0c6dfcd11b5c5` | `7c8d93406f95732c` |
-| Bridges | `39c156c398d9bc93` | `3f01cc3e522fd8b5` |
-| Traffic, Tournament Desert (one move-aside each) | `9e92aa413d7920ab` | `ddf72561125145b7` |
-| Traffic, Winding River | `1217e6bf99e375d3` | `202f1da675ad481d` |
-| Long map travel | `95e0b552a0c182c0` | `d61897146e683efa` |
-| Crusader through an enemy Ranger (crushed at frame 131) | `eaca4d613eb148f3` | |
-| Crusader through an allied Ranger (steps aside) | `6e679d56786734bd` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `6948c0fb1431257e` | `4104d71a2583a3b7` |
+| Desert (`m4-desert` / `m4-contra`) | `1d452e165b05ab6c` | `8b37e91feffbf03f` |
+| AI/status orders | `49d8d105e7311649` | `8e64ce738dce2dad` |
+| Bridges | `8aa34243e2f45692` | `c6572f0125aaadf8` |
+| Traffic, Tournament Desert (one move-aside each) | `1ba80657dc168f1f` | `46455cbe43a0bd2c` |
+| Traffic, Winding River | `c94ad52c322ad85e` | `29b54844e7afa048` |
+| Long map travel | `dfb01e8052b737c1` | `9a965f5c0a7cff5b` |
+| Crusader through an enemy Ranger (crushed at frame 131) | `86ef217534e2a167` | |
+| Crusader through an allied Ranger (steps aside) | `f4bd6ef55d818a69` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `2820c28de600c0e1` | `2fad1098d3836b37` |
 
-Asset-free fixtures: `57d086ead747d4ee` (ground), `8d23a9f1242793c2`
-(bridge/deck stop), `62349faed71e433d` (head-on traffic, resolved by a
-move-aside), `2a830ab44164ef36` (AI/status orders). Unit tests also cover a tank
+Asset-free fixtures: `c43c1aec5d1675a0` (ground), `c8d798e2102d6555`
+(bridge/deck stop), `2b95715fc4e5b451` (head-on traffic, resolved by a
+move-aside), `78aa2bed5c6dedf8` (AI/status orders). Unit tests also cover a tank
 squishing enemy infantry, allied infantry stepping aside, a hovering body
 climbing to and holding its preferred height (over ground and water), box,
 circle and fence footprints with pinched-gap closing, map-object sorting and
@@ -578,7 +603,7 @@ been made on Windows. Remaining M4 work:
 
 - Movement: thrust locomotors, airfield take-off and landing, pitch/roll and
   suspension, damage-state speed penalties, bouncing and falling.
-- Navigation: multi-surface and crusher zone tables, incremental zone updates,
+- Navigation: crusher zone tables, rubble and wall cells, incremental zone updates,
   bridge damage, destruction and repair.
 - Traffic: narrow-phase shapes instead of bounding circles, overlapping bodies
   (and with them vehicle crush damage), `moveAllies`, formations, crowded

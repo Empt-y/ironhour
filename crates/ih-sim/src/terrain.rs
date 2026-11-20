@@ -65,7 +65,8 @@ impl Terrain {
     pub fn from_map(map: &Map, templates: &Templates) -> Self {
         // Terrain and bridges first (`TheAI->pathfinder()->newMap`), then each map
         // object as it is created (`addObjectToPathfindMap`).
-        let mut t = Self::new(Grid::from_map(map), templates.bridges.clone(), map);
+        let c = crate::navigation::classify_map(map);
+        let mut t = Self::classified(c, templates.bridges.clone(), map);
         for p in crate::map_objects::placements(map, templates) {
             let template = &templates.objects[&p.template];
             let key = p.index as u32 + 1;
@@ -77,7 +78,21 @@ impl Terrain {
         }
         t
     }
-    pub fn new(mut ground: Grid, bridges: Vec<Bridge>, map: &Map) -> Self {
+    /// From a hand-made grid (blocked cells count as cliffs).
+    pub fn new(ground: Grid, bridges: Vec<Bridge>, map: &Map) -> Self {
+        let obstacles = Obstacles::new(&ground);
+        Self::build(ground, obstacles, bridges, map)
+    }
+    /// From `classify_map`: the `GROUND` view, with cell types kept for other surfaces.
+    pub fn classified(c: crate::navigation::Classified, bridges: Vec<Bridge>, map: &Map) -> Self {
+        let ground = Grid {
+            width: c.width,
+            height: c.height,
+            blocked: c.kind.iter().map(|k| !k.allows(crate::footprint::surface::GROUND)).collect(),
+        };
+        Self::build(ground, Obstacles::from_kinds(c.kind, c.pinched), bridges, map)
+    }
+    fn build(mut ground: Grid, mut obstacles: Obstacles, bridges: Vec<Bridge>, map: &Map) -> Self {
         let mut nodes: Vec<_> = (0..ground.height).flat_map(|y| (0..ground.width).map(move |x| (0, x, y))).collect();
         let mut layers = Vec::new();
         for bridge in bridges {
@@ -94,7 +109,11 @@ impl Terrain {
                     let (clear, entry, occupied) = bridge.classify(x, y);
                     let p = center(x, y);
                     if occupied && !entry && map.ground_height(p[0], p[1]) + 10.0 > bridge.height(p) {
-                        ground.blocked[(y * ground.width + x) as usize] = true;
+                        let i = (y * ground.width + x) as usize;
+                        ground.blocked[i] = true;
+                        if obstacles.kind[i] == crate::footprint::CellType::Clear {
+                            obstacles.kind[i] = crate::footprint::CellType::BridgeImpassable;
+                        }
                     }
                     if clear {
                         cells.insert((x, y), BridgeCell { entry, index: nodes.len() });
@@ -104,8 +123,15 @@ impl Terrain {
             }
             layers.push(BridgeLayer { bridge, cells });
         }
-        let obstacles = Obstacles::new(&ground);
         Self { ground, layers, obstacles, nodes, zones: ZoneCache::default() }
+    }
+    /// The same terrain for a locomotor with these surfaces (`validMovementTerrain`):
+    /// ground cells blocked by their cell type, with a fresh zone cache.
+    pub fn view(&self, surfaces: u8) -> Self {
+        let mut t = self.clone();
+        t.ground.blocked = self.obstacles.blocked_for(surfaces);
+        t.zones = ZoneCache::default();
+        t
     }
     pub(crate) fn node_coordinates(&self) -> &[(u32, i32, i32)] {
         &self.nodes

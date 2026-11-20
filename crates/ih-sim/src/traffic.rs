@@ -56,7 +56,9 @@ impl BodyShape {
             collides: !t.has_kind("NO_COLLIDE")
                 && (immobile
                     || (modules.iter().any(|m| m.kind == ModuleKind::Physics)
-                        && t.locomotor().and_then(|n| templates.locomotors.get(n)).is_some_and(|l| l.ground()))),
+                        && t.locomotor()
+                            .and_then(|n| templates.locomotors.get(n))
+                            .is_some_and(|l| l.surface_movement()))),
             immobile,
         }
     }
