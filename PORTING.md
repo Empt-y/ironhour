@@ -570,27 +570,44 @@ From `AIGroup.cpp` (`groupMoveToPosition`, `friend_computeGroundPath`,
   mixed tank and infantry pair can deadlock at the start, until the real
   pathfinder (`findPath` through allies' cells, `findClosestPath`) is ported.
 
-All seventeen scenarios pass with v14 hashes (every-tick replay equality, no
+### Overlaps and the tread bump (state hash v15)
+
+From `PhysicsUpdate.cpp` (`addOverlap`, `checkForOverlapCollision`, the
+overlap hand-over at the end of `update`, `calcSleepTime`) and `Drawable.cpp`
+(`calcPhysicsXformTreads`):
+
+- A crusher records what it is driving over (`m_currentOverlap`, the latest one
+  each frame); each physics update moves it to `m_previousOverlap`. Both are
+  hashed, and a body with either set does not sleep.
+- Tracked vehicles rise over what they crush: the chassis tilts along the
+  overlapped object with rough vibration at speed, sits on top of it once over
+  it, lifts by half a unit over infantry and `LOW_OVERLAPPABLE` things, kicks
+  its pitch when it leaves an overlap in the air, and falls back with the
+  original's fake z. Shrubbery is smashed through without a bump.
+- Not yet: the zero-damage crush hit (`DamageFX`), front and back crush states
+  and the crush point logic, which need bodies (M5).
+
+All seventeen scenarios pass with v15 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals),
 now with every map object loaded: 142 logic objects on Tournament Desert (756 with
 Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `d3156ebdca2c6c21` | `a35a760d6f6dedb2` |
-| AI/status orders | `43d237b94f8302fd` | `83cd5dfe769add5f` |
-| Bridges | `593e971ebbfb89df` | `9d3849c37fd7213f` |
-| Traffic, Tournament Desert (three move-asides) | `30890803003e1c35` | `794b1d14fff09062` |
-| Traffic, Winding River | `d347286bdda93591` | `00b11ffcfdd48c0d` |
-| Long map travel | `13a4ba551d8cdfe3` | `eada191c4bfe9242` |
-| Crusader through an enemy Ranger (crushed at frame 132) | `cb4f8e5f9b5189e4` | |
-| Crusader through an allied Ranger (steps aside) | `84a25b0ce31b1d66` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `7465bff897439647` | `dba3f65e37c4e81b` |
-| Group move across Tournament Desert, then gather (`m4-group`) | `ba55b1a3f42fbf96` | |
+| Desert (`m4-desert` / `m4-contra`) | `9353700493becfa0` | `b161540728f1fc31` |
+| AI/status orders | `d625745307e06f6c` | `1a4be16b6381d580` |
+| Bridges | `1f2b9dc9e736d9e6` | `af52c7c57759f1d2` |
+| Traffic, Tournament Desert (three move-asides) | `6f4c21109d71df68` | `e49e85bf11135c7b` |
+| Traffic, Winding River | `9665a7deaba31f84` | `dafb561fb780e488` |
+| Long map travel | `daecd893ec05fe56` | `2a915abe01e3ab0f` |
+| Crusader through an enemy Ranger (crushed at frame 132) | `cb8f12b25aaf9e05` | |
+| Crusader through an allied Ranger (steps aside) | `5323288af2fdeb77` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `814b9529f95e68be` | `758cfbee7c6d3ce2` |
+| Group move across Tournament Desert, then gather (`m4-group`) | `6d5a0b23610c2a25` | |
 
-Asset-free fixtures: `95f860527d5842f6` (ground), `2c08379c73f49e88`
-(bridge/deck stop), `a4645e5ed8edf2ba` (head-on traffic, resolved by a
-move-aside), `7842ee627d8109b1` (AI/status orders). Unit tests also cover a tank
+Asset-free fixtures: `6ff495c72d409509` (ground), `ad7dd508a33210df`
+(bridge/deck stop), `f861fd104554929b` (head-on traffic, resolved by a
+move-aside), `4b2f36c57f038bfa` (AI/status orders). Unit tests also cover a tank
 squishing enemy infantry, allied infantry stepping aside, a hovering body
 climbing to and holding its preferred height (over ground and water), box,
 circle and fence footprints with pinched-gap closing, map-object sorting and
@@ -718,7 +735,7 @@ been made on Windows. Remaining M4 work:
 - Objects: landmark bridges and walls, map object properties, build lists and
   players' bases, obstacle removal and rubble on death.
 - Drawables: turrets, recoil, weapon and particle-system bones, truck wheel
-  suspension and steering, the crush bump.
+  suspension and steering.
 
 Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the
 M3 visual review ([docs/map-viewer.md](docs/map-viewer.md)).

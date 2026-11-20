@@ -50,6 +50,9 @@ pub struct Physics {
     pub ever_run: bool,
     /// `m_prevAccel`: last update's externally applied acceleration (`getAcceleration`).
     pub prev_accel: [f32; 3],
+    /// `m_currentOverlap` and `m_previousOverlap`: what this body is driving over (0 none).
+    pub current_overlap: u32,
+    pub previous_overlap: u32,
     /// The template's `PhysicsBehavior` data.
     pub data: PhysicsData,
 }

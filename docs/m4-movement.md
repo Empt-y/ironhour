@@ -172,7 +172,7 @@ cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scena
   `NO_COLLIDE` objects do not block. A waiting unit displays idle art.
 - Spawn/move/stop/destroy commands, integer time accumulation, spatial buckets,
   canonical versioned state hashes covering pending commands and scheduler order.
-  State-hash format v14 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
+  State-hash format v15 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
   facing targets and disabled masks/deadlines, along with previous movement state.
   Earlier hash logs are obsolete and need regenerating.
 - Movement AI states use the original IDs for idle, move-to, follow-path,
@@ -190,7 +190,7 @@ cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scena
 ## Verification and remaining work
 
 All seventeen stock and Contra scenarios replay every tick twice with matching state
-hashes (v14) with every map object loaded, finish every order, never overlap ground bodies and complete their
+hashes (v15) with every map object loaded, finish every order, never overlap ground bodies and complete their
 required bridge crossings; `PORTING.md` lists the final hashes. Asset-free
 fixtures (ground, bridge deck, head-on traffic, AI/status) assert fixed hashes in
 the Windows/Linux/macOS CI matrix, so the simulation is checked for cross-platform

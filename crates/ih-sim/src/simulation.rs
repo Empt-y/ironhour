@@ -697,6 +697,9 @@ impl Simulation {
     fn physics_sleep(&mut self, id: u32) -> u32 {
         let frame = self.frame;
         let o = self.objects.get_mut(&id).unwrap();
+        // The overlap seen this update becomes the previous one (cleared for PhysicsCollide).
+        o.physics.previous_overlap = o.physics.current_overlap;
+        o.physics.current_overlap = 0;
         o.physics.ever_run = true;
         o.physics.woken = false;
         let p = &o.physics;
@@ -706,7 +709,9 @@ impl Simulation {
             && p.motive_expires <= frame
             && o.layer == 0
             && o.position[2] - ground <= 0.0
-            && o.slide == [0.0; 2];
+            && o.slide == [0.0; 2]
+            && p.current_overlap == 0
+            && p.previous_overlap == 0;
         if resting { FOREVER } else { 1 }
     }
     /// `setWakeFrame(UPDATE_SLEEP_NONE)` after a force from another module: the
@@ -1549,7 +1554,7 @@ impl Simulation {
     /// `PhysicsBehavior::checkForOverlapCollision`: a moving crusher overlaps what it
     /// can crush, and the crushee stays passive. The crush damage to vehicles
     /// (front/back crush points) waits for bodies and damage.
-    fn overlap_collision(&self, a: u32, b: u32) -> bool {
+    fn overlap_collision(&mut self, a: u32, b: u32) -> bool {
         let v = self.objects[&a].physics.vel;
         if v.iter().all(|c| c.abs() < 0.01) {
             return false;
@@ -1558,6 +1563,10 @@ impl Simulation {
         let crushed = self.can_crush_or_squish(b, a, CrushTest::Crush);
         if crushing && crushed {
             return false;
+        }
+        if crushing && !crushed {
+            // addOverlap: the object being driven over this frame.
+            self.objects.get_mut(&a).unwrap().physics.current_overlap = b;
         }
         crushed || crushing
     }
@@ -1689,7 +1698,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(14);
+        h.u32(15);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1773,6 +1782,8 @@ impl Simulation {
             }
             h.u32(o.physics.motive_expires);
             h.u32(u32::from(o.physics.braking_status) | u32::from(o.physics.ever_run) << 1);
+            h.u32(o.physics.current_overlap);
+            h.u32(o.physics.previous_overlap);
             let l = &o.loco;
             h.u32(
                 u32::from(l.is_braking)
@@ -2179,7 +2190,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x95f860527d5842f6, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x6ff495c72d409509, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2393,7 +2404,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xa4645e5ed8edf2ba, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xf861fd104554929b, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2485,7 +2496,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x2c08379c73f49e88, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xad7dd508a33210df, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

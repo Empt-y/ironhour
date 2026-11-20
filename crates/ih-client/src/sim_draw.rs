@@ -237,6 +237,20 @@ fn chassis_step(
         max_speed: l.speed,
         length: t.number("GeometryMajorRadius", 1.0),
         width: t.number("GeometryMinorRadius", 1.0),
+        position: [o.position[0], o.position[1]],
+        radius: o.body.radius,
+        // Shrubbery is smashed through without a bump.
+        overlap: sim.objects.get(&o.physics.current_overlap).filter(|v| v.id != 0).and_then(|v| {
+            let vt = &sim.templates.objects[&v.template];
+            (!vt.has_kind("SHRUBBERY")).then(|| crate::chassis::Overlap {
+                position: [v.position[0], v.position[1]],
+                radius: v.body.radius,
+                height: v.body.top,
+                // Crushed front and back (body damage) comes with M5.
+                flat: vt.has_kind("LOW_OVERLAPPABLE") || vt.has_kind("INFANTRY"),
+            })
+        }),
+        previous_overlap: o.physics.previous_overlap != 0,
     };
     crate::chassis::step(&l.chassis, info, &m, rng).unwrap_or_default()
 }
