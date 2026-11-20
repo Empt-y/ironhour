@@ -172,6 +172,34 @@ pub fn load(map: &Map, defs: &Definitions, vfs: &Vfs, language: &str) -> Result<
         }
         out.push(bridge);
     }
+    // Landmark bridges (`IsBridge` objects, `Bridge::Bridge(Object*)`): the object's
+    // box is the deck, flat at the object's height, from end to end of the box.
+    let field = |name: &str, key: &str| defs.field("Object", name, key).and_then(|v| v.first().cloned());
+    let real = |name: &str, key: &str, default: f32| {
+        field(name, key).and_then(|v| ih_ini::values::scan_real(v.as_bytes()).ok()).unwrap_or(default)
+    };
+    for o in &map.objects {
+        if o.flags & (object_flags::BRIDGE_POINT1 | object_flags::BRIDGE_POINT2) != 0 {
+            continue;
+        }
+        if !field(&o.name, "IsBridge").is_some_and(|v| v.eq_ignore_ascii_case("yes")) {
+            continue;
+        }
+        let (major, minor) = (real(&o.name, "GeometryMajorRadius", 1.0), real(&o.name, "GeometryMinorRadius", 1.0));
+        let z = o.position[2] + map.ground_height(o.position[0], o.position[1]);
+        let (c, s) = (ih_math::cos(o.angle), ih_math::sin(o.angle));
+        let bridge = Bridge {
+            name: o.name.clone(),
+            from: [o.position[0] - major * c, o.position[1] - major * s, z],
+            to: [o.position[0] + major * c, o.position[1] + major * s, z],
+            min_y: -minor,
+            max_y: minor,
+        };
+        if !bridge.from.into_iter().chain(bridge.to).all(f32::is_finite) || bridge.length() < 0.001 {
+            return Err(SimError(format!("landmark bridge {}: invalid geometry", o.name)));
+        }
+        out.push(bridge);
+    }
     Ok(out)
 }
 
@@ -287,6 +315,40 @@ fn posed_point(h: &Hierarchy, mut bone: usize, mut p: [f32; 3]) -> Result<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn landmark_bridges_come_from_the_object_box() {
+        let mut defs = Definitions::default();
+        defs.add_document(ih_ini::parse(
+            b"Object Span
+IsBridge = Yes
+Geometry = BOX
+GeometryMajorRadius = 100
+GeometryMinorRadius = 20
+End
+",
+        ));
+        let map = Map {
+            width: 44,
+            height: 44,
+            border: 2,
+            boundaries: vec![[40, 40]],
+            heights: vec![0; 44 * 44],
+            objects: vec![ih_formats::map::MapObject {
+                position: [200.0, 200.0, 30.0],
+                angle: std::f32::consts::FRAC_PI_2,
+                flags: 0,
+                name: "Span".into(),
+                properties: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let bridges = load(&map, &defs, &Vfs::new(), "English").unwrap();
+        assert_eq!(bridges.len(), 1);
+        let b = &bridges[0];
+        // Along the facing (north), 200 long, 40 wide, flat at the object's height.
+        assert!((b.from[1] - 100.0).abs() < 1e-3 && (b.to[1] - 300.0).abs() < 1e-3 && (b.from[0] - 200.0).abs() < 1e-3);
+        assert_eq!((b.min_y, b.max_y, b.from[2], b.to[2]), (-20.0, 20.0, 30.0, 30.0));
+    }
     #[test]
     fn sloped_rotated_deck_height_and_ray_pick() {
         let b = Bridge {

@@ -107,6 +107,10 @@ enum Cmd {
         /// List objects within R of X,Y instead: `--near X,Y,R`.
         #[arg(long, value_delimiter = ',')]
         near: Option<Vec<f32>>,
+        /// When scanning, list the maps that place objects whose template name
+        /// contains any of these (case-insensitive), with counts.
+        #[arg(long, value_delimiter = ',')]
+        uses: Vec<String>,
     },
     /// Build and validate road, bridge and water geometry without a GPU.
     MapCheck { name: Option<String> },
@@ -342,7 +346,7 @@ fn main() -> Result<()> {
                 std::fs::write(path, &text).with_context(|| path.display().to_string())?;
             }
         }
-        Cmd::Maps { name, near } => maps(&mount(&cli)?, name.as_deref(), near.as_deref())?,
+        Cmd::Maps { name, near, uses } => maps(&mount(&cli)?, name.as_deref(), near.as_deref(), uses)?,
         Cmd::MapCheck { name } => map_check::run(&mount(&cli)?, &Installs::locate().language, name.as_deref())?,
         Cmd::DrawCheck => draw_check::run(&mount(&cli)?, &Installs::locate().language)?,
         Cmd::SimRun { scenario, trace, watch, watch_every } => sim_run::run(
@@ -680,7 +684,7 @@ fn find_map(vfs: &Vfs, name: &str) -> Option<String> {
     vfs.list("Maps", "*.map", true).into_iter().find(|p| p.to_ascii_lowercase().contains(&lower))
 }
 
-fn maps(vfs: &Vfs, name: Option<&str>, near: Option<&[f32]>) -> Result<()> {
+fn maps(vfs: &Vfs, name: Option<&str>, near: Option<&[f32]>, uses: &[String]) -> Result<()> {
     use ih_formats::map::Map;
     if let Some(name) = name {
         let path = find_map(vfs, name).with_context(|| format!("{name}: no such map"))?;
@@ -745,6 +749,18 @@ fn maps(vfs: &Vfs, name: Option<&str>, near: Option<&[f32]>) -> Result<()> {
             Ok(m) => {
                 ok += 1;
                 objects += m.objects.len();
+                if !uses.is_empty() {
+                    let mut found: std::collections::BTreeMap<&str, usize> = Default::default();
+                    for o in &m.objects {
+                        let lower = o.name.to_ascii_lowercase();
+                        if uses.iter().any(|u| lower.contains(&u.to_ascii_lowercase())) {
+                            *found.entry(&o.name).or_default() += 1;
+                        }
+                    }
+                    if !found.is_empty() {
+                        println!("{f}: {found:?}");
+                    }
+                }
                 for c in &m.chunks {
                     *versions.entry(format!("{} v{}", c.label, c.version)).or_default() += 1;
                 }

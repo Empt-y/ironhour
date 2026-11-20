@@ -570,6 +570,17 @@ From `AIGroup.cpp` (`groupMoveToPosition`, `friend_computeGroundPath`,
   mixed tank and infantry pair can deadlock at the start, until the real
   pathfinder (`findPath` through allies' cells, `findClosestPath`) is ported.
 
+### Landmark bridges
+
+From `TerrainLogic.cpp` (`addLandmarkBridgeToLogic`, `Bridge::Bridge(Object*)`):
+`IsBridge` objects (Monument train bridge, Tsing Ma, European landmark bridge,
+Asian flood bridge) become bridge layers: the object's box is the deck, flat at
+the object's height, end to end along its facing and as wide as the box. They
+load on every stock and Contra map that places them; where their ends meet the
+ground (Tsing Ma, the European bridge on gc_airgeneral) units cross them. Towers,
+damage and the bridge objects themselves come with M5. `ih-tools maps --uses
+NAME,...` lists the maps that place given templates.
+
 ### Crushers and fences (state hash v15)
 
 From `AIPathfind.cpp` (`validMovementPosition`, `m_crusherZones` and
@@ -737,7 +748,7 @@ been made on Windows. Remaining M4 work (movement and the simulation core):
 - Traffic: overlapping bodies (and with them vehicle crush damage), crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until
   space is free.
-- Objects: landmark bridges and walls.
+- Objects: wall pieces (`WALK_ON_TOP_OF_WALL`, the wall layer).
 - Drawables: truck wheel suspension and steering.
 
 Moved to M5, because they need weapons, bodies, containers or production:
