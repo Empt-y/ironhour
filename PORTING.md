@@ -570,6 +570,17 @@ From `AIGroup.cpp` (`groupMoveToPosition`, `friend_computeGroundPath`,
   mixed tank and infantry pair can deadlock at the start, until the real
   pathfinder (`findPath` through allies' cells, `findClosestPath`) is ported.
 
+### Wall pieces
+
+From `GameLogic::startNewGame` (the bridge pass) and `Pathfinder::newMap`:
+`WALK_ON_TOP_OF_WALL` map objects (the fortress walls on Fallen Empire, Iron
+Dragon and many Contra maps) are created first, by the neutral player, and their
+footprints become obstacle cells like any structure's, arches included, as
+`newMap` classifies every existing object. The wall-top layer
+(`classifyWallCells`, `WallHeight`) has no connection to the ground in the
+original; only units placed or garrisoned on walls reach it, so it comes with
+containers in M5.
+
 ### Landmark bridges
 
 From `TerrainLogic.cpp` (`addLandmarkBridgeToLogic`, `Bridge::Bridge(Object*)`):
@@ -748,7 +759,6 @@ been made on Windows. Remaining M4 work (movement and the simulation core):
 - Traffic: overlapping bodies (and with them vehicle crush damage), crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until
   space is free.
-- Objects: wall pieces (`WALK_ON_TOP_OF_WALL`, the wall layer).
 - Drawables: truck wheel suspension and steering.
 
 Moved to M5, because they need weapons, bodies, containers or production:

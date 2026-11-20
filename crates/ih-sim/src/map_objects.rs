@@ -7,8 +7,11 @@
 //! are client-only, and so is other `CLEARED_BY_BUILD` fluff without a fence
 //! width, because ironhour always takes the multiplayer setting
 //! (`forceFluffToProp`, `useTrees`) for self-determinism. Bridge-like templates
-//! (`IsBridge`, `WALK_ON_TOP_OF_WALL`) are created earlier in the original;
-//! landmark bridges and wall layers are not ported yet, so they are skipped.
+//! are created first, by the neutral player: wall pieces (`WALK_ON_TOP_OF_WALL`)
+//! become logic objects, obstacles to ground units (the wall-top layer, which
+//! only placed or garrisoned units reach, comes with containers in M5);
+//! landmark bridges (`IsBridge`) become bridge layers (`bridges`), their objects
+//! (towers, damage) waiting for M5.
 use crate::{
     footprint::{Footprint, Shape},
     templates::{Template, Templates},
@@ -22,8 +25,10 @@ pub enum Fate {
     TerrainPoint,
     /// No thing template (lights, test objects, removed units).
     NoTemplate,
-    /// Landmark bridges and wall pieces (pending).
+    /// Landmark bridges: a bridge layer; the object itself waits for M5.
     BridgeLike,
+    /// `WALK_ON_TOP_OF_WALL`: created first, neutral.
+    WallPiece,
     /// `OPTIMIZED_TREE`: a client drawable only.
     ClientTree,
     /// `PROP`, or `CLEARED_BY_BUILD` fluff without a fence: terrain-visual props.
@@ -52,8 +57,11 @@ pub fn fate(o: &MapObject, templates: &Templates) -> Fate {
     let Some(t) = templates.objects.get(template_name(&o.name)) else {
         return Fate::NoTemplate;
     };
-    if yes(t, "IsBridge") || t.has_kind("WALK_ON_TOP_OF_WALL") {
+    if yes(t, "IsBridge") {
         return Fate::BridgeLike;
+    }
+    if t.has_kind("WALK_ON_TOP_OF_WALL") {
+        return Fate::WallPiece;
     }
     // useTrees is always on: SHRUBBERY stays.
     if t.has_kind("OPTIMIZED_TREE") {
@@ -130,19 +138,25 @@ pub struct Placement {
     pub owner: u32,
 }
 
-/// The logic objects of the map, in map order.
+/// The logic objects of the map: wall pieces first (the bridge pass, neutral),
+/// then the rest, each in map order.
 pub fn placements(map: &Map, templates: &Templates) -> Vec<Placement> {
     let players = players(map);
-    map.objects
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| fate(o, templates) == Fate::Logic)
-        .map(|(index, o)| Placement {
-            index,
-            template: template_name(&o.name).to_string(),
-            position: o.position,
-            angle: ih_math::normalize_angle(o.angle),
-            owner: owner(map, &players, o.properties.ascii("originalOwner").unwrap_or_default()),
+    let players = &players;
+    let pass = |wanted: Fate| {
+        map.objects.iter().enumerate().filter(move |(_, o)| fate(o, templates) == wanted).map(move |(index, o)| {
+            Placement {
+                index,
+                template: template_name(&o.name).to_string(),
+                position: o.position,
+                angle: ih_math::normalize_angle(o.angle),
+                owner: if wanted == Fate::WallPiece {
+                    0
+                } else {
+                    owner(map, players, o.properties.ascii("originalOwner").unwrap_or_default())
+                },
+            }
         })
-        .collect()
+    };
+    pass(Fate::WallPiece).chain(pass(Fate::Logic)).collect()
 }

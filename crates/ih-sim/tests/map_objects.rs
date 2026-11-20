@@ -135,3 +135,27 @@ fn structures_leave_obstacle_cells_and_units_route_around_them() {
     assert!(ih_math::length([p[0] - 205.0, p[1] - 255.0]) < 0.5, "tank at {p:?}");
     assert!(sim.overlaps().is_empty());
 }
+
+#[test]
+fn wall_pieces_are_created_first_neutral_and_block_the_ground() {
+    let mut defs = Definitions::default();
+    defs.add_document(ih_ini::parse(INI));
+    defs.add_document(ih_ini::parse(
+        b"Object Wall\nKindOf = STRUCTURE IMMOBILE WALK_ON_TOP_OF_WALL\nGeometry = BOX\nGeometryMajorRadius = 30\nGeometryMinorRadius = 10\nEnd\n",
+    ));
+    let map = Map {
+        width: 44,
+        height: 44,
+        border: 2,
+        boundaries: vec![[40, 40]],
+        heights: vec![0; 44 * 44],
+        objects: vec![object("Barracks", 200.0, 200.0, "team"), object("Wall", 100.0, 300.0, "teamplayer1")],
+        ..Default::default()
+    };
+    let mut sim = Simulation::new(Arc::new(map), Arc::new(Templates::from_definitions(&defs)), 1);
+    sim.load_map_objects().unwrap();
+    let order: Vec<(&str, u32)> = sim.objects.values().map(|o| (o.template.as_str(), o.owner)).collect();
+    assert_eq!(order, [("Wall", 0), ("Barracks", 0)], "the bridge pass runs first, for the neutral player");
+    let at = |x: i32, y: i32| sim.grid.obstacles.kind[(y * 40 + x) as usize];
+    assert_eq!(at(10, 30), CellType::Obstacle);
+}
