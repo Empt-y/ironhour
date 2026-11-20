@@ -570,6 +570,16 @@ From `AIGroup.cpp` (`groupMoveToPosition`, `friend_computeGroundPath`,
   mixed tank and infantry pair can deadlock at the start, until the real
   pathfinder (`findPath` through allies' cells, `findClosestPath`) is ported.
 
+### Crushers and fences (state hash v15)
+
+From `AIPathfind.cpp` (`validMovementPosition`, `m_crusherZones` and
+`getEffectiveZone`'s crusher flag): units that can crush (`CrusherLevel` above
+0) may enter fence obstacle cells, so they path straight through fence lines
+that others must go round, with zones of their own. Each crusher gets a terrain
+view with fence cells open (only on maps that have fences). Contra's long
+Winding River run changes for that reason. A test drives a tank through a fence
+that a jeep goes round.
+
 ### Overlaps and the tread bump (state hash v15)
 
 From `PhysicsUpdate.cpp` (`addOverlap`, `checkForOverlapCollision`, the
@@ -599,7 +609,7 @@ Contra) and 492 on Winding River (764):
 | Bridges | `1f2b9dc9e736d9e6` | `af52c7c57759f1d2` |
 | Traffic, Tournament Desert (three move-asides) | `6f4c21109d71df68` | `e49e85bf11135c7b` |
 | Traffic, Winding River | `9665a7deaba31f84` | `dafb561fb780e488` |
-| Long map travel | `daecd893ec05fe56` | `2a915abe01e3ab0f` |
+| Long map travel | `daecd893ec05fe56` | `e3ba533f33a48f5a` |
 | Crusader through an enemy Ranger (crushed at frame 132) | `cb8f12b25aaf9e05` | |
 | Crusader through an allied Ranger (steps aside) | `5323288af2fdeb77` | |
 | Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `814b9529f95e68be` | `758cfbee7c6d3ce2` |
@@ -721,8 +731,7 @@ stock and Contra scenarios replay identically, and the asset-free fixtures asser
 fixed hashes on Windows, Linux and macOS in CI. Runs on installed data have only
 been made on Windows. Remaining M4 work (movement and the simulation core):
 
-- Navigation: crusher zones (crushers pass fence cells, `validMovementPosition`,
-  `m_crusherZones`), wall cells, incremental zone updates.
+- Navigation: wall cells, incremental zone updates.
 - Group moves: formations, waypoint appends, `findGroundPath` and the real
   `findPath` (routing through allies' cells, closest paths).
 - Traffic: overlapping bodies (and with them vehicle crush damage), crowded

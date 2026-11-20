@@ -30,6 +30,9 @@ pub mod surface {
     pub const CLIFF: u8 = 1 << 2;
     pub const AIR: u8 = 1 << 3;
     pub const RUBBLE: u8 = 1 << 4;
+    /// Not a surface: marks a crusher's view, where fence cells are open
+    /// (`validMovementPosition`: `isCrusher && isObstacleFence`).
+    pub const CRUSHER: u8 = 1 << 7;
 }
 
 impl CellType {
@@ -96,7 +99,12 @@ impl Obstacles {
     }
     /// The grid's `blocked` flags for a locomotor with these surfaces.
     pub fn blocked_for(&self, surfaces: u8) -> Vec<bool> {
-        self.kind.iter().map(|k| !k.allows(surfaces)).collect()
+        let crusher = surfaces & surface::CRUSHER != 0;
+        self.kind
+            .iter()
+            .zip(&self.fence)
+            .map(|(k, fence)| !(k.allows(surfaces) || (crusher && *fence && *k == CellType::Obstacle)))
+            .collect()
     }
     pub fn count(&self, kind: CellType) -> usize {
         self.kind.iter().filter(|k| **k == kind).count()

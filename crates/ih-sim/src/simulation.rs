@@ -161,8 +161,12 @@ impl Simulation {
         let grid = Terrain::from_map(&map, &templates);
         // One view per distinct locomotor surface mask that sees the cells differently.
         let mut views = BTreeMap::new();
-        for l in templates.locomotors.values().filter(|l| l.surface_movement()) {
-            let mask = l.surface_mask();
+        for t in templates.objects.values() {
+            let Some(l) = t.locomotor().and_then(|n| templates.locomotors.get(n)).filter(|l| l.surface_movement())
+            else {
+                continue;
+            };
+            let mask = view_key(t, l);
             if !views.contains_key(&mask) && grid.obstacles.blocked_for(mask) != grid.ground.blocked {
                 views.insert(mask, grid.view(mask));
             }
@@ -506,7 +510,7 @@ impl Simulation {
         let t = &self.templates.objects[&self.objects[&id].template];
         t.locomotor()
             .and_then(|n| self.templates.locomotors.get(n))
-            .and_then(|l| self.views.get(&l.surface_mask()))
+            .and_then(|l| self.views.get(&view_key(t, l)))
             .unwrap_or(&self.grid)
     }
     pub(crate) fn route_to(&self, id: u32, target: [f32; 2]) -> Result<VecDeque<Waypoint>, SimError> {
@@ -851,7 +855,7 @@ impl Simulation {
             }
             speed = speed.min(tr.bump_speed_limit);
         }
-        let grid = self.views.get(&l.surface_mask()).unwrap_or(&self.grid);
+        let grid = self.views.get(&view_key(t, l)).unwrap_or(&self.grid);
         steer(o, l, grid, &self.map, self.frame, radii, speed, &mut blocked);
         if !blocked && o.blocked_frames > 1 {
             o.blocked_frames = 1;
@@ -2129,6 +2133,13 @@ fn steer(
     o.position[0] = before[0];
     o.position[1] = before[1];
     o.slide = [slide[0] + pivot[0], slide[1] + pivot[1]];
+}
+
+/// The terrain view for a template: its locomotor's surfaces, plus the crusher
+/// flag when it can crush (`getCrusherLevel() > 0`), whose view opens fence cells.
+fn view_key(t: &crate::templates::Template, l: &Locomotor) -> u8 {
+    let crusher = if t.number("CrusherLevel", 0.0) > 0.0 { crate::footprint::surface::CRUSHER } else { 0 };
+    l.surface_mask() | crusher
 }
 
 /// Integer nanosecond accumulator: clients interpolate between 30 Hz snapshots.
