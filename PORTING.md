@@ -767,18 +767,20 @@ shadows and track marks.
 ### Still required for M4
 
 The milestone check (units path across a map on command; a command log gives the
-same state hashes everywhere) is met for ground and helicopter movement: seventeen
+same state hashes everywhere) is met for ground, helicopter and group movement: seventeen
 stock and Contra scenarios replay identically, and the asset-free fixtures assert
 fixed hashes on Windows, Linux and macOS in CI. Runs on installed data have only
 been made on Windows. Remaining M4 work (movement and the simulation core):
 
-- Navigation: wall cells, incremental zone updates.
-- Group moves: formations, waypoint appends, `findGroundPath` and the real
-  `findPath` (routing through allies' cells, closest paths).
+- Pathfinder: the real `findPath` (cell costs, routing through allies' cells,
+  `findClosestPath`) and `findGroundPath`, which would remove the traffic and
+  group stand-ins listed above.
+- Group moves: formations and waypoint appends (with the control bar, M6).
 - Traffic: overlapping bodies (and with them vehicle crush damage), crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until
   space is free.
-- Drawables: tread scrolling (`W3DTankDraw`).
+- Drawables: tread scrolling (`W3DTankDraw`), which needs per-instance texture
+  offsets in the renderer.
 
 Moved to M5, because they need weapons, bodies, containers or production:
 
@@ -787,6 +789,8 @@ Moved to M5, because they need weapons, bodies, containers or production:
   `MissileAIUpdate`. Airfield take-off and landing (`JetAIUpdate`).
 - Damage-state speed penalties, bouncing and falling damage, rubble cells and
   obstacle removal on death, bridge damage, destruction and repair.
+- Incremental zone updates (obstacles change only when things are built or
+  destroyed) and the wall-top layer (reached only by placed or garrisoned units).
 - Combat, guard, transport, mood and other AI states; disabled side effects
   (inertia, held transports, tint, special-power timers, riders, power).
 - Map object properties (health, veterancy, names for scripts), build lists and
