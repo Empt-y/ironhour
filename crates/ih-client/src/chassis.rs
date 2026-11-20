@@ -28,6 +28,21 @@ pub struct LocoInfo {
     pub wobble: f32,
     pub yaw_modulator: f32,
     pub pitch_modulator: f32,
+    /// `TWheelInfo`, for the truck draw modules.
+    pub wheels: WheelInfo,
+}
+
+/// `TWheelInfo`: suspension offsets and front-wheel angle.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WheelInfo {
+    pub front_left: f32,
+    pub front_right: f32,
+    pub rear_left: f32,
+    pub rear_right: f32,
+    /// 0 straight, positive left.
+    pub angle: f32,
+    pub frames_airborne_counter: i32,
+    pub frames_airborne: i32,
 }
 impl Default for LocoInfo {
     fn default() -> Self {
@@ -46,6 +61,7 @@ impl Default for LocoInfo {
             wobble: 1.0,
             yaw_modulator: 0.0,
             pitch_modulator: 0.0,
+            wheels: WheelInfo::default(),
         }
     }
 }
@@ -106,6 +122,9 @@ pub struct Motion {
     pub overlap: Option<Overlap>,
     /// Whether something was overlapped last update (`getPreviousOverlap`).
     pub previous_overlap: bool,
+    /// `getTurning` (-1, 0, 1) and the sign of `getForwardSpeed2D`.
+    pub turning: i8,
+    pub backwards: bool,
 }
 
 /// The overlapped object, as the tread model reads it.
@@ -259,6 +278,19 @@ fn treads(c: &Chassis, i: &mut LocoInfo, m: &Motion, x: &mut Xform, rng: &mut Cl
 /// `calcPhysicsXformWheels` and `calcPhysicsXformMotorcycle`, chassis only.
 fn wheels(c: &Chassis, i: &mut LocoInfo, m: &Motion, x: &mut Xform, rng: &mut ClientRng, motorcycle: bool) {
     let (ground_pitch, ground_roll) = ground_pitch_roll(m);
+    if m.airborne && c.has_suspension {
+        // Wheels extend when airborne.
+        let w = &mut i.wheels;
+        w.frames_airborne = 0;
+        w.frames_airborne_counter += 1;
+        let target = if m.height_above > -c.max_wheel_extension { c.max_wheel_extension } else { 0.0 };
+        w.rear_left += (target - w.rear_left) / 2.0;
+        if motorcycle {
+            w.rear_right = w.rear_left;
+        } else {
+            w.rear_right += (target - w.rear_right) / 2.0;
+        }
+    }
     if m.airborne {
         let pitch_height = m.length * ih_math::sin(i.pitch + i.accel_pitch - ground_pitch);
         let roll_height = m.width * ih_math::sin(i.roll + i.accel_roll - ground_roll);
@@ -308,6 +340,9 @@ fn wheels(c: &Chassis, i: &mut LocoInfo, m: &Motion, x: &mut Xform, rng: &mut Cl
     x.z = 0.0;
     let pitch_height = m.length * ih_math::sin(x.pitch - ground_pitch);
     let roll_height = m.width * ih_math::sin(x.roll - ground_roll);
+    if c.has_suspension {
+        suspension(c, &mut i.wheels, m, pitch_height, roll_height);
+    }
     // Above 22 degrees the chassis rises.
     let pitch = (x.pitch - ground_pitch).abs();
     let mut divisor = 4.0;
@@ -316,6 +351,62 @@ fn wheels(c: &Chassis, i: &mut LocoInfo, m: &Motion, x: &mut Xform, rng: &mut Cl
     }
     x.z += pitch_height.abs() / divisor;
     x.z += roll_height.abs() / divisor;
+}
+
+/// The `DO_WHEELS` part of `calcPhysicsXformWheels`: wheel angle from the turn,
+/// and each wheel's offset from the chassis pitch and roll (spring factor 0.9,
+/// dropping wheels damped by half, none below the maximum extension).
+fn suspension(c: &Chassis, w: &mut WheelInfo, m: &Motion, pitch_height: f32, roll_height: f32) {
+    w.frames_airborne = w.frames_airborne_counter;
+    w.frames_airborne_counter = 0;
+    let mut angle = match m.turning {
+        -1 => -c.wheel_turn_angle,
+        1 => c.wheel_turn_angle,
+        _ => 0.0,
+    };
+    if m.backwards {
+        angle = -angle; // moving backwards, the wheels turn the other way
+    }
+    // WHEEL_SMOOTHNESS 10: small steps cover the AI's left-straight-right twitching.
+    w.angle += (angle - w.angle) / 10.0;
+    const SPRING: f32 = 0.9;
+    let (p, r) = (pitch_height, roll_height);
+    let (mut fl, mut fr, mut rl, mut rr) = if p < 0.0 {
+        // Front raising up.
+        let f = SPRING * (p / 3.0 + p / 2.0);
+        let b = -p / 2.0 + p / 4.0;
+        (f, f, b, b)
+    } else {
+        // Back raising up.
+        let f = -p / 4.0 + p / 2.0;
+        let b = SPRING * (-p / 2.0 + -p / 3.0);
+        (f, f, b, b)
+    };
+    if r > 0.0 {
+        // Right raising up.
+        fr += -SPRING * (r / 3.0 + r / 2.0);
+        rr += -SPRING * (r / 3.0 + r / 2.0);
+        rl += r / 2.0 - r / 4.0;
+        fl += r / 2.0 - r / 4.0;
+    } else {
+        // Left raising up.
+        fr += -r / 2.0 + r / 4.0;
+        rr += -r / 2.0 + r / 4.0;
+        rl += SPRING * (r / 3.0 + r / 2.0);
+        fl += SPRING * (r / 3.0 + r / 2.0);
+    }
+    for (cur, new) in
+        [(&mut w.front_left, fl), (&mut w.front_right, fr), (&mut w.rear_left, rl), (&mut w.rear_right, rr)]
+    {
+        if new < *cur {
+            *cur += (new - *cur) / 2.0; // going down: dampen
+        } else {
+            *cur = new;
+        }
+        if *cur < c.max_wheel_extension {
+            *cur = c.max_wheel_extension;
+        }
+    }
 }
 
 /// `calcPhysicsXformHoverOrWings`.
@@ -396,6 +487,8 @@ mod tests {
             radius: 10.0,
             overlap: None,
             previous_overlap: false,
+            turning: 0,
+            backwards: false,
         }
     }
 

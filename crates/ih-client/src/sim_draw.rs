@@ -36,6 +36,8 @@ impl ArtSource for ArtCache {
 /// A template's draw modules.
 struct TemplateDraws {
     modules: Vec<ModelDrawData>,
+    /// Per module: truck wheel data (`W3DTruckDraw`, `W3DTankTruckDraw`).
+    trucks: Vec<Option<crate::truck::TruckDraw>>,
     scale: f32,
 }
 
@@ -46,6 +48,8 @@ struct ObjectDraw {
     /// Chassis motion: state, the last two logic frames' results, and the frame stepped.
     loco: crate::chassis::LocoInfo,
     xform: [crate::chassis::Xform; 2],
+    /// Per module: truck wheel state.
+    trucks: Vec<crate::truck::TruckState>,
     stepped: Option<u32>,
 }
 
@@ -85,13 +89,13 @@ impl SimDrawables {
             }
             let Some(t) = templates.objects.get(&name) else { continue };
             out.rings.insert(name.clone(), renderer.prepare_model(assets, &ring(t.radius().max(4.0))));
-            let modules: Vec<ModelDrawData> = t
+            let (modules, trucks): (Vec<ModelDrawData>, Vec<_>) = t
                 .modules
                 .iter()
                 .filter(|m| m.kind == "Draw")
-                .map(|m| ModelDrawData::parse(&m.block))
-                .filter(|d| !d.states.is_empty())
-                .collect();
+                .map(|m| (ModelDrawData::parse(&m.block), crate::truck::TruckDraw::parse(&m.class, &m.block)))
+                .filter(|(d, _)| !d.states.is_empty())
+                .unzip();
             for d in &modules {
                 for s in d.states.iter().chain(d.transitions.values()) {
                     out.load_model(renderer, assets, &s.model);
@@ -107,7 +111,7 @@ impl SimDrawables {
                     }
                 }
             }
-            out.templates.insert(name.clone(), TemplateDraws { modules, scale: t.number("Scale", 1.0) });
+            out.templates.insert(name.clone(), TemplateDraws { modules, trucks, scale: t.number("Scale", 1.0) });
         }
         out
     }
@@ -162,6 +166,7 @@ impl SimDrawables {
                 last_ms: time_ms,
                 loco: Default::default(),
                 xform: Default::default(),
+                trucks: vec![Default::default(); td.modules.len()],
                 stepped: None,
             });
             let dt = (time_ms - entry.last_ms).max(0.0);
@@ -174,6 +179,13 @@ impl SimDrawables {
             // applyPhysicsXform, stepped once per logic frame and interpolated.
             if entry.stepped != Some(sim.frame) {
                 let x = chassis_step(sim, o, &mut entry.loco, &mut self.rng);
+                // W3DTruckDraw::doDrawModule's wheel part, once per logic frame too.
+                let motion = truck_motion(sim, o);
+                for (state, data) in entry.trucks.iter_mut().zip(&td.trucks) {
+                    if let Some(d) = data {
+                        crate::truck::step(d, state, &entry.loco.wheels, &motion);
+                    }
+                }
                 entry.xform = if entry.stepped.is_some() { [entry.xform[1], x] } else { [x, x] };
                 entry.stepped = Some(sim.frame);
             }
@@ -182,17 +194,22 @@ impl SimDrawables {
                 * Mat4::from_rotation_z(o.angle)
                 * Mat4::from_scale(Vec3::splat(td.scale))
                 * x.matrix();
-            for (state, data) in entry.states.iter_mut().zip(&td.modules) {
+            for (index, (state, data)) in entry.states.iter_mut().zip(&td.modules).enumerate() {
                 if changed {
                     state.set_conditions(data, &flags, &mut self.art);
                 }
                 state.update(data, dt, speed, &mut self.art);
                 let Some(art) = self.art.models.get(&state.model) else { continue };
                 let anim = state.playback.anim.as_ref().and_then(|a| self.art.animations.get(a));
-                let bones = match (&art.hierarchy, anim) {
-                    (Some(h), Some(a)) => ih_render::pose::animated_pose(h, a, state.playback.frame, root).0,
-                    (Some(h), None) => ih_render::pose::base_pose(h, root),
-                    _ => vec![root],
+                let bones = match &art.hierarchy {
+                    Some(h) => {
+                        let controls = match &td.trucks[index] {
+                            Some(d) => crate::truck::controls(d, &entry.trucks[index], &entry.loco.wheels, h),
+                            None => Vec::new(),
+                        };
+                        ih_render::pose::controlled_pose(h, anim.map(|a| &**a), state.playback.frame, root, &controls).0
+                    }
+                    None => vec![root],
                 };
                 let hidden: Arc<[bool]> = state.hidden.clone().into();
                 scene.instances.push(renderer.instance_hiding(&art.prepared, &bones, hidden));
@@ -204,6 +221,23 @@ impl SimDrawables {
                 scene.instances.push(renderer.instance(ring, &[Mat4::from_translation(p + Vec3::Z * 0.2)]));
             }
         }
+    }
+}
+
+/// What the truck wheels read from the logic object this frame.
+fn truck_motion(sim: &Simulation, o: &ih_sim::simulation::Object) -> crate::truck::TruckMotion {
+    let v = o.physics.vel;
+    let at = ih_sim::terrain::Waypoint { position: [o.position[0], o.position[1]], layer: o.layer };
+    let (height, _) = sim.grid.height_and_normal(&sim.map, at);
+    crate::truck::TruckMotion {
+        speed: (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
+        backwards: o.loco.moving_backwards,
+        motive: o.physics.motive_expires > sim.frame,
+        airborne: o.position[2] - height > -9.0 * ih_sim::locomotion::DEFAULT_GRAVITY,
+        turning: o.physics.turning,
+        angle_to_path: o.path.get(1).map(|p| {
+            ih_math::angle_delta(o.angle, ih_math::atan2(p.position[1] - o.position[1], p.position[0] - o.position[0]))
+        }),
     }
 }
 
@@ -251,6 +285,8 @@ fn chassis_step(
             })
         }),
         previous_overlap: o.physics.previous_overlap != 0,
+        turning: o.physics.turning,
+        backwards: o.loco.moving_backwards,
     };
     crate::chassis::step(&l.chassis, info, &m, rng).unwrap_or_default()
 }

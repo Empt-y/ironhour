@@ -53,6 +53,8 @@ pub struct Physics {
     /// `m_currentOverlap` and `m_previousOverlap`: what this body is driving over (0 none).
     pub current_overlap: u32,
     pub previous_overlap: u32,
+    /// `getTurning`: -1, 0 or 1 when the locomotor turned at its limit this update.
+    pub turning: i8,
     /// The template's `PhysicsBehavior` data.
     pub data: PhysicsData,
 }
@@ -187,7 +189,20 @@ impl Body<'_> {
     fn friction(&self, base: f32) -> f32 {
         (base + self.physics.extra_friction).clamp(MIN_NON_AERO_FRICTION, MAX_FRICTION)
     }
+}
 
+/// `PhysicsTurningType` from `rotateObjAroundLocoPivot`: turning at the limit.
+fn turning(rel: f32, max_turn: f32) -> i8 {
+    if rel > max_turn {
+        1
+    } else if rel < -max_turn {
+        -1
+    } else {
+        0
+    }
+}
+
+impl Body<'_> {
     /// `rotateObjAroundLocoPivot`; returns the signed angle still to turn.
     fn rotate_around_pivot(&mut self, l: &Locomotor, goal: [f32; 2], max_turn: f32) -> f32 {
         let angle = *self.angle;
@@ -202,6 +217,7 @@ impl Body<'_> {
             }
             let rel = ih_math::angle_delta(angle, ih_math::atan2(dy, dx));
             let amount = rel.clamp(-max_turn, max_turn);
+            self.physics.turning = turning(rel, max_turn);
             // Rotate the object's position about the pivot by `amount`.
             let (s, c) = (ih_math::sin(amount), ih_math::cos(amount));
             let (px, py) = (self.position[0] - turn[0], self.position[1] - turn[1]);
@@ -212,6 +228,7 @@ impl Body<'_> {
         } else {
             let rel =
                 ih_math::angle_delta(angle, ih_math::atan2(goal[1] - self.position[1], goal[0] - self.position[0]));
+            self.physics.turning = turning(rel, max_turn);
             *self.angle = normalize_angle(angle + rel.clamp(-max_turn, max_turn));
             rel
         }
@@ -248,6 +265,8 @@ impl Body<'_> {
         z: Heights,
     ) -> [f32; 2] {
         self.loco.maintain_pos = None;
+        // locoUpdate_moveTowardsPosition starts with setTurning(TURN_NONE).
+        self.physics.turning = 0;
         let max_speed = l.speed;
         desired_speed = desired_speed.min(max_speed);
         let stop_at_max = (max_speed / l.braking) * max_speed / 2.0;
@@ -540,6 +559,7 @@ impl Body<'_> {
     /// `locoUpdate_maintainCurrentPosition` for ground locomotors.
     /// Returns whether it must keep being called (hovering or circling).
     pub fn maintain_current_position(&mut self, l: &Locomotor, z: Heights) -> bool {
+        self.physics.turning = 0;
         let pos = *self.maintain_pos_or_here();
         self.loco.donut_timer = self.frame + DONUT_FRAMES;
         self.loco.is_braking = false;

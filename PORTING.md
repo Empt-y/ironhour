@@ -619,27 +619,46 @@ overlap hand-over at the end of `update`, `calcSleepTime`) and `Drawable.cpp`
 - Not yet: the zero-damage crush hit (`DamageFX`), front and back crush states
   and the crush point logic, which need bodies (M5).
 
-All seventeen scenarios pass with v15 hashes (every-tick replay equality, no
+### Truck wheels and turning (state hash v16)
+
+From `W3DTruckDraw.cpp` (`doDrawModule`, `updateBones`), the wheel part of
+`W3DTankTruckDraw.cpp`, `Drawable::calcPhysicsXformWheels`' `DO_WHEELS` blocks,
+`Locomotor::rotateObjAroundLocoPivot` and `HTreeClass::Control_Bone`:
+
+- The logic keeps `getTurning` (turning at the limit this update, cleared at the
+  start of each move), hashed, hence v16.
+- Wheeled vehicles with `HasSuspension` keep per-wheel offsets and a steering
+  angle (spring factor 0.9, dropping wheels damped, extension limit, smoothing
+  by tenths, reversed when backing up), and their wheels extend when airborne.
+- Truck draw modules spin their tires with speed (backwards when reversing, the
+  rear faster while powersliding), steer and lift the front tires, lift the rear
+  ones, drive the mid pairs, and swing a cab towards the path and a trailer the
+  other way, by controlling bones after the animation pose as `Control_Bone`
+  does. Motorcycles use the four-wheel suspension rules.
+- Not yet: dust, dirt and powerslide effects and sounds (particles, audio), and
+  `W3DTankDraw`'s tread scrolling.
+
+All seventeen scenarios pass with v16 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals),
 now with every map object loaded: 142 logic objects on Tournament Desert (756 with
 Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `9353700493becfa0` | `b161540728f1fc31` |
-| AI/status orders | `d625745307e06f6c` | `1a4be16b6381d580` |
-| Bridges | `1f2b9dc9e736d9e6` | `af52c7c57759f1d2` |
-| Traffic, Tournament Desert (three move-asides) | `6f4c21109d71df68` | `e49e85bf11135c7b` |
-| Traffic, Winding River | `9665a7deaba31f84` | `dafb561fb780e488` |
-| Long map travel | `daecd893ec05fe56` | `e3ba533f33a48f5a` |
-| Crusader through an enemy Ranger (crushed at frame 132) | `cb8f12b25aaf9e05` | |
-| Crusader through an allied Ranger (steps aside) | `5323288af2fdeb77` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `814b9529f95e68be` | `758cfbee7c6d3ce2` |
-| Group move across Tournament Desert, then gather (`m4-group`) | `6d5a0b23610c2a25` | |
+| Desert (`m4-desert` / `m4-contra`) | `387bf78ac1f6f6a7` | `30bde09daa5df1f4` |
+| AI/status orders | `351c9012c36ef05f` | `b4662293ac58b4b1` |
+| Bridges | `88acb55e28cf4839` | `e8f4bc1e7cc349d5` |
+| Traffic, Tournament Desert (three move-asides) | `f41dc0ff3e07af9b` | `591b2d9156d603b0` |
+| Traffic, Winding River | `3d4582ed81caebdb` | `77920fe2a9ae1647` |
+| Long map travel | `d9d9b1034c61a9e9` | `701f331ecfb89675` |
+| Crusader through an enemy Ranger (crushed at frame 132) | `0b10383d2dfa496a` | |
+| Crusader through an allied Ranger (steps aside) | `71d778e59d93a55c` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `f79bee39535e32a9` | `8b1fc73e686ebcd1` |
+| Group move across Tournament Desert, then gather (`m4-group`) | `3594e1aa80ee9440` | |
 
-Asset-free fixtures: `6ff495c72d409509` (ground), `ad7dd508a33210df`
-(bridge/deck stop), `f861fd104554929b` (head-on traffic, resolved by a
-move-aside), `4b2f36c57f038bfa` (AI/status orders). Unit tests also cover a tank
+Asset-free fixtures: `87aaf71c7fb391f4` (ground), `5061e484e5c3d3d6`
+(bridge/deck stop), `f9a106e167100524` (head-on traffic, resolved by a
+move-aside), `2931e91aa547ffcb` (AI/status orders). Unit tests also cover a tank
 squishing enemy infantry, allied infantry stepping aside, a hovering body
 climbing to and holding its preferred height (over ground and water), box,
 circle and fence footprints with pinched-gap closing, map-object sorting and
@@ -759,7 +778,7 @@ been made on Windows. Remaining M4 work (movement and the simulation core):
 - Traffic: overlapping bodies (and with them vehicle crush damage), crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until
   space is free.
-- Drawables: truck wheel suspension and steering.
+- Drawables: tread scrolling (`W3DTankDraw`).
 
 Moved to M5, because they need weapons, bodies, containers or production:
 

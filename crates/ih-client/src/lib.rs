@@ -7,6 +7,7 @@ pub mod condition;
 pub mod defs;
 pub mod drawable;
 pub mod sim_draw;
+pub mod truck;
 pub mod world;
 
 pub use camera::TacticalCamera;

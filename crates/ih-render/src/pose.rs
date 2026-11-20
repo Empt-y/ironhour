@@ -22,22 +22,26 @@ fn base_local(h: &Hierarchy, i: usize) -> Mat4 {
 
 /// World transforms of every pivot in the rest pose.
 pub fn base_pose(h: &Hierarchy, root: Mat4) -> Vec<Mat4> {
-    let mut out = Vec::with_capacity(h.pivots.len());
-    for i in 0..h.pivots.len() {
-        let m = match (i, h.pivots[i].parent) {
-            (0, _) => root,
-            (_, Some(p)) if (p as usize) < i => out[p as usize] * base_local(h, i),
-            _ => root * base_local(h, i),
-        };
-        out.push(m);
-    }
-    out
+    controlled_pose(h, None, 0.0, root, &[]).0
 }
 
 /// World transforms and visibility of every pivot at `frame` of `anim`.
-#[allow(clippy::needless_range_loop)] // indexes several parallel arrays
 pub fn animated_pose(h: &Hierarchy, anim: &Animation, frame: f32, root: Mat4) -> (Vec<Mat4>, Vec<bool>) {
-    let sampler = Sampler::new(anim, h.pivots.len());
+    controlled_pose(h, Some(anim), frame, root, &[])
+}
+
+/// The pose with captured bones (`HTreeClass::Control_Bone`, `PivotClass::Capture_Update`):
+/// each control is applied after the pivot's animated local transform, so its
+/// children follow.
+#[allow(clippy::needless_range_loop)] // indexes several parallel arrays
+pub fn controlled_pose(
+    h: &Hierarchy,
+    anim: Option<&Animation>,
+    frame: f32,
+    root: Mat4,
+    controls: &[(usize, Mat4)],
+) -> (Vec<Mat4>, Vec<bool>) {
+    let sampler = anim.map(|a| Sampler::new(a, h.pivots.len()));
     let mut out: Vec<Mat4> = Vec::with_capacity(h.pivots.len());
     let mut visible = vec![true; h.pivots.len()];
     for i in 0..h.pivots.len() {
@@ -50,10 +54,13 @@ pub fn animated_pose(h: &Hierarchy, anim: &Animation, frame: f32, root: Mat4) ->
             _ => root,
         };
         let mut m = parent * base_local(h, i);
-        if i < sampler.pivots {
-            let (t, q) = sampler.transform(i, frame);
+        if let Some(s) = sampler.as_ref().filter(|s| i < s.pivots) {
+            let (t, q) = s.transform(i, frame);
             m = m * Mat4::from_translation(t) * Mat4::from_quat(q);
-            visible[i] = sampler.visible(i, frame);
+            visible[i] = s.visible(i, frame);
+        }
+        if let Some((_, c)) = controls.iter().find(|(b, _)| *b == i) {
+            m *= *c;
         }
         out.push(m);
     }
