@@ -522,20 +522,79 @@ impl Simulation {
         } else {
             self.grid.destination(&self.map, target)
         };
-        self.route_to_waypoint(id, goal)
+        self.route_to_waypoint(id, goal, true).map(|(path, _)| path)
     }
-    fn route_to_waypoint(&self, id: u32, goal: Waypoint) -> Result<VecDeque<Waypoint>, SimError> {
+    /// What the pathfinder reads from an object.
+    pub(crate) fn mover(&self, id: u32) -> crate::pathfind::Mover {
+        let o = &self.objects[&id];
+        let t = &self.templates.objects[&o.template];
+        let l = t.locomotor().and_then(|n| self.templates.locomotors.get(n));
+        let (radius, center) = crate::goals::radius_and_center(t.collision_radius());
+        crate::pathfind::Mover {
+            id,
+            owner: o.owner,
+            layer: o.layer,
+            radius,
+            center,
+            crusher: t.number("CrusherLevel", 0.0) > 0.0,
+            surfaces: l.map_or(0, |l| view_key(t, l)),
+            infantry: t.has_kind("INFANTRY"),
+            through_units: false,
+            downhill: l.is_some_and(|l| l.downhill_only),
+            aircraft_goals: !self.ground_movement(id)
+                && l.is_some_and(|l| {
+                    matches!(l.appearance, crate::templates::Appearance::Hover | crate::templates::Appearance::Wings)
+                }),
+        }
+    }
+    /// The pathfinder for an object, over its terrain view.
+    pub(crate) fn pathfinder(&self, id: u32) -> crate::pathfind::Pathfinder<'_> {
+        crate::pathfind::Pathfinder {
+            terrain: self.terrain(id),
+            map: &self.map,
+            units: &self.unit_cells,
+            objects: &self.objects,
+            templates: &self.templates,
+            mover: self.mover(id),
+        }
+    }
+    /// `AIUpdateInterface::computePath`: flyers and clear lines to an intermediate
+    /// point take the straight line (`computeQuickPath`); otherwise `findPath`,
+    /// falling back to `findClosestPath`. Returns the path (without its start) and
+    /// the goal it ends at.
+    fn route_to_waypoint(
+        &self,
+        id: u32,
+        goal: Waypoint,
+        final_goal: bool,
+    ) -> Result<(VecDeque<Waypoint>, [f32; 2]), SimError> {
         let o = &self.objects[&id];
         let target = goal.position;
-        let t = &self.templates.objects[&o.template];
         if self.flyer(id) {
             // canComputeQuickPath / computeQuickPath: flyers go straight to the goal.
-            return Ok(VecDeque::from([Waypoint { position: target, layer: 0 }]));
+            return Ok((VecDeque::from([Waypoint { position: target, layer: 0 }]), target));
         }
-        self.terrain(id)
-            .path(Waypoint { position: [o.position[0], o.position[1]], layer: o.layer }, goal, t.radius())
-            .map(Into::into)
-            .ok_or_else(|| SimError(format!("object {id}: target is blocked or unreachable")))
+        let pf = self.pathfinder(id);
+        let from = [o.position[0], o.position[1]];
+        if !final_goal && pf.is_line_passable(o.layer, from, target, false, true) {
+            return Ok((VecDeque::from([goal]), target));
+        }
+        let unreachable = || SimError(format!("object {id}: target is blocked or unreachable"));
+        // The original clips a destination beyond the pathfind extent to its edge;
+        // until scripts send units off the map, ironhour rejects it.
+        let size = [self.grid.width as f32 * CELL, self.grid.height as f32 * CELL];
+        if !(0.0..size[0]).contains(&target[0]) || !(0.0..size[1]).contains(&target[1]) {
+            return Err(unreachable());
+        }
+        if !pf.valid_position(goal.layer, target) {
+            return Err(unreachable());
+        }
+        if let Some(path) = pf.find_path(from, target, goal.layer) {
+            return Ok((path.optimized().into(), path.nodes.last().map_or(target, |w| w.position)));
+        }
+        pf.find_closest_path(from, target, goal.layer, false, 0.0)
+            .map(|(path, to)| (path.optimized().into(), path.nodes.last().map_or(to, |w| w.position)))
+            .ok_or_else(unreachable)
     }
     pub(crate) fn begin_move(
         &mut self,
@@ -545,9 +604,9 @@ impl Simulation {
         remaining: VecDeque<[f32; 2]>,
     ) -> Result<(), SimError> {
         self.validate_mobile(id, false)?;
-        let goal = self.choose_goal(id, target, state, remaining.is_empty());
-        let target = goal.position;
-        let path = self.route_to_waypoint(id, goal)?;
+        let last = remaining.is_empty();
+        let goal = self.choose_goal(id, target, state, last);
+        let (path, target) = self.route_to_waypoint(id, goal, state == AiState::MoveTo || last)?;
         let o = self.objects.get_mut(&id).unwrap();
         o.ai.begin(state, self.frame);
         o.ai.remaining = remaining;
@@ -581,7 +640,7 @@ impl Simulation {
                 self.snap_closest_goal(id, &mut goal, layer);
             }
             self.update_goal(id, goal, layer);
-        } else if !self.objects[&id].ai.keep_goal {
+        } else {
             self.remove_goal(id);
         }
         Waypoint { position: goal, layer }
@@ -770,9 +829,8 @@ impl Simulation {
                     if let Some(target) = next {
                         let last = self.objects[&id].ai.remaining.is_empty();
                         let goal = self.choose_goal(id, target, AiState::FollowPath, last);
-                        let target = goal.position;
-                        match self.route_to_waypoint(id, goal) {
-                            Ok(path) => {
+                        match self.route_to_waypoint(id, goal, last) {
+                            Ok((path, target)) => {
                                 let o = self.objects.get_mut(&id).unwrap();
                                 o.path = path;
                                 // The first node is the start of the current segment (`Path` keeps its start node).
@@ -831,7 +889,10 @@ impl Simulation {
     /// `AIUpdateInterface::doLocomotor` for path following: collisions found last
     /// frame block this frame's drive, capped to how fast the blocker moves away.
     fn drive(&mut self, id: u32) {
-        let o = self.objects.get_mut(&id).unwrap();
+        let mover = self.mover(id);
+        // Out of the map while it steers, so the pathfinder can read the others.
+        let mut owned = self.objects.remove(&id).unwrap();
+        let o = &mut owned;
         let t = &self.templates.objects[&o.template];
         let Some(l) = t.locomotor().and_then(|n| self.templates.locomotors.get(n)) else { return };
         let radii = (t.number("GeometryMajorRadius", 5.0) * t.number("Scale", 1.0), t.collision_radius(), t.radius());
@@ -856,11 +917,20 @@ impl Simulation {
             speed = speed.min(tr.bump_speed_limit);
         }
         let grid = self.views.get(&view_key(t, l)).unwrap_or(&self.grid);
-        steer(o, l, grid, &self.map, self.frame, radii, speed, &mut blocked);
+        let pf = crate::pathfind::Pathfinder {
+            terrain: grid,
+            map: &self.map,
+            units: &self.unit_cells,
+            objects: &self.objects,
+            templates: &self.templates,
+            mover,
+        };
+        steer(o, l, grid, &self.map, self.frame, radii, speed, &mut blocked, &pf);
         if !blocked && o.blocked_frames > 1 {
             o.blocked_frames = 1;
         }
         o.traffic.max_blocked_speed = traffic::FAST_AS_POSSIBLE;
+        self.objects.insert(id, owned);
     }
 
     /// Leaving `AI_MOVE_OUT_OF_THE_WAY` (`AIMoveOutOfTheWayState::onExit`): drop the
@@ -958,14 +1028,16 @@ impl Simulation {
         let radius = self.templates.objects[&o.template].radius();
         let to = [from[0] + velocity[0], from[1] + velocity[1]];
         // On the ground the original lets bodies move freely and the locomotor's
-        // fixInvalidPosition pushes them off invalid cells. Deck edges still stop a
-        // step, since falling off a bridge is not modelled yet.
+        // fixInvalidPosition pushes them off invalid cells. A step over a deck's
+        // side still stops, since falling off a bridge is not modelled yet; at the
+        // ends units drive on and off (`updateLayer` moves them to the ground).
         if layer != 0
             && !self.terrain(id).line_on(
                 Waypoint { position: [from[0], from[1]], layer },
                 Waypoint { position: to, layer },
                 radius,
             )
+            && self.grid.layers[layer as usize - 1].bridge.beside_deck(to)
         {
             let ground = self.grid.height_at(&self.map, Waypoint { position: [from[0], from[1]], layer });
             let o = self.objects.get_mut(&id).unwrap();
@@ -1341,7 +1413,7 @@ impl Simulation {
             return false;
         }
         let mut probe = o.clone();
-        let (goal, _, _) = point_on_path(&mut probe, self.terrain(id), &self.map, t.radius());
+        let (goal, _, _) = point_on_path(&mut probe, self.terrain(id), &self.map, &self.pathfinder(id));
         let rel = ih_math::angle_delta(o.angle, ih_math::atan2(goal[1] - o.position[1], goal[0] - o.position[0]));
         rel.abs() > std::f32::consts::PI / 30.0
     }
@@ -1513,19 +1585,7 @@ impl Simulation {
     /// `Object::canCrushOrSquish`. Allies (same owner, until players and teams
     /// exist) never crush each other.
     pub fn can_crush_or_squish(&self, a: u32, b: u32, test: CrushTest) -> bool {
-        let (Some(oa), Some(ob)) = (self.objects.get(&a), self.objects.get(&b)) else { return false };
-        if oa.disabled.has(DisabledReason::Unmanned) || oa.owner == ob.owner {
-            return false;
-        }
-        let (ta, tb) = (&self.templates.objects[&oa.template], &self.templates.objects[&ob.template]);
-        let crusher = ta.number("CrusherLevel", 0.0) as i32;
-        if crusher <= 0 {
-            return false;
-        }
-        if test != CrushTest::Crush && tb.modules.iter().any(|m| m.class == "SquishCollide") {
-            return true;
-        }
-        test != CrushTest::Squish && crusher > tb.number("CrushableLevel", 255.0) as i32
+        crate::pathfind::crush_or_squish(&self.templates, &self.objects, a, b, test)
     }
 
     /// Either body may drive over the other.
@@ -1587,22 +1647,6 @@ impl Simulation {
         let Some(target) = o.target else {
             return;
         };
-        // ironhour stand-in for the original's routing around parked units' cells: a
-        // unit stuck within four cells of an intermediate follow-path point (often
-        // inside a parked unit at the end of a group path) moves on to the next one.
-        if o.traffic.stuck
-            && o.ai.state == AiState::FollowPath
-            && !o.ai.remaining.is_empty()
-            && ih_math::length([target[0] - o.position[0], target[1] - o.position[1]]) < 4.0 * CELL
-        {
-            let o = self.objects.get_mut(&id).unwrap();
-            o.target = None;
-            o.path.clear();
-            o.traffic.stuck = false;
-            o.blocked_frames = 0;
-            o.last_repath = self.frame;
-            return;
-        }
         let body = self.collider(id);
         if let Some(other) = o.blocked_by.filter(|id| self.objects.contains_key(id)).map(|id| self.collider(id))
             && other.moving
@@ -1611,55 +1655,17 @@ impl Simulation {
         {
             return;
         }
-        let from = Waypoint { position: [o.position[0], o.position[1]], layer: o.layer };
-        let goal = self.grid.destination(&self.map, target);
-        let obstacles: Vec<_> = self
-            .objects
-            .keys()
-            .copied()
-            .filter(|other| *other != id)
-            .map(|id| self.collider(id))
-            .filter(|b| b.enabled)
-            .collect();
-        let blocked = |p: Waypoint| {
-            let candidate = body.with_position([p.position[0], p.position[1], self.grid.height_at(&self.map, p)]);
-            obstacles.iter().any(|other| {
-                if !candidate.interacts(*other) {
-                    return false;
-                }
-                let delta = [p.position[0] - other.position[0], p.position[1] - other.position[1]];
-                let d2 = delta[0] * delta[0] + delta[1] * delta[1];
-                let r = body.radius + other.radius + 2.0;
-                if d2 >= r * r {
-                    return false;
-                }
-                // Contact padding must not trap a unit at the beginning of its
-                // new path. Permit only motion away from that initial contact.
-                let initial = [from.position[0] - other.position[0], from.position[1] - other.position[1]];
-                let initial2 = initial[0] * initial[0] + initial[1] * initial[1];
-                let progress = [p.position[0] - from.position[0], p.position[1] - from.position[1]];
-                !(initial2 < r * r && d2 >= initial2 && progress[0] * progress[0] + progress[1] * progress[1] <= 100.0)
-            })
+        // `computePath` while blocked and stuck: units' cells now steer the search
+        // (parked allies cost more, parked enemies block).
+        let goal = if o.goal_cell.is_some() && self.ground_movement(id) {
+            Waypoint { position: target, layer: o.destination_layer }
+        } else {
+            self.grid.destination(&self.map, target)
         };
-        let segment_clear = |a: Waypoint, b: Waypoint| {
-            let candidate = body.with_position([a.position[0], a.position[1], self.grid.height_at(&self.map, a)]);
-            let velocity = [b.position[0] - a.position[0], b.position[1] - a.position[1]];
-            obstacles.iter().all(|other| traffic::step_fraction(candidate, velocity, *other) >= 1.0)
-        };
-        let path = self.terrain(id).path_avoiding(
-            from,
-            goal,
-            self.templates.objects[&o.template].radius(),
-            &blocked,
-            &segment_clear,
-        );
-        // As the original plans through cells where allies stand (`getBlockedByAlly`)
-        // and then moves them: with no route around the units, take the terrain
-        // route and ask the idle allies on it to step aside (`moveAllies`).
-        let path = path.or_else(|| {
-            let o = &self.objects[&id];
-            self.terrain(id).path(from, goal, self.templates.objects[&o.template].radius())
-        });
+        let path = self
+            .pathfinder(id)
+            .find_path([o.position[0], o.position[1]], goal.position, goal.layer)
+            .map(|p| p.optimized());
         let o = self.objects.get_mut(&id).unwrap();
         o.last_repath = self.frame;
         if let Some(path) = path {
@@ -1702,7 +1708,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(16);
+        h.u32(17);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1748,7 +1754,6 @@ impl Simulation {
             h.u32(o.ai.outcome as u32);
             h.u32(o.ai.completed_orders);
             h.u32(o.ai.retries);
-            h.u32(u32::from(o.ai.keep_goal));
             h.u32(o.ai.failed_orders);
             h.u32(o.ai.interrupted_orders);
             h.u64(o.ai.remaining.len() as u64);
@@ -1910,7 +1915,9 @@ fn hash_command(c: &Command, h: &mut StateHash) {
 /// The goal point and remaining distance along a path (`Path::computePointOnPath`).
 /// `path[0]` is the start of the current segment. Advances `path` past segments
 /// the object has moved beyond (switching layer where allowed).
-fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, radius: f32) -> ([f32; 3], f32, u32) {
+fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, pf: &crate::pathfind::Pathfinder) -> ([f32; 3], f32, u32) {
+    // `isLinePassable(obj, surfaces, layer, pos, to, false, true)`.
+    let line = |layer: u32, a: [f32; 2], b: [f32; 2]| pf.is_line_passable(layer, a, b, false, true);
     let pos = [o.position[0], o.position[1]];
     let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
     let dot = |a: [f32; 2], b: [f32; 2]| a[0] * b[0] + a[1] * b[1];
@@ -1955,14 +1962,6 @@ fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, radius: f32) -> ([f3
     let mut dist_along = total - to_pos;
     // Drop the nodes before the closest segment.
     for _ in 0..close.unwrap_or(0) {
-        let next = o.path[1];
-        if next.layer != o.layer {
-            if !grid.can_transition(Waypoint { position: pos, layer: o.layer }, next, 0.0) {
-                break;
-            }
-            o.layer = next.layer;
-            o.position[2] = grid.height_at(map, Waypoint { position: pos, layer: o.layer });
-        }
         o.path.pop_front();
     }
     // Standing on the next node (as after braking onto a deck end): it is passed, so
@@ -1971,18 +1970,21 @@ fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, radius: f32) -> ([f3
         let n = o.path[1];
         ih_math::length([n.position[0] - pos[0], n.position[1] - pos[1]]) < 0.01
     } {
-        let next = o.path[1];
-        if next.layer != o.layer {
-            if !grid.can_transition(Waypoint { position: pos, layer: o.layer }, next, 0.0) {
-                break;
-            }
-            o.layer = next.layer;
-            o.position[2] = grid.height_at(map, Waypoint { position: pos, layer: o.layer });
-        }
         o.path.pop_front();
     }
-    let here = Waypoint { position: pos, layer: o.layer };
     let (a, b) = (o.path[0], o.path[1]);
+    // The segment's bridge layer, if any, then `Pathfinder::updateLayer`: the
+    // object is on it only while on the deck or at an end, near the deck height.
+    let mut layer = if b.layer > 0 { b.layer } else { a.layer };
+    if let Some(l) = layer.checked_sub(1).and_then(|i| grid.layers.get(i as usize))
+        && !l.bridge.interacts(o.position, minor_radius(&pf.templates.objects[&o.template]))
+    {
+        layer = 0;
+    }
+    if layer != o.layer {
+        o.layer = layer;
+        o.position[2] = grid.height_at(map, Waypoint { position: pos, layer });
+    }
     let (dir, len) = segment(a, b);
     let mut along = dot(dir, sub(pos, a.position)).max(0.0);
     let to = sub(pos, a.position);
@@ -1992,7 +1994,7 @@ fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, radius: f32) -> ([f3
     // closer the goal moves to the projected point.
     let mut k = (off / (3.0 * crate::locomotion::CELL)).min(1.0);
     let mut goal = None;
-    if grid.line_on(here, b, radius) {
+    if line(o.layer, pos, b.position) {
         goal = Some(b.position);
         let mut try_ahead = along > len * 0.5 && a.layer == b.layer && o.layer == 0;
         let very_close = len - along < 1.0;
@@ -2001,20 +2003,14 @@ fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, radius: f32) -> ([f3
         }
         if try_ahead && let Some(next) = o.path.get(2) {
             let mid = [(b.position[0] + next.position[0]) * 0.5, (b.position[1] + next.position[1]) * 0.5];
-            // The original skips this check when very close; without fixInvalidPosition
-            // a cut corner would stall against the terrain, so it is always checked.
-            if grid.line_on(
-                Waypoint { position: pos, layer: b.layer },
-                Waypoint { position: mid, layer: b.layer },
-                radius,
-            ) {
+            if very_close || line(b.layer, pos, mid) {
                 goal = Some(mid);
             }
         }
     } else if k > 0.5 {
         let try_dist = along + 0.5 * (len - along);
         let p = [a.position[0] + try_dist * dir[0], a.position[1] + try_dist * dir[1]];
-        if grid.line_on(here, Waypoint { position: p, layer: o.layer }, radius) {
+        if line(o.layer, pos, p) {
             k = 0.5;
             goal = Some(p);
         }
@@ -2054,6 +2050,7 @@ fn steer(
     radii: (f32, f32, f32),
     speed: f32,
     blocked: &mut bool,
+    pf: &crate::pathfind::Pathfinder,
 ) {
     let pos = [o.position[0], o.position[1]];
     // setPathExtraDistance: on a follow-path leg with more points after it, the
@@ -2099,7 +2096,7 @@ fn steer(
         return;
     }
     // Flyers take the straight line (`computeQuickPath`): their path is start and goal.
-    let (goal, remaining, _) = point_on_path(o, grid, map, radii.2);
+    let (goal, remaining, _) = point_on_path(o, grid, map, pf);
     // With an extra distance the leg uses the "easy" success test: close enough
     // along the path (`getTreatAsAircraftForLocoDistToGoal`, `CloseEnoughDist`).
     if extra > 1.0 && remaining < l.close_enough_dist {
@@ -2111,10 +2108,18 @@ fn steer(
         return;
     }
     let layer = o.layer;
-    // validMovementTerrain: the cell under the point is passable on this layer.
+    // validMovementTerrain: the cell under the point is passable on this layer. On
+    // a bridge layer, as in the original, the impassable cells around the deck
+    // count as valid; only cells beyond the layer do not.
     let valid = |p: [f32; 2]| {
         let c = crate::locomotion::CELL;
-        grid.passable_on(layer, (p[0] / c).floor() as i32, (p[1] / c).floor() as i32, 0.0)
+        let (x, y) = ((p[0] / c).floor() as i32, (p[1] / c).floor() as i32);
+        if layer == 0 {
+            return grid.passable_on(layer, x, y, 0.0);
+        }
+        grid.cell_at(layer, x, y).is_some_and(|cell| {
+            cell.kind == crate::footprint::CellType::Impassable || cell.kind.allows(l.surface_mask())
+        })
     };
     let mut body = Body {
         position: &mut o.position,
@@ -2138,6 +2143,14 @@ fn steer(
 
 /// The terrain view for a template: its locomotor's surfaces, plus the crusher
 /// flag when it can crush (`getCrusherLevel() > 0`), whose view opens fence cells.
+/// `GeometryInfo::getMinorRadius`: a box's minor radius, else the major one.
+fn minor_radius(t: &crate::templates::Template) -> f32 {
+    let major = t.number("GeometryMajorRadius", 5.0);
+    let box_ = t.values("Geometry").first().is_some_and(|g| g.eq_ignore_ascii_case("BOX"));
+    let minor = if box_ { t.number("GeometryMinorRadius", 0.0) } else { major };
+    minor * t.number("Scale", 1.0)
+}
+
 fn view_key(t: &crate::templates::Template, l: &Locomotor) -> u8 {
     let crusher = if t.number("CrusherLevel", 0.0) > 0.0 { crate::footprint::surface::CRUSHER } else { 0 };
     l.surface_mask() | crusher
@@ -2202,7 +2215,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x87aaf71c7fb391f4, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x47b60629732b08cf, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2416,7 +2429,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xf9a106e167100524, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x83d672c19cc9a9ed, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2474,8 +2487,8 @@ mod tests {
         let mut templates = (*base.templates).clone();
         templates.bridges.push(Bridge {
             name: "B".into(),
-            from: [65.0, 100.0, 20.0],
-            to: [135.0, 100.0, 20.0],
+            from: [65.0, 100.0, 8.0],
+            to: [135.0, 100.0, 8.0],
             min_y: -30.0,
             max_y: 30.0,
         });
@@ -2494,7 +2507,7 @@ mod tests {
             assert_eq!(a.state_hash(), b.state_hash());
             let o = &a.objects[&1];
             if o.layer == 1 {
-                assert_eq!(o.position[2], 20.0);
+                assert_eq!(o.position[2], 8.0);
                 crossed = true;
             }
             if a.frame == 240 {
@@ -2508,7 +2521,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x5061e484e5c3d3d6, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x6102ebcddb58c498, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

@@ -558,17 +558,12 @@ From `AIGroup.cpp` (`groupMoveToPosition`, `friend_computeGroundPath`,
   boxes park side by side as in the original. Steps involving a box are clipped by
   bisection and slide along the boxes' edges. Collision forces still use bounding
   circles, as in the original.
-- Stand-ins: the shared path comes from the ordinary search with a three-cell
-  clearance (not `findGroundPath`'s own search); tightening goes through an adjusted
-  move, not `AIMoveAndTightenState`'s approach path; a group path's claimed final
-  goal is kept on the way (the original releases it and lets arrivals overlap);
-  infantry pass through infantry, and a stationary one does not block them; a
-  stuck unit within four cells of an intermediate point moves on; turning boxes
-  may overlap at their corners, and the overlap check counts a centre inside
-  another body. Formations and waypoint appends are not ported.
-- Known: in tight valleys a group can still jam behind its first arrivals, and a
-  mixed tank and infantry pair can deadlock at the start, until the real
-  pathfinder (`findPath` through allies' cells, `findClosestPath`) is ported.
+- Stand-ins: tightening goes through an adjusted move, not
+  `AIMoveAndTightenState`'s approach path; infantry pass through infantry, and a
+  stationary one does not block them; turning boxes may overlap at their corners,
+  and the overlap check counts a centre inside another body. Formations and
+  waypoint appends are not ported. (The shared path is now `findGroundPath`; see
+  the pathfinder section.)
 
 ### Wall pieces
 
@@ -764,6 +759,70 @@ Not yet: turret rotation and recoil, weapon/particle-system bones, the condition
 flags that combat, damage, construction and garrisons set (M5), terrain decals,
 shadows and track marks.
 
+### Pathfinder (state hash v17)
+
+From `AIPathfind.cpp` (`findPath`, `internalFindPath`, `findClosestPath`,
+`findGroundPath`, `examineNeighboringCells` and its straight-line probe,
+`checkChangeLayers`, `checkForMovement`, `checkDestination`,
+`validMovementPosition`, `validMovementTerrain`, `clearCellForDiameter`,
+`buildActualPath`, `buildGroundPath`, `prependCells`, `Path::optimize`,
+`optimizeGroundPath`, `isLinePassable`, `isGroundPathPassable`,
+`iterateCellsAlongLine`, `updateLayer`, the `PathfindCell` cost functions and
+the sorted open list), `AIUpdateInterface::computePath` and
+`TerrainLogic::objectInteractsWithBridgeLayer` / `Bridge::isCellOnEnd`:
+`crates/ih-sim/src/pathfind.rs`.
+
+- Terrain is tested at the cell a unit's centre is in, as in the original; the
+  unit's footprint (`getRadiusAndCenter`) is tested only against units' cells.
+  Parked allies cost three diagonals and mark the path blocked-by-ally (so they
+  are asked to move), moving allies near the start cost the same, parked
+  enemies that cannot be crushed block. Pinched cells, cliffs, obstacles and
+  cells outside the coarse corridor carry the original costs; the search keeps
+  the 30,000-cell pool limit and `costToGoal`'s heuristic.
+- `computePath`: flyers and a clear line to an intermediate follow-path point
+  go straight; otherwise `findPath`, then `findClosestPath` (the reachable cell
+  nearest the goal where the unit may stop). Stuck units repath with `findPath`
+  through units' cells. Paths end on cell coordinates.
+- Bridge layers cover their padded extent with impassable off-deck cells and
+  fall back to the ground beyond it (`getCell`); a following unit takes the
+  layer of its path segment while on the deck or at an end within ten units of
+  the deck height (`updateLayer`), so it drives off a bridge without an exit
+  node. Off-deck layer cells are valid for `fixInvalidPosition`.
+- Group moves follow `findGroundPath`'s six-cell-wide path (goal moved to a
+  cell clear for the full width, narrow cells cost more, parked units that may
+  not be crushed narrow the width), optimised by `optimizeGroundPath`.
+- Removed stand-ins: the clearance-radius search and traffic-avoiding repath,
+  the group path's kept final goal (dropped from the hash, hence v17), and the
+  four-cell skip of intermediate points.
+- ironhour differences: the zone manager's hierarchical pre-pass is the coarse
+  zone corridor; the logical extent is the whole grid (computer players do not
+  path off the map); no ignored obstacle, dozer exception or `patchPath` yet
+  (they need structures as objects, M5); destinations beyond the map are
+  rejected rather than clipped; a step over a deck's side still stops (falling
+  is not modelled), but the ends are open.
+
+All seventeen scenarios pass with v17 hashes (every-tick replay equality, no
+overlaps or rejected commands, all orders finished, required bridge traversals):
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `50ac676da45a40c6` | `52945e86afc31803` |
+| AI/status orders | `435bb8287e60d776` | `f1a093696099c2ca` |
+| Bridges | `c32127bf385468d4` | `7a203c2dd1c44503` |
+| Traffic, Tournament Desert (three move-asides) | `f102d581f183da5e` | `638f23a99abb4f01` |
+| Traffic, Winding River | `5a5a63357f0e945c` | `a4318decb3944f73` |
+| Long map travel | `04f1dcf92f79ff61` | `6e3453a4602374bf` |
+| Crusader through an enemy Ranger (crushed at frame 132) | `1eb317d2ffd8664b` | |
+| Crusader through an allied Ranger (steps aside) | `edb54d8c71a1e88d` | |
+| Comanche out and back | `7ee5d752c9169f04` | `1647afb075f3cf6f` |
+| Group move across Tournament Desert, then gather (`m4-group`) | `c306251d7532e9d4` | |
+
+Asset-free fixtures: `47b60629732b08cf` (ground), `6102ebcddb58c498` (bridge;
+its deck now sits 8 units up, within the layer's height tolerance),
+`83d672c19cc9a9ed` (head-on traffic), `85a16f8f5203655c` (AI/status orders).
+The tight-valley group jam and the mixed tank and infantry start deadlock noted
+earlier have not been re-checked in the window since this port.
+
 ### Still required for M4
 
 The milestone check (units path across a map on command; a command log gives the
@@ -772,9 +831,9 @@ stock and Contra scenarios replay identically, and the asset-free fixtures asser
 fixed hashes on Windows, Linux and macOS in CI. Runs on installed data have only
 been made on Windows. Remaining M4 work (movement and the simulation core):
 
-- Pathfinder: the real `findPath` (cell costs, routing through allies' cells,
-  `findClosestPath`) and `findGroundPath`, which would remove the traffic and
-  group stand-ins listed above.
+- Pathfinder: `patchPath`, the ignored obstacle and dozer rules (with
+  structures as objects), the zone manager's own blocks and hierarchical
+  search, attack and approach paths (M5).
 - Group moves: formations and waypoint appends (with the control bar, M6).
 - Traffic: overlapping bodies (and with them vehicle crush damage), crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until

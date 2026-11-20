@@ -30,10 +30,18 @@ pub struct BridgeCell {
     pub entry: bool,
     index: usize,
 }
+impl BridgeCell {
+    pub(crate) fn node(&self) -> usize {
+        self.index
+    }
+}
 #[derive(Clone)]
 pub struct BridgeLayer {
     pub bridge: Bridge,
     pub cells: BTreeMap<(i32, i32), BridgeCell>,
+    /// The layer's cell extent: cells inside it but off the deck are impassable.
+    pub lo: (i32, i32),
+    pub hi: (i32, i32),
 }
 #[derive(Clone)]
 pub struct Terrain {
@@ -121,7 +129,7 @@ impl Terrain {
                     }
                 }
             }
-            layers.push(BridgeLayer { bridge, cells });
+            layers.push(BridgeLayer { bridge, cells, lo: (lo[0], lo[1]), hi: (hi[0], hi[1]) });
         }
         Self { ground, layers, obstacles, nodes, zones: ZoneCache::default() }
     }
@@ -152,6 +160,11 @@ impl Terrain {
     /// Whether the layer has this cell (`getCell` is non-null).
     pub fn has_cell(&self, layer: u32, x: i32, y: i32) -> bool {
         self.index(layer, x, y).is_some()
+    }
+    /// The zones of cells a unit's centre may enter (the pathfinder's zones ignore
+    /// unit size).
+    pub(crate) fn cell_zones(&self) -> std::sync::Arc<crate::zones::Zones> {
+        self.zones.get(self, 0.0)
     }
     pub fn zone_summary(&self, radius: f32) -> ZoneSummary {
         self.zones.get(self, radius).summary()

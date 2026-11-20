@@ -5,13 +5,7 @@
 //! point (`adjustDestination`, `checkForAdjust`, `checkDestination`,
 //! `snapClosestGoalPosition`), so units sent to one spot spread out instead of
 //! fighting over it.
-use crate::{
-    Simulation,
-    footprint::CellType,
-    navigation::CELL,
-    simulation::{CrushTest, ModuleKind},
-    terrain::Waypoint,
-};
+use crate::{Simulation, footprint::CellType, navigation::CELL, simulation::ModuleKind, terrain::Waypoint};
 use std::collections::BTreeMap;
 
 /// `PathfindCell::CellFlags`.
@@ -340,44 +334,9 @@ impl Simulation {
 
     /// `Pathfinder::checkDestination`: whether a unit may end at this cell.
     fn check_destination(&self, id: u32, x: i32, y: i32, layer: u32, r: i32, center: bool) -> bool {
-        let aircraft = {
-            let t = &self.templates.objects[&self.objects[&id].template];
-            !self.ground_movement(id)
-                && t.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_some_and(|l| {
-                    matches!(l.appearance, crate::templates::Appearance::Hover | crate::templates::Appearance::Wings)
-                })
-        };
-        for (i, j) in Self::covered((x, y), r, center) {
-            if !self.cell_exists(layer, i, j) {
-                return false; // off the map
-            }
-            let c = self.unit_cells.get(layer, i, j);
-            if aircraft {
-                if c.goal_aircraft == 0 || c.goal_aircraft == id {
-                    continue;
-                }
-                return false;
-            }
-            if layer == 0 {
-                let kind = self.grid.obstacles.kind[(j * self.grid.width + i) as usize];
-                // No ignored obstacle yet (`getIgnoredObstacleID`).
-                if matches!(kind, CellType::Obstacle | CellType::Impassable | CellType::BridgeImpassable) {
-                    return false;
-                }
-            }
-            if c.flags == CellFlags::NoUnits || c.goal_unit == id || c.goal_unit == 0 {
-                continue;
-            }
-            let Some(unit) = self.objects.get(&c.goal_unit) else { continue };
-            // Allies are the same owner until players and teams exist.
-            if self.objects[&id].owner == unit.owner {
-                return false; // "Don't usurp your allies goals."
-            }
-            if c.flags == CellFlags::UnitPresentFixed && !self.can_crush_or_squish(id, c.goal_unit, CrushTest::Either) {
-                return false; // "Don't move to an occupied cell."
-            }
-        }
-        true
+        let mut pf = self.pathfinder(id);
+        (pf.mover.radius, pf.mover.center) = (r, center);
+        pf.check_destination(x, y, layer)
     }
 
     /// `Pathfinder::checkForAdjust` (without a group destination).
@@ -397,8 +356,8 @@ impl Simulation {
         let t = &self.templates.objects[&o.template];
         if !t.has_kind("AIRCRAFT") {
             let terrain = self.terrain(id);
-            // The unit's own clearance, so the check agrees with the route it will get.
-            let radius = t.radius();
+            // The pathfinder's zones ignore unit size.
+            let radius = 0.0;
             let here = Waypoint { position: [o.position[0], o.position[1]], layer: o.layer };
             let to = |p: [f32; 2]| Waypoint { position: p, layer };
             let reachable = terrain.quick_path_exists(here, to(adjusted), radius)

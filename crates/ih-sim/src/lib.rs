@@ -9,6 +9,7 @@ pub mod locomotion;
 pub mod map_objects;
 pub mod navigation;
 pub mod partition;
+pub mod pathfind;
 pub mod rng;
 pub mod scenario;
 pub mod scheduler;

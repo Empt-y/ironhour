@@ -143,9 +143,11 @@ cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scena
   wgpu or window dependency. Template field layers, reskins, ordered module tags,
   Add/Remove/ReplaceModule and normal locomotor units are available. Unimplemented
   gameplay modules remain explicit stubs and are counted by the runner.
-- Ground A*: 10-unit cells, original 10/14 movement costs and 4/8/16 turn penalties,
-  stable open-list ties, conservative footprint clearance, water/cliff/static
-  obstacles and line-of-sight path shortening.
+- Pathfinder (`pathfind.rs`): the original `findPath`, `findClosestPath` and
+  `findGroundPath` over 10-unit cells, with their cell costs, units' cells
+  (parked allies cost more and are asked to move), sorted open list, path
+  optimisation and `isLinePassable`; units take a bridge's layer while on its
+  deck or ends (`updateLayer`).
 - Separate pristine bridge layers, end-only portals, footprint clearance at bank
   transitions, rail boundaries, slope-dependent deck height and ground underpass
   clearance. Widths come from posed W3D LEFT geometry and `BridgeScale`, loaded

@@ -8,13 +8,11 @@
 //! the goal. Short moves keep the group's shape; a click inside the middle of
 //! the group gathers it tightly around the point.
 //!
-//! Stand-ins: the shared path comes from the ordinary path search with a
-//! three-cell clearance instead of `findGroundPath`'s own search (its six-cell
-//! diameter and destination offset search are kept), and tightening moves each
-//! unit to an adjusted goal rather than through `AIMoveAndTightenState`'s
+//! The shared path is `findGroundPath`'s six-cell-wide path (`pathfind`).
+//! Stand-in: tightening moves each unit to an adjusted goal rather than through `AIMoveAndTightenState`'s
 //! approach path. Formations (`groupCreateFormation`) and waypoint appends are
 //! not ported.
-use crate::{Simulation, ai::AiState, navigation::CELL, simulation::SimError, terrain::Waypoint};
+use crate::{Simulation, ai::AiState, navigation::CELL, simulation::SimError};
 use std::collections::VecDeque;
 
 /// `PATH_DIAMETER_IN_CELLS`.
@@ -148,43 +146,22 @@ impl Simulation {
             // Close enough when every infantry unit has a clear line to the centre.
             close_enough = ids.iter().filter(|id| self.kind_of(**id, "INFANTRY") && self.has_ai(**id)).all(|&id| {
                 let o = &self.objects[&id];
-                self.terrain(id).line_on(
-                    Waypoint { position: self.xy(id), layer: o.layer },
-                    Waypoint { position: center, layer: o.layer },
-                    0.0,
-                )
+                self.pathfinder(id).is_line_passable(o.layer, self.xy(id), center, false, true)
             });
         }
         if !close_enough {
             return None;
         }
-        self.find_ground_path(center, pos)
+        self.find_ground_path(center_id, center, pos)
     }
 
-    /// `findGroundPath` (stand-in search, see the module notes): the goal moves to
-    /// a cell clear for the path's width, trying offsets out to 7 cells.
-    fn find_ground_path(&self, from: [f32; 2], to: [f32; 2]) -> Option<Vec<[f32; 2]>> {
-        let radius = PATH_DIAMETER_IN_CELLS as f32 * CELL / 2.0;
-        let clear = |c: (i32, i32)| self.grid.ground.passable(c.0, c.1, radius);
-        let mut cell = ((to[0] / CELL).floor() as i32, (to[1] / CELL).floor() as i32);
-        if !clear(cell) {
-            let mut found = None;
-            'search: for offset in 1..8 {
-                let mut c = cell;
-                for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (-1, 0), (0, -1), (0, -1), (1, 0), (1, 0)] {
-                    c = (c.0 + dx * offset, c.1 + dy * offset);
-                    if clear(c) {
-                        found = Some(c);
-                        break 'search;
-                    }
-                }
-            }
-            cell = found?;
-        }
-        let goal = [(cell.0 as f32 + 0.5) * CELL, (cell.1 as f32 + 0.5) * CELL];
-        let path = self.grid.path(Waypoint::ground(from), Waypoint::ground(goal), radius)?;
-        let mut out: Vec<[f32; 2]> = vec![from];
-        out.extend(path.into_iter().map(|w| w.position));
+    /// `findGroundPath` over the ground terrain, `PATH_DIAMETER_IN_CELLS` wide,
+    /// not crushing: the optimised nodes, from the group centre.
+    fn find_ground_path(&self, any: u32, from: [f32; 2], to: [f32; 2]) -> Option<Vec<[f32; 2]>> {
+        let pf = crate::pathfind::Pathfinder { terrain: &self.grid, ..self.pathfinder(any) };
+        let path = pf.find_ground_path(from, to, PATH_DIAMETER_IN_CELLS, false)?;
+        let mut out = vec![path.nodes[0].position];
+        out.extend(path.optimized().into_iter().map(|w| w.position));
         Some(out)
     }
 
@@ -432,14 +409,9 @@ impl Simulation {
             points.pop_front();
         }
         let Some(first) = points.pop_front() else { return };
-        // ironhour: the claimed final goal is kept on the way (the original releases it
-        // on intermediate legs and lets arrivals overlap, which the no-overlap guard
-        // cannot).
-        self.objects.get_mut(&id).unwrap().ai.keep_goal = true;
         if self.begin_move(id, first, AiState::FollowPath, points).is_err() {
             self.failed_orders += 1;
         }
-        self.objects.get_mut(&id).unwrap().ai.keep_goal = true;
     }
 
     /// `computeIndividualDestination`: the same offset from the group centre at

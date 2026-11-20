@@ -78,6 +78,27 @@ impl Bridge {
         }
         (lo, hi)
     }
+    /// `Bridge::isCellOnEnd`: the box crosses an end line (inset a cell from the rails).
+    pub fn box_on_end(&self, lo: [f32; 2], hi: [f32; 2]) -> bool {
+        [0.0, self.length()]
+            .into_iter()
+            .any(|end| line_in_box(self.world(end, self.min_y + CELL), self.world(end, self.max_y - CELL), lo, hi))
+    }
+    /// `TerrainLogic::objectInteractsWithBridgeLayer`: on the deck or at an end,
+    /// within `LAYER_Z_CLOSE_ENOUGH_F` of the deck height.
+    pub fn interacts(&self, p: [f32; 3], minor_radius: f32) -> bool {
+        self.on_deck_or_end([p[0], p[1]], minor_radius) && (p[2] - self.height([p[0], p[1]])).abs() <= 10.0
+    }
+    /// Beside the deck: along the span but outside the rails.
+    pub fn beside_deck(&self, p: [f32; 2]) -> bool {
+        let [along, across] = self.local(p);
+        (0.0..=self.length()).contains(&along) && !(self.min_y..=self.max_y).contains(&across)
+    }
+    /// The 2D part of `interacts`.
+    pub fn on_deck_or_end(&self, p: [f32; 2], minor_radius: f32) -> bool {
+        let r = minor_radius + CELL / 2.0;
+        self.contains(p) || self.box_on_end([p[0] - r, p[1] - r], [p[0] + r, p[1] + r])
+    }
     /// Cell classification from `PathfindLayer::classifyLayerMapCell` and the
     /// three `Bridge::isCell*` tests. End lines inset one cell from the rails;
     /// entry lines sit half a cell outside each end. Side tests expand 0.51 and
