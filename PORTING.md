@@ -716,26 +716,33 @@ shadows and track marks.
 ### Still required for M4
 
 The milestone check (units path across a map on command; a command log gives the
-same state hashes everywhere) is met for ground and helicopter movement: sixteen
+same state hashes everywhere) is met for ground and helicopter movement: seventeen
 stock and Contra scenarios replay identically, and the asset-free fixtures assert
 fixed hashes on Windows, Linux and macOS in CI. Runs on installed data have only
-been made on Windows. Remaining M4 work:
+been made on Windows. Remaining M4 work (movement and the simulation core):
 
-- Movement: thrust locomotors (logic pitch/roll), airfield take-off and landing,
-  damage-state speed penalties, bouncing and falling.
-- Navigation: crusher zone tables, rubble and wall cells, incremental zone updates,
-  bridge damage, destruction and repair.
+- Navigation: crusher zones (crushers pass fence cells, `validMovementPosition`,
+  `m_crusherZones`), wall cells, incremental zone updates.
 - Group moves: formations, waypoint appends, `findGroundPath` and the real
   `findPath` (routing through allies' cells, closest paths).
 - Traffic: overlapping bodies (and with them vehicle crush damage), crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until
   space is free.
-- AI: combat, guard, transport, mood and other temporary states; disabled side
-  effects (inertia, held transports, tint, special-power timers, riders, power).
-- Objects: landmark bridges and walls, map object properties, build lists and
-  players' bases, obstacle removal and rubble on death.
-- Drawables: turrets, recoil, weapon and particle-system bones, truck wheel
-  suspension and steering.
+- Objects: landmark bridges and walls.
+- Drawables: truck wheel suspension and steering.
+
+Moved to M5, because they need weapons, bodies, containers or production:
+
+- `THRUST` locomotors: every one in stock and Contra drives a projectile
+  (missiles, shells, flame and toxin streams), so they come with
+  `MissileAIUpdate`. Airfield take-off and landing (`JetAIUpdate`).
+- Damage-state speed penalties, bouncing and falling damage, rubble cells and
+  obstacle removal on death, bridge damage, destruction and repair.
+- Combat, guard, transport, mood and other AI states; disabled side effects
+  (inertia, held transports, tint, special-power timers, riders, power).
+- Map object properties (health, veterancy, names for scripts), build lists and
+  players' bases.
+- Turrets, recoil, weapon and particle-system bones; crush damage states.
 
 Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the
 M3 visual review ([docs/map-viewer.md](docs/map-viewer.md)).
