@@ -494,26 +494,55 @@ From `Drawable.cpp` (`applyPhysicsXform`, `calcPhysicsXform` and its `Treads`,
   per-wheel suspension and steering angles (truck draw modules), shock rates from
   explosions (M5), and pitch/roll in the logic for `THRUST` steering.
 
-All sixteen scenarios pass with v12 hashes (every-tick replay equality, no
+### Goal cells (state hash v13)
+
+From `AIPathfind.cpp` (`updatePos`, `removePos`, `updateGoal`, `removeGoal`,
+`adjustDestination`, `checkForAdjust`, `checkDestination`,
+`snapClosestGoalPosition`, `getRadiusAndCenter`, `PathfindCell::setGoalUnit`
+and `setPosUnit`) and `AIStates.cpp` (`AIInternalMoveToState::onEnter`, the idle
+state):
+
+- Every mobile AI unit marks the cells it stands on and the cells of its goal,
+  with the original cell flags (goal, moving, fixed, goal-of-another-moving). Its
+  footprint is one, two or three cells across (two-wide units sit on cell
+  corners, odd widths on cell centres, as `getRadiusAndCenter` rounds).
+- A move order adjusts its goal to the nearest cell, in the original 400-cell
+  square spiral, that is not an obstacle, not a cliff, not an ally's goal, not
+  occupied by a stationary unit it cannot crush, and reachable by zone; failing
+  that it snaps to a nearby free cell. Units sent to one spot therefore spread
+  out and stop apart instead of queueing for it. Goals sit on the grid, so a unit
+  ends up to half a cell from the clicked point (with the original's 0.05-cell
+  offset for even widths).
+- Idle units hold a goal where they stand; destroyed units release their cells.
+  Follow-path orders claim only the final point, unadjusted. Hover and wing
+  aircraft keep their own aircraft goals.
+- A path is routed to its goal on the layer it was chosen on. A unit standing
+  exactly on a path node now passes it (the original aims past nodes with its
+  look-ahead point); before, a unit that braked onto a deck end could stall.
+- Not yet: group moves (`AIGroup`), the ignored obstacle, `tightenPath` and
+  `checkPathCost` for group destinations, and bridge-end cells shared by both
+  layers (`objectInteractsWithBridgeEnd`).
+
+All sixteen scenarios pass with v13 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals),
 now with every map object loaded: 142 logic objects on Tournament Desert (756 with
 Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `3c6399b10ff7ab3a` | `325761fc6f1e83af` |
-| AI/status orders | `4d84d10ecbce19af` | `d39b5055744d2021` |
-| Bridges | `4599f02a3e572c91` | `7f27bc92c2828b81` |
-| Traffic, Tournament Desert (one move-aside each) | `6d7a298eb3207cf4` | `e586245744d5a9b9` |
-| Traffic, Winding River | `3309405a8990cb35` | `413ac35766244a9b` |
-| Long map travel | `7c61ce1c04ed978e` | `22b31591914f60e4` |
-| Crusader through an enemy Ranger (crushed at frame 131) | `3f8d056824e3f79c` | |
-| Crusader through an allied Ranger (steps aside) | `de214522887fa924` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `80f914ca24f2fcd1` | `cee82cb219675e77` |
+| Desert (`m4-desert` / `m4-contra`) | `baaef7c4680622e7` | `515b679d525c880e` |
+| AI/status orders | `dfebdbb7165c2205` | `0fb117f013e706e9` |
+| Bridges | `23e3c36a429c9a81` | `7acf014d325cbe05` |
+| Traffic, Tournament Desert (one move-aside in stock) | `0023503735d89c5d` | `4c718df310335bac` |
+| Traffic, Winding River | `33aeb756013f380d` | `65ad76bac5e8ab44` |
+| Long map travel | `e124f01aa8466d41` | `f38f0779f9c4b654` |
+| Crusader through an enemy Ranger (crushed at frame 132) | `cfe67dded565aa7a` | |
+| Crusader through an allied Ranger (steps aside) | `34d61a9c71dba0d5` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `075e4e15e46ce189` | `f581475867b0083f` |
 
-Asset-free fixtures: `fa5c16122c6daf2d` (ground), `17ab20267b1bac19`
-(bridge/deck stop), `3a5b44e67c1fd48e` (head-on traffic, resolved by a
-move-aside), `08b9082c686660d0` (AI/status orders). Unit tests also cover a tank
+Asset-free fixtures: `3947883484200a3e` (ground), `457f590fa4ca127b`
+(bridge/deck stop), `f0d6a0c26f57ed35` (head-on traffic, resolved by a
+move-aside), `7246961357b65469` (AI/status orders). Unit tests also cover a tank
 squishing enemy infantry, allied infantry stepping aside, a hovering body
 climbing to and holding its preferred height (over ground and water), box,
 circle and fence footprints with pinched-gap closing, map-object sorting and
@@ -631,6 +660,7 @@ been made on Windows. Remaining M4 work:
   damage-state speed penalties, bouncing and falling.
 - Navigation: crusher zone tables, rubble and wall cells, incremental zone updates,
   bridge damage, destruction and repair.
+- Group moves (`AIGroup`): formations, infantry columns and vehicle spreads.
 - Traffic: narrow-phase shapes instead of bounding circles, overlapping bodies
   (and with them vehicle crush damage), `moveAllies`, formations, crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until

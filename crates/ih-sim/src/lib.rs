@@ -3,6 +3,7 @@ pub mod ai;
 pub mod bridges;
 pub mod disabled;
 pub mod footprint;
+pub mod goals;
 pub mod locomotion;
 pub mod map_objects;
 pub mod navigation;

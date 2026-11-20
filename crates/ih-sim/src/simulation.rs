@@ -109,6 +109,11 @@ pub struct Object {
     pub map_index: Option<usize>,
     /// Collision shape from the template.
     pub body: traffic::BodyShape,
+    /// `m_pathfindGoalCell` and `m_pathfindCurCell` (`goals`).
+    pub goal_cell: Option<(i32, i32)>,
+    pub cur_cell: Option<(i32, i32)>,
+    /// `getDestinationLayer`.
+    pub destination_layer: u32,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -129,6 +134,8 @@ pub struct Simulation {
     pub grid: Terrain,
     /// `grid` as seen by locomotors with other surfaces (water, cliff, ...), by mask.
     pub views: BTreeMap<u8, Terrain>,
+    /// Units' goal and position cells (`goals`).
+    pub unit_cells: crate::goals::UnitCells,
     pub stub_counts: BTreeMap<String, usize>,
     pub events: Vec<String>,
     pub failed_orders: u32,
@@ -218,6 +225,7 @@ impl Simulation {
             map,
             templates,
             views,
+            unit_cells: Default::default(),
             grid,
             stub_counts: BTreeMap::new(),
             events: vec![],
@@ -337,9 +345,13 @@ impl Simulation {
                 traffic: traffic::TrafficState::default(),
                 map_index,
                 body,
+                goal_cell: None,
+                cur_cell: None,
+                destination_layer: 0,
             },
         );
         self.rebuild_partition();
+        self.update_pos(id);
         Ok(id)
     }
     pub fn enqueue(&mut self, frame: u32, command: Command) -> Result<(), SimError> {
@@ -471,7 +483,7 @@ impl Simulation {
     }
 
     /// The terrain view for the object's locomotor surfaces (`grid` for ground units).
-    fn terrain(&self, id: u32) -> &Terrain {
+    pub(crate) fn terrain(&self, id: u32) -> &Terrain {
         let t = &self.templates.objects[&self.objects[&id].template];
         t.locomotor()
             .and_then(|n| self.templates.locomotors.get(n))
@@ -479,18 +491,26 @@ impl Simulation {
             .unwrap_or(&self.grid)
     }
     fn route_to(&self, id: u32, target: [f32; 2]) -> Result<VecDeque<Waypoint>, SimError> {
+        // A held goal keeps the layer it was chosen on (`getLayerForDestination` picks
+        // by height, and an adjusted goal sits at its layer's height).
         let o = &self.objects[&id];
+        let goal = if o.goal_cell.is_some() && self.ground_movement(id) {
+            Waypoint { position: target, layer: o.destination_layer }
+        } else {
+            self.grid.destination(&self.map, target)
+        };
+        self.route_to_waypoint(id, goal)
+    }
+    fn route_to_waypoint(&self, id: u32, goal: Waypoint) -> Result<VecDeque<Waypoint>, SimError> {
+        let o = &self.objects[&id];
+        let target = goal.position;
         let t = &self.templates.objects[&o.template];
         if self.flyer(id) {
             // canComputeQuickPath / computeQuickPath: flyers go straight to the goal.
             return Ok(VecDeque::from([Waypoint { position: target, layer: 0 }]));
         }
         self.terrain(id)
-            .path(
-                Waypoint { position: [o.position[0], o.position[1]], layer: o.layer },
-                self.grid.destination(&self.map, target),
-                t.radius(),
-            )
+            .path(Waypoint { position: [o.position[0], o.position[1]], layer: o.layer }, goal, t.radius())
             .map(Into::into)
             .ok_or_else(|| SimError(format!("object {id}: target is blocked or unreachable")))
     }
@@ -502,7 +522,9 @@ impl Simulation {
         remaining: VecDeque<[f32; 2]>,
     ) -> Result<(), SimError> {
         self.validate_mobile(id, false)?;
-        let path = self.route_to(id, target)?;
+        let goal = self.choose_goal(id, target, state, remaining.is_empty());
+        let target = goal.position;
+        let path = self.route_to_waypoint(id, goal)?;
         let o = self.objects.get_mut(&id).unwrap();
         o.ai.begin(state, self.frame);
         o.ai.remaining = remaining;
@@ -516,6 +538,25 @@ impl Simulation {
         o.last_repath = self.frame;
         self.wake_ai(id);
         Ok(())
+    }
+    /// `AIInternalMoveToState::onEnter`: a move adjusts its goal to a free cell
+    /// (`adjustDestination`, else `snapClosestGoalPosition`) and claims it
+    /// (`updateGoal`). Follow-path legs do not adjust; the final leg claims its
+    /// point, earlier legs release the goal.
+    fn choose_goal(&mut self, id: u32, target: [f32; 2], state: AiState, last: bool) -> Waypoint {
+        let layer = self.grid.destination(&self.map, target).layer;
+        let mut goal = target;
+        if state == AiState::MoveTo {
+            if !self.adjust_destination(id, &mut goal, layer) {
+                self.snap_closest_goal(id, &mut goal, layer);
+            }
+            self.update_goal(id, goal, layer);
+        } else if last {
+            self.update_goal(id, goal, layer);
+        } else {
+            self.remove_goal(id);
+        }
+        Waypoint { position: goal, layer }
     }
     fn begin_face(&mut self, id: u32, target: Option<[f32; 2]>, object: Option<u32>) -> Result<(), SimError> {
         self.validate_mobile(id, true)?;
@@ -542,6 +583,9 @@ impl Simulation {
         }
     }
     fn end_order(&mut self, id: u32, outcome: Outcome) {
+        // AIIdleState::onEnter: the goal becomes where the unit stands.
+        let (p, layer) = (self.objects[&id].position, self.objects[&id].layer);
+        self.update_goal(id, [p[0], p[1]], layer);
         let o = self.objects.get_mut(&id).unwrap();
         if outcome == Outcome::Failure {
             self.failed_orders += 1;
@@ -557,6 +601,9 @@ impl Simulation {
         o.traffic.stuck = false;
     }
     pub fn remove(&mut self, id: u32) -> Result<(), SimError> {
+        if self.objects.contains_key(&id) {
+            self.forget_cells(id);
+        }
         let o = self.objects.remove(&id).ok_or_else(|| SimError(format!("object {id} is missing")))?;
         for i in 0..o.modules.len() {
             self.scheduler.remove((id, i));
@@ -603,6 +650,7 @@ impl Simulation {
                 }
                 ModuleKind::Stub => FOREVER,
             };
+            self.update_pos(id);
             self.scheduler.reschedule((id, index), self.frame.saturating_add(delay.max(1)));
         }
         let mut awakened = Vec::new();
@@ -680,7 +728,10 @@ impl Simulation {
                 if o.target.is_none() {
                     let next = if o.ai.state == AiState::FollowPath { o.ai.remaining.pop_front() } else { None };
                     if let Some(target) = next {
-                        match self.route_to(id, target) {
+                        let last = self.objects[&id].ai.remaining.is_empty();
+                        let goal = self.choose_goal(id, target, AiState::FollowPath, last);
+                        let target = goal.position;
+                        match self.route_to_waypoint(id, goal) {
                             Ok(path) => {
                                 let o = self.objects.get_mut(&id).unwrap();
                                 o.path = path;
@@ -1532,7 +1583,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(12);
+        h.u32(13);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1548,12 +1599,25 @@ impl Simulation {
         for v in self.rng.state {
             h.u32(v);
         }
+        h.u64(self.unit_cells.cells.len() as u64);
+        for ((l, x, y), c) in &self.unit_cells.cells {
+            for v in [*l, *x as u32, *y as u32, c.flags as u32, c.goal_unit, c.pos_unit, c.goal_aircraft] {
+                h.u32(v);
+            }
+        }
         h.u64(self.objects.len() as u64);
         for o in self.objects.values() {
             h.u32(o.id);
             h.text(&o.template);
             h.u32(o.owner);
             h.u32(o.map_index.map_or(0, |i| i as u32 + 1));
+            for c in [o.goal_cell, o.cur_cell] {
+                h.u32(u32::from(c.is_some()));
+                let (x, y) = c.unwrap_or_default();
+                h.u32(x as u32);
+                h.u32(y as u32);
+            }
+            h.u32(o.destination_layer);
             h.u32(o.layer);
             h.u32(o.blocked_frames);
             h.u32(o.blocked_by.unwrap_or(0));
@@ -1768,6 +1832,22 @@ fn point_on_path(o: &mut Object, grid: &Terrain, map: &Map, radius: f32) -> ([f3
         }
         o.path.pop_front();
     }
+    // Standing on the next node (as after braking onto a deck end): it is passed, so
+    // the aim moves past it, as the original's look-ahead point does.
+    while o.path.len() > 2 && {
+        let n = o.path[1];
+        ih_math::length([n.position[0] - pos[0], n.position[1] - pos[1]]) < 0.01
+    } {
+        let next = o.path[1];
+        if next.layer != o.layer {
+            if !grid.can_transition(Waypoint { position: pos, layer: o.layer }, next, 0.0) {
+                break;
+            }
+            o.layer = next.layer;
+            o.position[2] = grid.height_at(map, Waypoint { position: pos, layer: o.layer });
+        }
+        o.path.pop_front();
+    }
     let here = Waypoint { position: pos, layer: o.layer };
     let (a, b) = (o.path[0], o.path[1]);
     let (dir, len) = segment(a, b);
@@ -1925,6 +2005,13 @@ impl LogicClock {
 mod tests {
     use super::*;
     use ih_ini::definitions::Definitions;
+    /// Where a free goal at `p` ends up (`adjustDestination` on an empty map).
+    fn snapped(s: &Simulation, id: u32, p: [f32; 2]) -> [f32; 2] {
+        let r = s.templates.objects[&s.objects[&id].template].collision_radius();
+        let (_, center) = crate::goals::radius_and_center(r);
+        let q = if center { p } else { [p[0] + 5.0, p[1] + 5.0] };
+        crate::goals::coord_of_cell((q[0] / 10.0).floor() as i32, (q[1] / 10.0).floor() as i32, center)
+    }
     fn sim() -> Simulation {
         let mut defs = Definitions::default();
         defs.add_document(ih_ini::parse(b"Object Tank\nLocomotor = SET_NORMAL L\nGeometryMajorRadius = 1\nBehavior = AIUpdateInterface AI\nEnd\nBehavior = PhysicsBehavior P\nEnd\nEnd\nLocomotor L\nSurfaces = GROUND\nSpeed = 30\nAcceleration = 900\nBraking = 900\nTurnRate = 360\nEnd\n"));
@@ -1954,9 +2041,9 @@ mod tests {
             b.step();
             assert_eq!(a.state_hash(), b.state_hash());
         }
-        assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
+        assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xfa5c16122c6daf2d, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x3947883484200a3e, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -1990,7 +2077,7 @@ mod tests {
         for _ in 0..180 {
             a.step();
         }
-        assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
+        assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         // Stopped at the goal: asleep again.
         assert!(wake(&a) >= FOREVER, "asleep");
     }
@@ -2064,7 +2151,7 @@ mod tests {
         assert!(!s.objects.contains_key(&soldier), "{:?}", s.objects);
         assert_eq!(s.crushed.len(), 1);
         assert_eq!((s.crushed[0].1, s.crushed[0].2), (soldier, 1));
-        assert!((s.objects[&1].position[0] - 175.0).abs() < 0.5);
+        assert!((s.objects[&1].position[0] - snapped(&s, 1, [175.0, 0.0])[0]).abs() < 0.5);
     }
     #[test]
     fn allied_infantry_steps_aside_instead_of_being_crushed() {
@@ -2080,7 +2167,7 @@ mod tests {
         assert!(s.objects.contains_key(&soldier));
         assert!(s.crushed.is_empty());
         assert!(s.move_asides > 0);
-        assert!((s.objects[&1].position[0] - 175.0).abs() < 0.5, "{:?}", s.objects[&1]);
+        assert!((s.objects[&1].position[0] - snapped(&s, 1, [175.0, 0.0])[0]).abs() < 0.5, "{:?}", s.objects[&1]);
         assert!(s.objects[&soldier].target.is_none() && s.objects[&soldier].ai.move_out.is_none());
     }
     #[test]
@@ -2102,7 +2189,7 @@ mod tests {
         assert!(s.events.is_empty(), "{:?}", s.events);
         assert!(s.objects[&1].target.is_none(), "{:?}", s.objects[&1]);
         assert!(s.objects[&1].traffic_repaths > 0);
-        assert!((s.objects[&1].position[0] - 175.0).abs() < 0.5);
+        assert!((s.objects[&1].position[0] - snapped(&s, 1, [175.0, 0.0])[0]).abs() < 0.5);
         assert_eq!(s.objects[&2].position[..2], [95.0, 105.0]);
     }
     #[test]
@@ -2147,7 +2234,7 @@ mod tests {
         assert!(s.objects[&1].target.is_none());
         assert_eq!(s.objects[&1].layer, 0);
         assert_eq!(s.objects[&1].traffic_repaths, 0);
-        assert!((s.objects[&1].position[1] - 175.0).abs() < 0.5);
+        assert!((s.objects[&1].position[1] - snapped(&s, 1, [0.0, 175.0])[1]).abs() < 0.5);
     }
     #[test]
     fn head_on_units_yield_and_replay_without_overlap() {
@@ -2169,7 +2256,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x3a5b44e67c1fd48e, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xf0d6a0c26f57ed35, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2193,15 +2280,21 @@ mod tests {
             assert!(s.overlaps().is_empty());
         }
         assert!(s.objects.values().all(|o| o.target.is_none()));
-        // A later order to the occupied goal must wait, then resume after removal.
+        // A later order to the ally's goal takes the nearest free cell instead
+        // (`adjustDestination`: "Don't usurp your allies goals").
         s.enqueue(s.frame, Command::Move { object: 1, target: [175.0, 105.0] }).unwrap();
-        s.enqueue(s.frame + 90, Command::Destroy { object: 2 }).unwrap();
         for _ in 0..240 {
             s.step();
             assert!(s.overlaps().is_empty());
         }
+        let (a, b) = (s.objects[&1].position, s.objects[&2].position);
         assert!(s.objects[&1].target.is_none());
-        assert!((s.objects[&1].position[0] - 175.0).abs() < 0.5);
+        assert!(ih_math::length([a[0] - 175.0, a[1] - 105.0]) < 30.0, "{a:?}");
+        assert!(ih_math::length([a[0] - b[0], a[1] - b[1]]) >= 19.0, "{a:?} {b:?}");
+        // Destroying the blocker releases its cells.
+        s.enqueue(s.frame, Command::Destroy { object: 2 }).unwrap();
+        s.step();
+        assert!(s.unit_cells.cells.values().all(|c| c.goal_unit != 2 && c.pos_unit != 2));
     }
     #[test]
     fn recorded_unit_crosses_bridge_and_can_stop_on_deck() {
@@ -2255,7 +2348,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x17ab20267b1bac19, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x457f590fa4ca127b, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

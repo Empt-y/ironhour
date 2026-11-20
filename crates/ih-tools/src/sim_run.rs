@@ -71,7 +71,10 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
             .filter(|(_, every)| frame % (*every).max(1) == 0)
         {
             println!(
-                "{frame:5} pos {:8.2} {:8.2} {:6.2} angle {:6.3} vel {:6.3} {:6.3} speed {:6.3} braking {} {:?} path {} blocked {} by {:?}",
+                "{frame:5} layer {} next {:?} goal {:?} pos {:8.2} {:8.2} {:6.2} angle {:6.3} vel {:6.3} {:6.3} speed {:6.3} braking {} {:?} path {} blocked {} by {:?}",
+                o.layer,
+                o.path.get(1).map(|w| (w.position, w.layer)),
+                o.target,
                 o.position[0],
                 o.position[1],
                 o.position[2],

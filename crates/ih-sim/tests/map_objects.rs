@@ -131,6 +131,7 @@ fn structures_leave_obstacle_cells_and_units_route_around_them() {
         assert_ne!(at(cx, cy), CellType::Obstacle, "tank entered the barracks at {p:?}");
     }
     let p = sim.objects[&tank].position;
-    assert!(ih_math::length([p[0] - 200.0, p[1] - 250.0]) < 5.0, "tank at {p:?}");
+    // An 8-wide tank has an odd footprint: it ends at the centre of the goal cell.
+    assert!(ih_math::length([p[0] - 205.0, p[1] - 255.0]) < 0.5, "tank at {p:?}");
     assert!(sim.overlaps().is_empty());
 }

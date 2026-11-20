@@ -104,7 +104,8 @@ fn boats_stay_on_water_and_tanks_on_land() {
         sim.step();
     }
     let p = sim.objects[&boat].position;
-    assert!(ih_math::length([p[0] - 40.0, p[1] - 350.0]) < 2.0, "boat at {p:?}");
+    // The goal snaps to the centre of its cell (an odd, one-cell footprint).
+    assert!(ih_math::length([p[0] - 45.0, p[1] - 355.0]) < 0.5, "boat at {p:?}");
     let p = sim.objects[&tank].position;
     assert!(p[0] > 110.0, "tank stayed out of the lake: {p:?}");
 }

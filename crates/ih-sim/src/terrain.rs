@@ -141,6 +141,18 @@ impl Terrain {
     pub fn invalidate_zones(&mut self) {
         self.zones.clear();
     }
+    /// `clientSafeQuickDoesPathExist`: both cells in the same connected zone component.
+    pub fn quick_path_exists(&self, a: Waypoint, b: Waypoint, radius: f32) -> bool {
+        let (ca, cb) = (cell(a.position), cell(b.position));
+        let (Some(i), Some(j)) = (self.index(a.layer, ca.0, ca.1), self.index(b.layer, cb.0, cb.1)) else {
+            return false;
+        };
+        i == j || self.zones.get(self, radius).connected(i, j)
+    }
+    /// Whether the layer has this cell (`getCell` is non-null).
+    pub fn has_cell(&self, layer: u32, x: i32, y: i32) -> bool {
+        self.index(layer, x, y).is_some()
+    }
     pub fn zone_summary(&self, radius: f32) -> ZoneSummary {
         self.zones.get(self, radius).summary()
     }
