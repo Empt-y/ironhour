@@ -67,7 +67,13 @@ fn emp_preserves_order_and_resumes_after_end_of_frame_expiry() {
     assert_eq!(o.ai.state, AiState::MoveTo);
     assert!(!o.disabled.any());
     assert_eq!(o.modules[0].updates, ai);
-    assert_eq!(o.modules[1].updates, physics + 31);
+    // Physics runs while disabled, then sleeps once the stopped body rests and its
+    // last motive force has expired (SLEEPY_PHYSICS).
+    let ran = o.modules[1].updates - physics;
+    assert!(ran > 0 && ran < 31, "physics ran {ran} times during the EMP");
+    // The AI's first force wakes the sleeping body for the frame after.
+    s.step();
+    assert_eq!(s.objects[&1].position, p);
     s.step();
     assert!(s.objects[&1].position[0] > p[0]);
     until(&mut s, 300);
@@ -201,5 +207,5 @@ fn status_and_order_log_replays_match_each_tick() {
     assert!(a.objects[&1].is_idle());
     assert_eq!(a.objects[&1].ai.completed_orders, 2);
     assert!(a.events.is_empty());
-    assert_eq!(a.state_hash(), 0x09b00996be9bcfb0, "portable AI/disabled fixture changed");
+    assert_eq!(a.state_hash(), 0x2a830ab44164ef36, "portable AI/disabled fixture changed");
 }

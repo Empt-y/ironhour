@@ -552,6 +552,7 @@ impl Simulation {
                 self.events.push(format!("frame {frame} command {seq}: {e}"));
             }
         }
+        self.wake_forced();
         while let Some((id, index)) = self.scheduler.due(self.frame) {
             let kind = self.objects[&id].modules[index].kind;
             let exceptions = match kind {
@@ -569,10 +570,14 @@ impl Simulation {
                 o.modules[index].kind
             };
             let delay = match kind {
-                ModuleKind::Steering => self.update_ai(id),
+                ModuleKind::Steering => {
+                    let delay = self.update_ai(id);
+                    self.wake_physics(id);
+                    delay
+                }
                 ModuleKind::Physics => {
                     self.integrate_ground(id);
-                    1
+                    self.physics_sleep(id)
                 }
                 ModuleKind::Stub => FOREVER,
             };
@@ -588,8 +593,47 @@ impl Simulation {
             self.wake_ai(id);
         }
         self.process_collisions();
+        self.wake_forced();
         self.rebuild_partition();
         self.frame = self.frame.checked_add(1).expect("logic frame overflow");
+    }
+    /// `PhysicsBehavior::calcSleepTime` (`SLEEPY_PHYSICS`), after the update ran.
+    /// Overlap tracking (`getCurrentOverlap`) is not kept yet and counts as none.
+    fn physics_sleep(&mut self, id: u32) -> u32 {
+        let frame = self.frame;
+        let o = self.objects.get_mut(&id).unwrap();
+        o.physics.ever_run = true;
+        o.physics.woken = false;
+        let p = &o.physics;
+        let ground = if o.layer == 0 { self.map.ground_height(o.position[0], o.position[1]) } else { f32::MAX };
+        let resting = p.vel == [0.0; 3]
+            && p.accel == [0.0; 3]
+            && p.motive_expires <= frame
+            && o.layer == 0
+            && o.position[2] - ground <= 0.0
+            && o.slide == [0.0; 2];
+        if resting { FOREVER } else { 1 }
+    }
+    /// `setWakeFrame(UPDATE_SLEEP_NONE)` after a force from another module: the
+    /// physics module runs next frame, or this frame if it is already due.
+    fn wake_physics(&mut self, id: u32) {
+        let Some(o) = self.objects.get_mut(&id) else { return };
+        // The braking slide is applied with the physics step here, so it wakes it too.
+        if !o.physics.woken && o.slide == [0.0; 2] {
+            return;
+        }
+        o.physics.woken = false;
+        if let Some(i) = o.modules.iter().position(|m| m.kind == ModuleKind::Physics) {
+            self.scheduler.awaken((id, i), self.frame, 1);
+        }
+    }
+    /// Wakes every body that received a force outside an AI update (commands, collisions).
+    fn wake_forced(&mut self) {
+        let ids: Vec<u32> =
+            self.objects.values().filter(|o| o.physics.woken || o.slide != [0.0; 2]).map(|o| o.id).collect();
+        for id in ids {
+            self.wake_physics(id);
+        }
     }
     fn update_ai(&mut self, id: u32) -> u32 {
         let o = &self.objects[&id];
@@ -1460,7 +1504,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(9);
+        h.u32(10);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1528,7 +1572,7 @@ impl Simulation {
                 h.float(v);
             }
             h.u32(o.physics.motive_expires);
-            h.u32(u32::from(o.physics.braking_status));
+            h.u32(u32::from(o.physics.braking_status) | u32::from(o.physics.ever_run) << 1);
             let l = &o.loco;
             h.u32(
                 u32::from(l.is_braking)
@@ -1884,9 +1928,43 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x708c2e2ed940c9a5, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x57d086ead747d4ee, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+    #[test]
+    fn resting_physics_sleeps_until_a_force_wakes_it() {
+        let mut a = sim();
+        a.spawn("Tank", [25.0, 25.0], 0).unwrap();
+        let physics = a.objects[&1].modules.iter().position(|m| m.kind == ModuleKind::Physics).unwrap();
+        let wake = |s: &Simulation| s.scheduler.heap.iter().find(|e| e.key == (1, physics)).unwrap().frame;
+        // The first update always runs (UPDATE_EVER_RUN); a body at rest then sleeps.
+        for _ in 0..3 {
+            a.step();
+        }
+        assert!(wake(&a) >= FOREVER, "asleep");
+        let updates = a.objects[&1].modules[physics].updates;
+        // The order wakes the AI; its first motive force wakes physics for the
+        // frame after, so the body does not move in the frame the force arrives.
+        a.enqueue(a.frame, Command::Move { object: 1, target: [125.0, 25.0] }).unwrap();
+        let start = a.objects[&1].position;
+        let mut woken_at = None;
+        for _ in 0..3 {
+            a.step();
+            if woken_at.is_none() && wake(&a) == a.frame {
+                woken_at = Some(a.frame);
+                assert_eq!(a.objects[&1].modules[physics].updates, updates);
+                assert_eq!(a.objects[&1].position, start);
+                assert!(a.objects[&1].physics.motive_expires > a.frame - 1, "a motive force arrived");
+            }
+        }
+        assert!(woken_at.is_some(), "physics was never woken");
+        for _ in 0..180 {
+            a.step();
+        }
+        assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
+        // Stopped at the goal: asleep again.
+        assert!(wake(&a) >= FOREVER, "asleep");
     }
     #[test]
     fn future_commands_are_hashed_and_destroy_removes_scheduled_modules() {
@@ -2063,7 +2141,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x2d905876dbd7cf08, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x62349faed71e433d, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2149,7 +2227,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x994d9fa88cde7d1b, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x8d23a9f1242793c2, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

@@ -5,20 +5,22 @@
 # Contra ships its archives as .ctr files in the Zero Hour folder. The `!` and `!!`
 # prefixes make them sort ahead of the stock archives, so they override them under
 # the original first-archive-wins rule. Optional packs are switched off by
-# excluding them here.
+# excluding them here. The patterns match any extension, because Contra's launcher
+# renames the packs it enables to .big: the result does not depend on how the
+# launcher last left the install.
 name = "Contra X Beta 2"
 extensions = ["ctr"]
 exclude = [
-    "*_ControlBarPro.ctr",
-    "*_ControlBarStandard.ctr",
-    "*_MusicEnhanced.ctr",
-    "*_MusicTheScore.ctr",
-    "*_FunnyGeneralPortraits.ctr",
-    "*_DisableExtraBuildingProps.ctr",
-    "*_DisableWaterEffects.ctr",
-    "*_UnitVoicesNative.ctr",
-    "*_HotkeysLeikeze_*.ctr",
-    "*_HotkeysOriginal_Russian.ctr",
+    "*_ControlBarPro.*",
+    "*_ControlBarStandard.*",
+    "*_MusicEnhanced.*",
+    "*_MusicTheScore.*",
+    "*_FunnyGeneralPortraits.*",
+    "*_DisableExtraBuildingProps.*",
+    "*_DisableWaterEffects.*",
+    "*_UnitVoicesNative.*",
+    "*_HotkeysLeikeze_*.*",
+    "*_HotkeysOriginal_Russian.*",
     # The launcher's own executable, not an archive.
     "generals.ctr",
 ]

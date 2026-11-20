@@ -1,0 +1,8 @@
+# The unmodified game, even while a mod launcher has activated its archives in
+# the Zero Hour folder. With no --profile, ironhour mounts what the original
+# game would load from the install as it is; Contra's launcher renames the packs
+# it enables to .big, so they would be mounted too.
+name = "Stock Zero Hour"
+exclude = [
+    "*ContraXBeta2_*",
+]

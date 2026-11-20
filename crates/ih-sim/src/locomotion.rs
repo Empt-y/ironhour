@@ -43,6 +43,11 @@ pub struct Physics {
     pub stick_to_ground: bool,
     /// `Apply2DFrictionWhenAirborne`.
     pub airborne_friction: bool,
+    /// A force arrived from outside the physics update since the last check
+    /// (`SLEEPY_PHYSICS`: it wakes a sleeping `PhysicsBehavior`).
+    pub woken: bool,
+    /// `UPDATE_EVER_RUN`.
+    pub ever_run: bool,
     /// The template's `PhysicsBehavior` data.
     pub data: PhysicsData,
 }
@@ -131,6 +136,9 @@ impl Body<'_> {
         for (a, v) in self.physics.accel.iter_mut().zip(m) {
             *a += v * inv;
         }
+        // Even a zero force wakes the body; forces from inside the physics update
+        // are cleared again at its end.
+        self.physics.woken = true;
     }
 
     /// `applyMotiveForce`.
@@ -705,6 +713,8 @@ impl Body<'_> {
             self.position[2] += self.physics.vel[2];
         }
         self.physics.accel = [0.0; 3];
+        self.physics.woken = false;
+        self.physics.ever_run = true;
         step
     }
 

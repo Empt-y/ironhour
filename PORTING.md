@@ -421,29 +421,48 @@ From `GameLogic::startNewGame` (GameLogic.cpp), `SidesList::ParseSidesDataChunk`
   object properties from the map (`objectName`, initial health and the rest of
   `updateObjValuesFromMapProperties`), `onBuildComplete`, team activation, build
   lists turned into players' bases, removing obstacles when objects die,
-  rubble cells, and sleepy physics (`SLEEPY_PHYSICS`: resting `PhysicsBehavior`s
-  sleep until a force wakes them; here they still update every frame).
+  and rubble cells.
 
-All sixteen scenarios pass with v9 hashes (every-tick replay equality, no
+### Sleepy physics (state hash v10)
+
+`SLEEPY_PHYSICS` from `PhysicsUpdate.cpp`: after each update a `PhysicsBehavior`
+sleeps (`calcSleepTime`) once it has run at least once (`UPDATE_EVER_RUN`, now
+hashed) and has no velocity, acceleration or live motive force, on the ground
+layer and not above the terrain. A force applied from outside its update, even a
+zero one, wakes it with `setWakeFrame(UPDATE_SLEEP_NONE)`: next frame, or this
+frame if it is already due. So a resting unit given an order starts moving one
+frame after its AI's first motive force, and an EMP'd unit's body sleeps once its
+last motive force expires. Forces from AI updates wake their own body at once;
+forces from commands and collisions are checked after those passes. Overlap
+tracking (`getCurrentOverlap`) is not kept yet and counts as none. The braking
+slide, applied with the physics step here, also wakes the body.
+
+Stock scenarios are run with `profiles/stock.toml`, which leaves out Contra's
+archives: Contra's launcher renames the packs it enables to `.big`, so with no
+profile ironhour mounts them, as the original game would. The Contra profile's
+excludes now match any extension, so its result does not depend on how the
+launcher last left the install.
+
+All sixteen scenarios pass with v10 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals),
 now with every map object loaded: 142 logic objects on Tournament Desert (756 with
 Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `7e014823afddb987` | `7513510a1214e35a` |
-| AI/status orders | `e2dfdbcefb0d8ee8` | `afcd596a413b6153` |
-| Bridges | `a996d11efd2d83b1` | `7525264be6a268a5` |
-| Traffic, Tournament Desert (one move-aside each) | `68bc0d2754a50735` | `b2b8fec0e5ad48e3` |
-| Traffic, Winding River | `3e4f83c8d867bc72` | `380048807b00e778` |
-| Long map travel | `d07bae1480ca3e8d` | `a0bca4babaf59f71` |
-| Crusader through an enemy Ranger (crushed at frame 131) | `2db045bb7655c894` | |
-| Crusader through an allied Ranger (steps aside) | `0549ff572155a036` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `09123036562bd307` | `028006ec2c9d2e32` |
+| Desert (`m4-desert` / `m4-contra`) | `4d2150daafa4f6a0` | `241a2841598167b6` |
+| AI/status orders | `bcb0c6dfcd11b5c5` | `7c8d93406f95732c` |
+| Bridges | `39c156c398d9bc93` | `3f01cc3e522fd8b5` |
+| Traffic, Tournament Desert (one move-aside each) | `9e92aa413d7920ab` | `ddf72561125145b7` |
+| Traffic, Winding River | `1217e6bf99e375d3` | `202f1da675ad481d` |
+| Long map travel | `95e0b552a0c182c0` | `d61897146e683efa` |
+| Crusader through an enemy Ranger (crushed at frame 131) | `eaca4d613eb148f3` | |
+| Crusader through an allied Ranger (steps aside) | `6e679d56786734bd` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `6948c0fb1431257e` | `4104d71a2583a3b7` |
 
-Asset-free fixtures: `708c2e2ed940c9a5` (ground), `994d9fa88cde7d1b`
-(bridge/deck stop), `2d905876dbd7cf08` (head-on traffic, resolved by a
-move-aside), `09b00996be9bcfb0` (AI/status orders). Unit tests also cover a tank
+Asset-free fixtures: `57d086ead747d4ee` (ground), `8d23a9f1242793c2`
+(bridge/deck stop), `62349faed71e433d` (head-on traffic, resolved by a
+move-aside), `2a830ab44164ef36` (AI/status orders). Unit tests also cover a tank
 squishing enemy infantry, allied infantry stepping aside, a hovering body
 climbing to and holding its preferred height (over ground and water), box,
 circle and fence footprints with pinched-gap closing, map-object sorting and
@@ -568,7 +587,7 @@ been made on Windows. Remaining M4 work:
 - AI: combat, guard, transport, mood and other temporary states; disabled side
   effects (inertia, held transports, tint, special-power timers, riders, power).
 - Objects: landmark bridges and walls, map object properties, build lists and
-  players' bases, obstacle removal and rubble on death, sleepy physics.
+  players' bases, obstacle removal and rubble on death.
 - Drawables: turrets, recoil, weapon and particle-system bones.
 
 Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the

@@ -8,9 +8,9 @@ also display and command the spawned units.
 From the repository folder:
 
 ```powershell
-cargo run --release -p ih-tools -- sim-run scenarios/m4-desert.toml --trace out/desert-hashes.txt
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-desert.toml --trace out/desert-hashes.txt
 cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-contra.toml --trace out/contra-hashes.txt
-cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-desert.toml
 cargo run --release -p ih-game -- --profile profiles/contra-x-beta2.toml --scenario scenarios/m4-contra.toml
 ```
 
@@ -27,9 +27,9 @@ facing, velocity, braking, AI state and blocking every 15 frames (`--watch-every
 Pristine bridge crossings have a separate stock/Contra demo:
 
 ```powershell
-cargo run --release -p ih-tools -- sim-run scenarios/m4-bridges.toml --trace out/bridge-hashes.txt
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-bridges.toml --trace out/bridge-hashes.txt
 cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-bridges-contra.toml
-cargo run --release -p ih-game -- --scenario scenarios/m4-bridges.toml
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-bridges.toml
 cargo run --release -p ih-game -- --profile profiles/contra-x-beta2.toml --scenario scenarios/m4-bridges-contra.toml
 cargo run --release -p ih-tools -- nav-check "Winding River" --radius 15
 ```
@@ -50,11 +50,11 @@ For live vehicle traffic, two vehicles exchange positions while a third remains
 parked in their path. Both the open-ground and bridge variants require detours:
 
 ```powershell
-cargo run --release -p ih-tools -- sim-run scenarios/m4-traffic.toml
-cargo run --release -p ih-tools -- sim-run scenarios/m4-traffic-bridges.toml
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-traffic.toml
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-traffic-bridges.toml
 cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-traffic-contra.toml
 cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-traffic-bridges-contra.toml
-cargo run --release -p ih-game -- --scenario scenarios/m4-traffic-bridges.toml
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-traffic-bridges.toml
 ```
 
 These are 1,800-tick (60-second) scenarios. The headless runner checks live
@@ -68,7 +68,7 @@ long route across Winding River over 6,000 ticks (200 seconds). They require all
 orders to finish and at least two stock bridge traversals, or one in Contra:
 
 ```powershell
-cargo run --release -p ih-tools -- sim-run scenarios/m4-map-travel.toml
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-map-travel.toml
 cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-map-travel-contra.toml
 ```
 
@@ -77,9 +77,9 @@ EMP/HELD timers, resume, then turn it in place. A Ranger is script-disabled,
 explicitly re-enabled, and ordered to face the vehicle:
 
 ```powershell
-cargo run --release -p ih-tools -- sim-run scenarios/m4-orders.toml
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-orders.toml
 cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-orders-contra.toml
-cargo run --release -p ih-game -- --scenario scenarios/m4-orders.toml
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-orders.toml
 cargo run --release -p ih-game -- --profile profiles/contra-x-beta2.toml --scenario scenarios/m4-orders-contra.toml
 ```
 
@@ -130,7 +130,7 @@ For reproducible before/after renders:
 ```powershell
 cargo run --release -p ih-tools -- map-render "Tournament Desert" --scenario scenarios/m4-desert.toml --sim-frame 0 --at 1150,950 --distance 550 --out out/move-start.png
 cargo run --release -p ih-tools -- map-render "Tournament Desert" --scenario scenarios/m4-desert.toml --sim-frame 240 --at 1150,950 --distance 550 --out out/move-eight-seconds.png
-cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml --smoke
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-desert.toml --smoke
 ```
 
 ## Implemented
@@ -172,7 +172,7 @@ cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml --smoke
   `NO_COLLIDE` objects do not block. A waiting unit displays idle art.
 - Spawn/move/stop/destroy commands, integer time accumulation, spatial buckets,
   canonical versioned state hashes covering pending commands and scheduler order.
-  State-hash format v9 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
+  State-hash format v10 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
   facing targets and disabled masks/deadlines, along with previous movement state.
   Earlier hash logs are obsolete and need regenerating.
 - Movement AI states use the original IDs for idle, move-to, follow-path,
@@ -190,7 +190,7 @@ cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml --smoke
 ## Verification and remaining work
 
 All sixteen stock and Contra scenarios replay every tick twice with matching state
-hashes (v9) with every map object loaded, finish every order, never overlap ground bodies and complete their
+hashes (v10) with every map object loaded, finish every order, never overlap ground bodies and complete their
 required bridge crossings; `PORTING.md` lists the final hashes. Asset-free
 fixtures (ground, bridge deck, head-on traffic, AI/status) assert fixed hashes in
 the Windows/Linux/macOS CI matrix, so the simulation is checked for cross-platform
@@ -213,8 +213,9 @@ and construction are M5.
 
 ## Review checklist
 
-Things only you can judge, in the window (`cargo run --release -p ih-game --
---scenario <file>`):
+Things only you can judge, in the window (`cargo run --release -p ih-game -- --profile
+profiles/stock.toml --scenario <file>`; the stock profile keeps Contra out while
+its launcher has it switched on):
 
 1. `m4-desert.toml`: the Crusader accelerates, brakes and stops on its goal
    without overshooting; the Ranger runs (walk cycle in step with its speed) and
@@ -243,9 +244,9 @@ crushed (removed until death modules exist in M5); an allied one steps aside and
 the Crusader passes:
 
 ```powershell
-cargo run --release -p ih-tools -- sim-run scenarios/m4-crush-enemy.toml
-cargo run --release -p ih-tools -- sim-run scenarios/m4-crush-ally.toml
-cargo run --release -p ih-game -- --scenario scenarios/m4-crush-ally.toml
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-crush-enemy.toml
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-crush-ally.toml
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-crush-ally.toml
 ```
 
 `sim-run` reports crushes as (frame, victim, crusher) and counts move-asides.
@@ -256,7 +257,7 @@ A Comanche lifts off to its preferred height (100 above the ground; Contra's 70)
 flies out and back, and hovers at each goal:
 
 ```powershell
-cargo run --release -p ih-tools -- sim-run scenarios/m4-air.toml --watch 1 --watch-every 60
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-air.toml --watch 1 --watch-every 60
 cargo run --release -p ih-tools -- --profile profiles/contra-x-beta2.toml sim-run scenarios/m4-air-contra.toml
-cargo run --release -p ih-game -- --scenario scenarios/m4-air.toml
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-air.toml
 ```

@@ -27,6 +27,11 @@ Install folders are found from the registry on Windows. Anywhere else, or to ove
 - `IH_ZH_INSTALL`: the Zero Hour folder
 - `IH_GENERALS_INSTALL`: the base Generals folder
 
+With no `--profile`, ironhour mounts what the original game would load from the
+install as it is. A mod launcher that renames its archives to `.big` (Contra's
+does) therefore switches the mod on here too; `--profile profiles/stock.toml`
+leaves Contra out.
+
 ## Tools
 
 ```
@@ -52,8 +57,8 @@ cargo run --release -p ih-game -- "Tournament Desert"
 cargo run --release -p ih-game -- "Winding River" --overview
 cargo run --release -p ih-game -- "Tournament Desert" --profile profiles/contra-x-beta2.toml
 cargo run -p ih-game -- "Winding River" --smoke  # hidden-window verification
-cargo run --release -p ih-tools -- sim-run scenarios/m4-desert.toml --trace out/desert-hashes.txt
-cargo run --release -p ih-game -- --scenario scenarios/m4-desert.toml
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-desert.toml --trace out/desert-hashes.txt
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-desert.toml
 cargo run --release -p ih-game -- --profile profiles/contra-x-beta2.toml --scenario scenarios/m4-contra.toml
 ```
 
