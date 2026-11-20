@@ -48,6 +48,8 @@ pub struct Physics {
     pub woken: bool,
     /// `UPDATE_EVER_RUN`.
     pub ever_run: bool,
+    /// `m_prevAccel`: last update's externally applied acceleration (`getAcceleration`).
+    pub prev_accel: [f32; 3],
     /// The template's `PhysicsBehavior` data.
     pub data: PhysicsData,
 }
@@ -677,6 +679,8 @@ impl Body<'_> {
     /// (none while braking) and sets z from `ground` at the new position.
     pub fn physics_update(&mut self, gravity: f32, held: bool, ground: f32) -> [f32; 2] {
         let mut step = [0.0; 2];
+        // m_prevAccel = m_accel: the forces other modules applied (the drawable reads it).
+        self.physics.prev_accel = self.physics.accel;
         if !held {
             self.physics.accel[2] += gravity;
             let v = self.physics.vel;

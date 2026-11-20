@@ -468,26 +468,52 @@ From `AIPathfind.cpp` (`classifyMap`, `classifyMapCell`,
 - Not yet: rubble from destroyed buildings, wall layers, crusher and per-surface
   zone tables (zones are still computed per view and radius).
 
-All sixteen scenarios pass with v11 hashes (every-tick replay equality, no
+### Chassis tilt and sway (render-only; state hash v12)
+
+From `Drawable.cpp` (`applyPhysicsXform`, `calcPhysicsXform` and its `Treads`,
+`Wheels`, `Motorcycle`, `HoverOrWings` and `Thrust` models) and
+`BaseHeightMap.cpp` (the smoothed terrain normal from `getHeightMapHeight`):
+
+- Vehicles settle onto the slope under them with spring/damper suspension,
+  pitch and roll as they accelerate, brake and turn (`ForwardAccelerationPitchFactor`,
+  `LateralAccelerationRollFactor` and the pitch limits), wheeled vehicles bounce
+  on rough ground (`BounceAmount`) and rise when steeply pitched; helicopters and
+  planes tilt with their speed and sway (`RudderCorrection*`, `ElevatorCorrection*`);
+  thrust locomotors wobble and roll. Every locomotor field these read is parsed
+  with the original's units and defaults.
+- Kept as written: the acceleration roll is limited by the pitch limits;
+  `deltaZ_X3` in the normal is `d6 - d0`; a motorcycle's roll test
+  (`> 0.5 && < -0.5`) is never true, so motorcycles never roll.
+- The original stepped the models once per drawn frame, which the retail game
+  locked to the 30 Hz logic; ironhour steps them once per logic frame and
+  interpolates, so they look the same at any frame rate. Bounces use the client
+  random stream, never the logic one.
+- The logic now keeps `m_prevAccel` (the forces other modules applied, which the
+  models read); it is hashed, hence v12.
+- Not yet: the tread bump over objects being crushed (needs `getCurrentOverlap`),
+  per-wheel suspension and steering angles (truck draw modules), shock rates from
+  explosions (M5), and pitch/roll in the logic for `THRUST` steering.
+
+All sixteen scenarios pass with v12 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals),
 now with every map object loaded: 142 logic objects on Tournament Desert (756 with
 Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `1d452e165b05ab6c` | `8b37e91feffbf03f` |
-| AI/status orders | `49d8d105e7311649` | `8e64ce738dce2dad` |
-| Bridges | `8aa34243e2f45692` | `c6572f0125aaadf8` |
-| Traffic, Tournament Desert (one move-aside each) | `1ba80657dc168f1f` | `46455cbe43a0bd2c` |
-| Traffic, Winding River | `c94ad52c322ad85e` | `29b54844e7afa048` |
-| Long map travel | `dfb01e8052b737c1` | `9a965f5c0a7cff5b` |
-| Crusader through an enemy Ranger (crushed at frame 131) | `86ef217534e2a167` | |
-| Crusader through an allied Ranger (steps aside) | `f4bd6ef55d818a69` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `2820c28de600c0e1` | `2fad1098d3836b37` |
+| Desert (`m4-desert` / `m4-contra`) | `3c6399b10ff7ab3a` | `325761fc6f1e83af` |
+| AI/status orders | `4d84d10ecbce19af` | `d39b5055744d2021` |
+| Bridges | `4599f02a3e572c91` | `7f27bc92c2828b81` |
+| Traffic, Tournament Desert (one move-aside each) | `6d7a298eb3207cf4` | `e586245744d5a9b9` |
+| Traffic, Winding River | `3309405a8990cb35` | `413ac35766244a9b` |
+| Long map travel | `7c61ce1c04ed978e` | `22b31591914f60e4` |
+| Crusader through an enemy Ranger (crushed at frame 131) | `3f8d056824e3f79c` | |
+| Crusader through an allied Ranger (steps aside) | `de214522887fa924` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `80f914ca24f2fcd1` | `cee82cb219675e77` |
 
-Asset-free fixtures: `c43c1aec5d1675a0` (ground), `c8d798e2102d6555`
-(bridge/deck stop), `2b95715fc4e5b451` (head-on traffic, resolved by a
-move-aside), `78aa2bed5c6dedf8` (AI/status orders). Unit tests also cover a tank
+Asset-free fixtures: `fa5c16122c6daf2d` (ground), `17ab20267b1bac19`
+(bridge/deck stop), `3a5b44e67c1fd48e` (head-on traffic, resolved by a
+move-aside), `08b9082c686660d0` (AI/status orders). Unit tests also cover a tank
 squishing enemy infantry, allied infantry stepping aside, a hovering body
 climbing to and holding its preferred height (over ground and water), box,
 circle and fence footprints with pinched-gap closing, map-object sorting and
@@ -601,8 +627,8 @@ stock and Contra scenarios replay identically, and the asset-free fixtures asser
 fixed hashes on Windows, Linux and macOS in CI. Runs on installed data have only
 been made on Windows. Remaining M4 work:
 
-- Movement: thrust locomotors, airfield take-off and landing, pitch/roll and
-  suspension, damage-state speed penalties, bouncing and falling.
+- Movement: thrust locomotors (logic pitch/roll), airfield take-off and landing,
+  damage-state speed penalties, bouncing and falling.
 - Navigation: crusher zone tables, rubble and wall cells, incremental zone updates,
   bridge damage, destruction and repair.
 - Traffic: narrow-phase shapes instead of bounding circles, overlapping bodies
@@ -613,7 +639,8 @@ been made on Windows. Remaining M4 work:
   effects (inertia, held transports, tint, special-power timers, riders, power).
 - Objects: landmark bridges and walls, map object properties, build lists and
   players' bases, obstacle removal and rubble on death.
-- Drawables: turrets, recoil, weapon and particle-system bones.
+- Drawables: turrets, recoil, weapon and particle-system bones, truck wheel
+  suspension and steering, the crush bump.
 
 Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the
 M3 visual review ([docs/map-viewer.md](docs/map-viewer.md)).

@@ -63,6 +63,87 @@ pub enum Appearance {
     Other,
 }
 
+/// Which client-side chassis model (`Drawable::calcPhysicsXform*`) the locomotor's
+/// `Appearance` selects. Render-only: the logic uses [`Appearance`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChassisKind {
+    /// `TWO_LEGS`, `CLIMBER` and `OTHER`: no chassis motion.
+    #[default]
+    None,
+    Wheels,
+    Motorcycle,
+    Treads,
+    HoverOrWings,
+    Thrust,
+}
+
+/// The locomotor fields the chassis models read (`LocomotorTemplate`), converted
+/// as the original parses them; defaults as its constructor sets them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Chassis {
+    pub kind: ChassisKind,
+    /// `AccelerationPitchLimit`/`DecelerationPitchLimit` (radians).
+    pub accel_pitch_limit: f32,
+    pub decel_pitch_limit: f32,
+    /// `BounceAmount` (radians per frame).
+    pub bounce_kick: f32,
+    pub pitch_stiffness: f32,
+    pub roll_stiffness: f32,
+    pub pitch_damping: f32,
+    pub roll_damping: f32,
+    pub thrust_roll: f32,
+    pub wobble_rate: f32,
+    pub min_wobble: f32,
+    pub max_wobble: f32,
+    /// `PitchInDirectionOfZVelFactor`.
+    pub pitch_by_z_vel: f32,
+    pub forward_vel: f32,
+    pub lateral_vel: f32,
+    pub forward_accel: f32,
+    pub lateral_accel: f32,
+    pub uniform_axial_damping: f32,
+    pub rudder_degree: f32,
+    pub rudder_rate: f32,
+    pub elevator_degree: f32,
+    pub elevator_rate: f32,
+    pub has_suspension: bool,
+    pub max_wheel_extension: f32,
+    /// `FrontWheelTurnAngle` (radians).
+    pub wheel_turn_angle: f32,
+}
+impl Default for Chassis {
+    fn default() -> Self {
+        Self {
+            kind: ChassisKind::None,
+            accel_pitch_limit: 0.0,
+            decel_pitch_limit: 0.0,
+            bounce_kick: 0.0,
+            // "it's highly unlikely you want zero for the defaults for stiffness and damping"
+            pitch_stiffness: 0.1,
+            roll_stiffness: 0.1,
+            pitch_damping: 0.9,
+            roll_damping: 0.9,
+            thrust_roll: 0.0,
+            wobble_rate: 0.0,
+            min_wobble: 0.0,
+            max_wobble: 0.0,
+            pitch_by_z_vel: 0.0,
+            forward_vel: 0.0,
+            lateral_vel: 0.0,
+            forward_accel: 0.0,
+            lateral_accel: 0.0,
+            uniform_axial_damping: 1.0,
+            rudder_degree: 0.0,
+            rudder_rate: 0.0,
+            elevator_degree: 0.0,
+            elevator_rate: 0.0,
+            has_suspension: false,
+            max_wheel_extension: 0.0,
+            wheel_turn_angle: 0.0,
+        }
+    }
+}
+
 /// `BIGNUM`: the original's "unlimited" default for braking and turn speed.
 pub const BIGNUM: f32 = 99999.0;
 
@@ -97,6 +178,8 @@ pub struct Locomotor {
     pub circling_radius: f32,
     pub allow_airborne_motive_force: bool,
     pub apply_2d_friction_when_airborne: bool,
+    /// Render-only chassis motion.
+    pub chassis: Chassis,
 }
 
 /// `LocomotorBehaviorZ` (`TheLocomotorBehaviorZNames`).
@@ -286,6 +369,43 @@ impl Templates {
                     circling_radius: number("CirclingRadius", 0.0),
                     allow_airborne_motive_force: flag("AllowAirborneMotiveForce"),
                     apply_2d_friction_when_airborne: flag("Apply2DFrictionWhenAirborne"),
+                    chassis: {
+                        let rad = std::f32::consts::PI / 180.0;
+                        Chassis {
+                            kind: match fields.get("Appearance").and_then(|v| v.first()).map(String::as_str) {
+                                Some("FOUR_WHEELS") => ChassisKind::Wheels,
+                                Some("MOTORCYCLE") => ChassisKind::Motorcycle,
+                                Some("TREADS") => ChassisKind::Treads,
+                                Some("HOVER" | "WINGS") => ChassisKind::HoverOrWings,
+                                Some("THRUST") => ChassisKind::Thrust,
+                                _ => ChassisKind::None,
+                            },
+                            accel_pitch_limit: number("AccelerationPitchLimit", 0.0) * rad,
+                            decel_pitch_limit: number("DecelerationPitchLimit", 0.0) * rad,
+                            bounce_kick: number("BounceAmount", 0.0) * rad / 30.0,
+                            pitch_stiffness: number("PitchStiffness", 0.1),
+                            roll_stiffness: number("RollStiffness", 0.1),
+                            pitch_damping: number("PitchDamping", 0.9),
+                            roll_damping: number("RollDamping", 0.9),
+                            thrust_roll: number("ThrustRoll", 0.0),
+                            wobble_rate: number("ThrustWobbleRate", 0.0),
+                            min_wobble: number("ThrustMinWobble", 0.0),
+                            max_wobble: number("ThrustMaxWobble", 0.0),
+                            pitch_by_z_vel: number("PitchInDirectionOfZVelFactor", 0.0),
+                            forward_vel: number("ForwardVelocityPitchFactor", 0.0),
+                            lateral_vel: number("LateralVelocityRollFactor", 0.0),
+                            forward_accel: number("ForwardAccelerationPitchFactor", 0.0),
+                            lateral_accel: number("LateralAccelerationRollFactor", 0.0),
+                            uniform_axial_damping: number("UniformAxialDamping", 1.0),
+                            rudder_degree: number("RudderCorrectionDegree", 0.0),
+                            rudder_rate: number("RudderCorrectionRate", 0.0),
+                            elevator_degree: number("ElevatorCorrectionDegree", 0.0),
+                            elevator_rate: number("ElevatorCorrectionRate", 0.0),
+                            has_suspension: flag("HasSuspension"),
+                            max_wheel_extension: number("MaximumWheelExtension", 0.0),
+                            wheel_turn_angle: number("FrontWheelTurnAngle", 0.0) * rad,
+                        }
+                    },
                 },
             );
         }

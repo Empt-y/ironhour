@@ -172,7 +172,7 @@ cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scena
   `NO_COLLIDE` objects do not block. A waiting unit displays idle art.
 - Spawn/move/stop/destroy commands, integer time accumulation, spatial buckets,
   canonical versioned state hashes covering pending commands and scheduler order.
-  State-hash format v11 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
+  State-hash format v12 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
   facing targets and disabled masks/deadlines, along with previous movement state.
   Earlier hash logs are obsolete and need regenerating.
 - Movement AI states use the original IDs for idle, move-to, follow-path,
@@ -190,7 +190,7 @@ cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scena
 ## Verification and remaining work
 
 All sixteen stock and Contra scenarios replay every tick twice with matching state
-hashes (v11) with every map object loaded, finish every order, never overlap ground bodies and complete their
+hashes (v12) with every map object loaded, finish every order, never overlap ground bodies and complete their
 required bridge crossings; `PORTING.md` lists the final hashes. Asset-free
 fixtures (ground, bridge deck, head-on traffic, AI/status) assert fixed hashes in
 the Windows/Linux/macOS CI matrix, so the simulation is checked for cross-platform
@@ -236,6 +236,10 @@ its launcher has it switched on):
    where.
 8. Buildings: units drive around the map's buildings instead of through them.
    Note any that clip a corner or refuse a gap they should fit through.
+9. Chassis motion: tanks and Humvees tilt with the slope they are on, rock back
+   when they set off and nod forward when they brake; the Humvee bounces a little
+   at speed; the Comanche leans into its flight and sways while hovering. Say if
+   any of it looks too strong, too stiff or the wrong way round.
 
 ## Moving out of the way and crushing
 

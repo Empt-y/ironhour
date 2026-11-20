@@ -316,6 +316,39 @@ impl Map {
         self.heights[(y * self.width + x) as usize]
     }
 
+    /// The smoothed normal `getHeightMapHeight` returns with the height: height
+    /// differences over two samples, blended across the cell. `deltaZ_X3` is
+    /// `d6 - d0`, as the original has it. Up off the map's interior.
+    pub fn ground_normal(&self, x: f32, y: f32) -> [f32; 3] {
+        if self.width <= 0 || self.height <= 0 {
+            return [0.0, 0.0, 1.0];
+        }
+        let (x, y) = (x / MAP_XY_FACTOR, y / MAP_XY_FACTOR);
+        let (fx, fy) = (x - x.floor(), y - y.floor());
+        let (ix, iy) = (x.floor() as i32 + self.border, y.floor() as i32 + self.border);
+        if ix < 1 || iy < 1 || ix > self.width - 3 || iy > self.height - 3 {
+            return [0.0, 0.0, 1.0];
+        }
+        let d = |dx: i32, dy: i32| f32::from(self.height_at(ix + dx, iy + dy));
+        let (d0, d1, d2, d3) = (d(0, 0), d(1, 0), d(1, 1), d(0, 1));
+        let (d4, d5, d6, d7) = (d(0, -1), d(1, -1), d(2, 0), d(2, 1));
+        // d10 (one sample left of d3) is read but unused in the original.
+        let (d8, d9, d11) = (d(1, 2), d(0, 2), d(-1, 0));
+        let (x0, x1, x2, x3) = (d1 - d11, d6 - d0, d7 - d3, d6 - d0);
+        let (y0, y1, y2, y3) = (d3 - d4, d2 - d5, d8 - d1, d9 - d0);
+        let left = x0 * (1.0 - fx) + fx * x3;
+        let right = x1 * (1.0 - fx) + fx * x2;
+        let dzx = left * (1.0 - fy) + fy * right;
+        let left = y0 * (1.0 - fx) + fx * y3;
+        let right = y1 * (1.0 - fx) + fx * y2;
+        let dzy = left * (1.0 - fy) + fy * right;
+        // Normalized_Cross_Product((a, 0, dzx), (0, a, dzy)), a = 2 * XY / HEIGHT_SCALE.
+        let a = 2.0 * MAP_XY_FACTOR / MAP_HEIGHT_SCALE;
+        let n = [-a * dzx, -a * dzy, a * a];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        [n[0] / len, n[1] / len, n[2] / len]
+    }
+
     /// `BaseHeightMap.cpp::getHeightMapHeight`: interpolate across the 0-to-2
     /// diagonal's two triangles. The outer samples use `getClipHeight`.
     pub fn ground_height(&self, x: f32, y: f32) -> f32 {
@@ -873,5 +906,18 @@ mod tests {
         assert_eq!((e.initially_built, e.rebuilds, e.health), (true, 2, 75));
         assert_eq!((e.whiner, e.unsellable, e.repairable), (false, true, false));
         assert_eq!(sides.teams[0].ascii("teamOwner"), Some("civilian"));
+    }
+
+    #[test]
+    fn ground_normal_leans_away_from_the_rise() {
+        // Heights rise by 2 steps per sample along x: 1.25 world units per 10.
+        let (w, h) = (8, 8);
+        let heights = (0..h).flat_map(|_| (0..w).map(|x| (x * 2) as u8)).collect();
+        let map = Map { width: w, height: h, border: 0, heights, ..Default::default() };
+        let n = map.ground_normal(25.0, 25.0);
+        // dz/dx = 0.125: the normal is (-0.125, 0, 1), normalised.
+        let len = (1.0f32 + 0.125 * 0.125).sqrt();
+        assert!((n[0] + 0.125 / len).abs() < 1e-5 && n[1].abs() < 1e-6 && (n[2] - 1.0 / len).abs() < 1e-5, "{n:?}");
+        assert_eq!(map.ground_normal(5.0, 5.0), [0.0, 0.0, 1.0], "edge samples point up");
     }
 }

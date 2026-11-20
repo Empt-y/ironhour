@@ -2,6 +2,7 @@
 //! tactical camera. Full condition-state drawables come with the simulation.
 
 pub mod camera;
+pub mod chassis;
 pub mod condition;
 pub mod defs;
 pub mod drawable;

@@ -43,6 +43,10 @@ struct ObjectDraw {
     states: Vec<ModelDrawState>,
     flags: Option<Flags>,
     last_ms: f32,
+    /// Chassis motion: state, the last two logic frames' results, and the frame stepped.
+    loco: crate::chassis::LocoInfo,
+    xform: [crate::chassis::Xform; 2],
+    stepped: Option<u32>,
 }
 
 pub struct SimDrawables {
@@ -52,6 +56,8 @@ pub struct SimDrawables {
     base_flags: Flags,
     static_instances: usize,
     rings: BTreeMap<String, Arc<PreparedModel>>,
+    /// `GameClientRandomValue` for chassis bounces.
+    rng: crate::condition::ClientRng,
 }
 
 impl SimDrawables {
@@ -71,6 +77,7 @@ impl SimDrawables {
             base_flags: flags.iter().map(|f| f.to_string()).collect(),
             static_instances,
             rings: BTreeMap::new(),
+            rng: crate::condition::ClientRng::new(0x5eed),
         };
         for name in names {
             if out.templates.contains_key(&name) {
@@ -153,6 +160,9 @@ impl SimDrawables {
                 states: (0..td.modules.len()).map(|i| ModelDrawState::new(u64::from(o.id) << 8 | i as u64)).collect(),
                 flags: None,
                 last_ms: time_ms,
+                loco: Default::default(),
+                xform: Default::default(),
+                stepped: None,
             });
             let dt = (time_ms - entry.last_ms).max(0.0);
             entry.last_ms = time_ms;
@@ -161,8 +171,17 @@ impl SimDrawables {
             let previous = Vec3::from(o.previous_position);
             let current = Vec3::from(o.position);
             let p = previous.lerp(current, alpha.clamp(0.0, 1.0));
-            let root =
-                Mat4::from_translation(p) * Mat4::from_rotation_z(o.angle) * Mat4::from_scale(Vec3::splat(td.scale));
+            // applyPhysicsXform, stepped once per logic frame and interpolated.
+            if entry.stepped != Some(sim.frame) {
+                let x = chassis_step(sim, o, &mut entry.loco, &mut self.rng);
+                entry.xform = if entry.stepped.is_some() { [entry.xform[1], x] } else { [x, x] };
+                entry.stepped = Some(sim.frame);
+            }
+            let x = entry.xform[0].lerp(entry.xform[1], alpha.clamp(0.0, 1.0));
+            let root = Mat4::from_translation(p)
+                * Mat4::from_rotation_z(o.angle)
+                * Mat4::from_scale(Vec3::splat(td.scale))
+                * x.matrix();
             for (state, data) in entry.states.iter_mut().zip(&td.modules) {
                 if changed {
                     state.set_conditions(data, &flags, &mut self.art);
@@ -186,6 +205,40 @@ impl SimDrawables {
             }
         }
     }
+}
+
+/// One `calcPhysicsXform` step for a logic object (identity without a chassis model,
+/// an AI locomotor and physics, or while held).
+fn chassis_step(
+    sim: &Simulation,
+    o: &ih_sim::simulation::Object,
+    info: &mut crate::chassis::LocoInfo,
+    rng: &mut crate::condition::ClientRng,
+) -> crate::chassis::Xform {
+    use ih_sim::simulation::ModuleKind;
+    let t = &sim.templates.objects[&o.template];
+    let Some(l) = t.locomotor().and_then(|n| sim.templates.locomotors.get(n)) else { return Default::default() };
+    let held = o.disabled.mask & (1 << ih_sim::disabled::DisabledReason::Held as u32) != 0;
+    let has = |k| o.modules.iter().any(|m| m.kind == k);
+    if held || !has(ModuleKind::Steering) || !has(ModuleKind::Physics) {
+        return Default::default();
+    }
+    let at = ih_sim::terrain::Waypoint { position: [o.position[0], o.position[1]], layer: o.layer };
+    let (height, normal) = sim.grid.height_and_normal(&sim.map, at);
+    let height_above = o.position[2] - height;
+    let m = crate::chassis::Motion {
+        dir: [ih_math::cos(o.angle), ih_math::sin(o.angle)],
+        vel: o.physics.vel,
+        accel: o.physics.prev_accel,
+        motive: o.physics.motive_expires > sim.frame,
+        height_above,
+        normal,
+        airborne: height_above > -9.0 * ih_sim::locomotion::DEFAULT_GRAVITY,
+        max_speed: l.speed,
+        length: t.number("GeometryMajorRadius", 1.0),
+        width: t.number("GeometryMinorRadius", 1.0),
+    };
+    crate::chassis::step(&l.chassis, info, &m, rng).unwrap_or_default()
 }
 
 fn ring(radius: f32) -> ih_render::Model {

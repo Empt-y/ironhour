@@ -741,6 +741,7 @@ dependencies = [
  "glam",
  "ih-formats",
  "ih-ini",
+ "ih-math",
  "ih-render",
  "ih-sim",
  "ih-vfs",

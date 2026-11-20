@@ -41,6 +41,14 @@ impl Bridge {
     pub fn height(&self, p: [f32; 2]) -> f32 {
         self.from[2] + self.local(p)[0] / self.length() * (self.to[2] - self.from[2])
     }
+    /// The deck plane's normal (`getBridgeHeight`): tilted along the span only.
+    pub fn normal(&self) -> [f32; 3] {
+        let slope = (self.to[2] - self.from[2]) / self.length();
+        let d = self.direction();
+        let n = [-slope * d[0], -slope * d[1], 1.0];
+        let len = ih_math::sqrt(n[0] * n[0] + n[1] * n[1] + 1.0);
+        [n[0] / len, n[1] / len, n[2] / len]
+    }
     /// Ray/deck intersection for client picking; only the finite deck is hit.
     pub fn ray_hit(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<(f32, [f32; 2])> {
         let slope = (self.to[2] - self.from[2]) / self.length();

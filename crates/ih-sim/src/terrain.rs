@@ -181,6 +181,17 @@ impl Terrain {
             self.layers.get(layer as usize - 1)?.cells.get(&(x, y)).map(|c| c.index)
         }
     }
+    /// `getLayerHeight` with its normal: the deck where it is above the ground.
+    pub fn height_and_normal(&self, map: &Map, p: Waypoint) -> (f32, [f32; 3]) {
+        let ground = (map.ground_height(p.position[0], p.position[1]), map.ground_normal(p.position[0], p.position[1]));
+        if let Some(l) = p.layer.checked_sub(1).and_then(|i| self.layers.get(i as usize)) {
+            let h = l.bridge.height(p.position);
+            if h > ground.0 {
+                return (h, l.bridge.normal());
+            }
+        }
+        ground
+    }
     pub fn height_at(&self, map: &Map, p: Waypoint) -> f32 {
         if p.layer == 0 {
             map.ground_height(p.position[0], p.position[1])

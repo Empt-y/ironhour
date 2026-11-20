@@ -11,5 +11,6 @@ ih-ini.workspace = true
 ih-formats.workspace = true
 ih-render.workspace = true
 ih-sim.workspace = true
+ih-math.workspace = true
 glam = "0.34"
 thiserror.workspace = true

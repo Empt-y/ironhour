@@ -1532,7 +1532,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(11);
+        h.u32(12);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1596,7 +1596,7 @@ impl Simulation {
             }
             h.float(tr.max_blocked_speed);
             h.float(tr.bump_speed_limit);
-            for v in o.physics.vel.into_iter().chain(o.slide) {
+            for v in o.physics.vel.into_iter().chain(o.physics.prev_accel).chain(o.slide) {
                 h.float(v);
             }
             h.u32(o.physics.motive_expires);
@@ -1956,7 +1956,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - 125.0).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xc43c1aec5d1675a0, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xfa5c16122c6daf2d, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2169,7 +2169,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x2b95715fc4e5b451, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x3a5b44e67c1fd48e, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2255,7 +2255,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xc8d798e2102d6555, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x17ab20267b1bac19, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {
