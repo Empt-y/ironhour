@@ -147,7 +147,7 @@ impl SimDrawables {
         sim: &Simulation,
         alpha: f32,
         time_ms: f32,
-        selected: Option<u32>,
+        selected: &[u32],
     ) {
         scene.instances.truncate(self.static_instances);
         self.objects.retain(|id, _| sim.objects.contains_key(id));
@@ -198,7 +198,7 @@ impl SimDrawables {
                 scene.instances.push(renderer.instance_hiding(&art.prepared, &bones, hidden));
             }
             entry.flags = Some(flags);
-            if selected == Some(o.id)
+            if selected.contains(&o.id)
                 && let Some(ring) = self.rings.get(&o.template)
             {
                 scene.instances.push(renderer.instance(ring, &[Mat4::from_translation(p + Vec3::Z * 0.2)]));

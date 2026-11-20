@@ -523,26 +523,74 @@ state):
   `checkPathCost` for group destinations, and bridge-end cells shared by both
   layers (`objectInteractsWithBridgeEnd`).
 
-All sixteen scenarios pass with v13 hashes (every-tick replay equality, no
+### Group moves, follow-path legs and box shapes (state hash v14)
+
+From `AIGroup.cpp` (`groupMoveToPosition`, `friend_computeGroundPath`,
+`friend_moveInfantryToPos`, `friend_moveVehicleToPos`, `computeIndividualDestination`,
+`groupTightenToPosition`, `getMinMaxAndCenter`, `clampToMap`, `clampWaypointPosition`),
+`AIStates.cpp` (`AIFollowPathState`), `AIPathfind.cpp` (`moveAllies`) and
+`PartitionManager.cpp` (the 2D collide tests):
+
+- A `group_move` command (and right-click with several units selected; drag a box
+  to select) moves a selection as the original does. Far or large groups follow
+  one shared ground path: infantry in three columns (five from 16), vehicles in
+  two lanes (three from 5), each ending at its own adjusted spot. Short moves keep
+  the group's shape (each unit keeps its offset, at most six bounding radii). A
+  click inside the middle half of the group's box gathers it
+  (`GroupMoveClickToGatherAreaFactor`). `AIData`'s `MinInfantryForGroup`,
+  `MinVehiclesForGroup`, `MinDistanceForGroup` and `DistanceRequiresGroup` and the
+  locomotors' `GroupMovementPriority` are read; Contra's own values apply.
+- Kept as written: vehicles on a straight shared path move individually (the
+  end node is the path's first, which the vehicle layout rejects); vehicles are
+  balanced into lanes once per priority group; tightening measures both sides of
+  the box with its width.
+- Follow-path legs: intermediate legs keep their speed (`setPathExtraDistance`)
+  and finish by the easy close-enough test (`CloseEnoughDist`, now parsed); points
+  within a cell are skipped; a failed or unreachable leg is retried (10 retries per
+  order) and then skipped; the final leg adjusts its goal.
+- `moveAllies`: after a new path, idle allies standing on it are asked to move out
+  of the way (infantry never ask infantry). When no route around the units exists
+  the terrain route is taken and the allies on it asked to move, as the original
+  plans through allies' cells.
+- Collision shapes: contact, the no-overlap clipping and the overlap check use the
+  original's 2D tests (a box corner inside the other box; circles as squares at
+  their facing; close centres always touch) instead of bounding circles, so
+  boxes park side by side as in the original. Steps involving a box are clipped by
+  bisection and slide along the boxes' edges. Collision forces still use bounding
+  circles, as in the original.
+- Stand-ins: the shared path comes from the ordinary search with a three-cell
+  clearance (not `findGroundPath`'s own search); tightening goes through an adjusted
+  move, not `AIMoveAndTightenState`'s approach path; a group path's claimed final
+  goal is kept on the way (the original releases it and lets arrivals overlap);
+  infantry pass through infantry, and a stationary one does not block them; a
+  stuck unit within four cells of an intermediate point moves on; turning boxes
+  may overlap at their corners, and the overlap check counts a centre inside
+  another body. Formations and waypoint appends are not ported.
+- Known: in tight valleys a group can still jam behind its first arrivals, and a
+  mixed tank and infantry pair can deadlock at the start, until the real
+  pathfinder (`findPath` through allies' cells, `findClosestPath`) is ported.
+
+All seventeen scenarios pass with v14 hashes (every-tick replay equality, no
 overlaps or rejected commands, all orders finished, required bridge traversals),
 now with every map object loaded: 142 logic objects on Tournament Desert (756 with
 Contra) and 492 on Winding River (764):
 
 | Scenario | Stock | Contra |
 |---|---|---|
-| Desert (`m4-desert` / `m4-contra`) | `baaef7c4680622e7` | `515b679d525c880e` |
-| AI/status orders | `dfebdbb7165c2205` | `0fb117f013e706e9` |
-| Bridges | `23e3c36a429c9a81` | `7acf014d325cbe05` |
-| Traffic, Tournament Desert (one move-aside in stock) | `0023503735d89c5d` | `4c718df310335bac` |
-| Traffic, Winding River | `33aeb756013f380d` | `65ad76bac5e8ab44` |
-| Long map travel | `e124f01aa8466d41` | `f38f0779f9c4b654` |
-| Crusader through an enemy Ranger (crushed at frame 132) | `cfe67dded565aa7a` | |
-| Crusader through an allied Ranger (steps aside) | `34d61a9c71dba0d5` | |
-| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `075e4e15e46ce189` | `f581475867b0083f` |
+| Desert (`m4-desert` / `m4-contra`) | `d3156ebdca2c6c21` | `a35a760d6f6dedb2` |
+| AI/status orders | `43d237b94f8302fd` | `83cd5dfe769add5f` |
+| Bridges | `593e971ebbfb89df` | `9d3849c37fd7213f` |
+| Traffic, Tournament Desert (three move-asides) | `30890803003e1c35` | `794b1d14fff09062` |
+| Traffic, Winding River | `d347286bdda93591` | `00b11ffcfdd48c0d` |
+| Long map travel | `13a4ba551d8cdfe3` | `eada191c4bfe9242` |
+| Crusader through an enemy Ranger (crushed at frame 132) | `cb4f8e5f9b5189e4` | |
+| Crusader through an allied Ranger (steps aside) | `84a25b0ce31b1d66` | |
+| Comanche out and back (`m4-air`; Contra `AirF_AmericaVehicleComanche`) | `7465bff897439647` | `dba3f65e37c4e81b` |
+| Group move across Tournament Desert, then gather (`m4-group`) | `ba55b1a3f42fbf96` | |
 
-Asset-free fixtures: `3947883484200a3e` (ground), `457f590fa4ca127b`
-(bridge/deck stop), `f0d6a0c26f57ed35` (head-on traffic, resolved by a
-move-aside), `7246961357b65469` (AI/status orders). Unit tests also cover a tank
+Asset-free fixtures: `95f860527d5842f6` (ground), `2c08379c73f49e88`
+(bridge/deck stop), `a4645e5ed8edf2ba` (head-on traffic, resolved by a
+move-aside), `7842ee627d8109b1` (AI/status orders). Unit tests also cover a tank
 squishing enemy infantry, allied infantry stepping aside, a hovering body
 climbing to and holding its preferred height (over ground and water), box,
 circle and fence footprints with pinched-gap closing, map-object sorting and
@@ -660,9 +708,9 @@ been made on Windows. Remaining M4 work:
   damage-state speed penalties, bouncing and falling.
 - Navigation: crusher zone tables, rubble and wall cells, incremental zone updates,
   bridge damage, destruction and repair.
-- Group moves (`AIGroup`): formations, infantry columns and vehicle spreads.
-- Traffic: narrow-phase shapes instead of bounding circles, overlapping bodies
-  (and with them vehicle crush damage), `moveAllies`, formations, crowded
+- Group moves: formations, waypoint appends, `findGroundPath` and the real
+  `findPath` (routing through allies' cells, closest paths).
+- Traffic: overlapping bodies (and with them vehicle crush damage), crowded
   bottleneck recovery. Occupied goals or routes with no passing room wait until
   space is free.
 - AI: combat, guard, transport, mood and other temporary states; disabled side

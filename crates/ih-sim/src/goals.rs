@@ -281,6 +281,57 @@ impl Simulation {
             }
         }
     }
+    /// `Pathfinder::moveAllies`: after a new path, idle allies standing on it (by
+    /// their position cells, within the mover's footprint) are asked to move out of
+    /// the way (`aiMoveAwayFromUnit`). Infantry pass through infantry; infantry ask
+    /// vehicles only when they block the path. Our paths are sparse, so they are
+    /// walked a cell at a time. Dozers and harvesters always clear their path.
+    pub(crate) fn move_allies(&mut self, id: u32) {
+        if self.kind_of_id(id, "NO_COLLIDE") {
+            return;
+        }
+        let (r, center) = self.footprint(id);
+        let o = &self.objects[&id];
+        let layer_of = |w: &Waypoint| w.layer;
+        let mut found: Vec<u32> = Vec::new();
+        for pair in o.path.iter().collect::<Vec<_>>().windows(2).rev() {
+            let (a, b) = (pair[0], pair[1]);
+            let len = ih_math::length([b.position[0] - a.position[0], b.position[1] - a.position[1]]);
+            let steps = (len / CELL).ceil().max(1.0) as i32;
+            for s in 0..=steps {
+                let t = s as f32 / steps as f32;
+                let p = [
+                    a.position[0] + (b.position[0] - a.position[0]) * t,
+                    a.position[1] + (b.position[1] - a.position[1]) * t,
+                ];
+                let c = ((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32);
+                for (i, j) in Self::covered(c, r, center) {
+                    let u = self.unit_cells.get(layer_of(b), i, j).pos_unit;
+                    if u != 0 && u != id && !found.contains(&u) {
+                        found.push(u);
+                    }
+                }
+            }
+        }
+        let me_infantry = self.kind_of_id(id, "INFANTRY");
+        let owner = self.objects[&id].owner;
+        for other in found {
+            let Some(ob) = self.objects.get(&other) else { continue };
+            if ob.owner != owner {
+                continue; // only allies
+            }
+            if me_infantry && self.kind_of_id(other, "INFANTRY") {
+                continue; // infantry walk through infantry
+            }
+            if ob.target.is_none() && ob.ai.move_out.is_none() {
+                self.move_away_from_unit(other, id);
+            }
+        }
+    }
+    fn kind_of_id(&self, id: u32, kind: &str) -> bool {
+        self.templates.objects[&self.objects[&id].template].has_kind(kind)
+    }
+
     /// Removes a destroyed object's cells.
     pub(crate) fn forget_cells(&mut self, id: u32) {
         self.remove_goal(id);
@@ -346,8 +397,8 @@ impl Simulation {
         let t = &self.templates.objects[&o.template];
         if !t.has_kind("AIRCRAFT") {
             let terrain = self.terrain(id);
-            // The original's zones ignore unit size: zero-clearance zones.
-            let radius = 0.0;
+            // The unit's own clearance, so the check agrees with the route it will get.
+            let radius = t.radius();
             let here = Waypoint { position: [o.position[0], o.position[1]], layer: o.layer };
             let to = |p: [f32; 2]| Waypoint { position: p, layer };
             let reachable = terrain.quick_path_exists(here, to(adjusted), radius)

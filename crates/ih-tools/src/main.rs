@@ -424,7 +424,7 @@ fn main() -> Result<()> {
                     scene.instances.len(),
                 );
                 let mut draw = draw;
-                draw.update(&renderer, &mut scene, &sim, 1.0, *sim_frame as f32 * 1000.0 / 30.0, Some(1));
+                draw.update(&renderer, &mut scene, &sim, 1.0, *sim_frame as f32 * 1000.0 / 30.0, &[1]);
                 eprintln!("simulation frame {}: {:016x}", sim.frame, sim.state_hash());
             }
             let t_build = t0.elapsed();

@@ -172,7 +172,7 @@ cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scena
   `NO_COLLIDE` objects do not block. A waiting unit displays idle art.
 - Spawn/move/stop/destroy commands, integer time accumulation, spatial buckets,
   canonical versioned state hashes covering pending commands and scheduler order.
-  State-hash format v13 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
+  State-hash format v14 (v4 when this slice began) includes AI states, queued path points, outcomes/counters,
   facing targets and disabled masks/deadlines, along with previous movement state.
   Earlier hash logs are obsolete and need regenerating.
 - Movement AI states use the original IDs for idle, move-to, follow-path,
@@ -189,8 +189,8 @@ cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scena
 
 ## Verification and remaining work
 
-All sixteen stock and Contra scenarios replay every tick twice with matching state
-hashes (v13) with every map object loaded, finish every order, never overlap ground bodies and complete their
+All seventeen stock and Contra scenarios replay every tick twice with matching state
+hashes (v14) with every map object loaded, finish every order, never overlap ground bodies and complete their
 required bridge crossings; `PORTING.md` lists the final hashes. Asset-free
 fixtures (ground, bridge deck, head-on traffic, AI/status) assert fixed hashes in
 the Windows/Linux/macOS CI matrix, so the simulation is checked for cross-platform
@@ -240,6 +240,22 @@ its launcher has it switched on):
    when they set off and nod forward when they brake; the Humvee bounces a little
    at speed; the Comanche leans into its flight and sways while hovering. Say if
    any of it looks too strong, too stiff or the wrong way round.
+10. Group moves (`m4-group.toml`, or drag a box round several units and
+    right-click): the selection sets off together, Rangers in columns along one
+    route, and each unit stops in its own spot; a right-click inside the group
+    gathers it. Note anywhere a group jams, and on which map.
+
+## Group moves
+
+```
+cargo run --release -p ih-tools -- --profile profiles/stock.toml sim-run scenarios/m4-group.toml
+cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m4-group.toml
+```
+
+Four Crusaders and six Rangers cross Tournament Desert as one selection
+(`AIGroup::groupMoveToPosition`), then a second order inside their own box
+gathers them. In the window, drag a box to select several units; right-click
+sends a group move. See `PORTING.md` for what is ported and what stands in.
 
 ## Moving out of the way and crushing
 

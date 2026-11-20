@@ -39,6 +39,10 @@ pub struct AiMachine {
     pub move_out: Option<MoveOutOfWay>,
     /// `m_moveOutOfWay1`, `m_moveOutOfWay2`: the units most recently made way for.
     pub move_out_of_way: [Option<u32>; 2],
+    /// `AIFollowPathState::m_retryCount` (10 per order, shared by its legs).
+    pub retries: u32,
+    /// A group path's final goal stays claimed on the way (see `group`).
+    pub keep_goal: bool,
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {
@@ -50,6 +54,8 @@ impl AiMachine {
         self.remaining.clear();
         self.face_position = None;
         self.face_object = None;
+        self.retries = if state == AiState::FollowPath { 10 } else { 0 };
+        self.keep_goal = false;
         self.state = state;
         self.entered_frame = frame;
         self.transitions += 1;

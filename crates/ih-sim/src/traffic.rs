@@ -13,8 +13,14 @@ pub const CONTACT_GAP: f32 = 0.02;
 #[derive(Clone, Copy, Debug)]
 pub struct Collider {
     pub id: u32,
+    /// `KINDOF_INFANTRY`: infantry pass through infantry.
+    pub infantry: bool,
     pub position: [f32; 3],
     pub radius: f32,
+    /// The geometry for narrow-phase tests (`radius` is its bounding circle).
+    pub geom: Geom,
+    pub major: f32,
+    pub minor: f32,
     pub bottom: f32,
     pub top: f32,
     pub angle: f32,
@@ -24,11 +30,24 @@ pub struct Collider {
     /// `KINDOF_IMMOBILE` or a structure: kept out of by obstacle cells, not by clipping.
     pub immobile: bool,
 }
+/// `GeometryType`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Geom {
+    #[default]
+    Sphere,
+    Cylinder,
+    Box,
+}
+
 /// The template-derived part of a collider, worked out once when the object is
 /// created (`GeometryInfo::calcBoundingStuff` and the collision filters).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BodyShape {
+    pub infantry: bool,
     pub radius: f32,
+    pub geom: Geom,
+    pub major: f32,
+    pub minor: f32,
     pub bottom: f32,
     pub top: f32,
     pub priority: u8,
@@ -42,8 +61,19 @@ impl BodyShape {
         let sphere = t.values("Geometry").first().is_some_and(|v| v == "SPHERE");
         let height = if sphere { radius } else { t.number("GeometryHeight", 5.0).max(0.01) * scale };
         let immobile = t.has_kind("IMMOBILE") || t.has_kind("STRUCTURE");
+        let geom = match t.values("Geometry").first().map(|g| g.to_ascii_uppercase()).as_deref() {
+            Some("BOX") => Geom::Box,
+            Some("CYLINDER") => Geom::Cylinder,
+            _ => Geom::Sphere,
+        };
+        let major = t.number("GeometryMajorRadius", 5.0).max(0.0) * scale;
+        let minor = t.number("GeometryMinorRadius", 0.0).max(0.0) * scale;
         Self {
+            infantry: t.has_kind("INFANTRY"),
             radius,
+            geom,
+            major,
+            minor: if geom == Geom::Box { minor } else { major },
             bottom: if sphere { -radius } else { 0.0 },
             top: height,
             priority: if t.has_kind("DOZER") {
@@ -68,8 +98,12 @@ impl Collider {
         let s = o.body;
         Self {
             id: o.id,
+            infantry: s.infantry,
             position: o.position,
             radius: s.radius,
+            geom: s.geom,
+            major: s.major,
+            minor: s.minor,
             bottom: s.bottom,
             top: s.top,
             angle: o.angle,
@@ -111,10 +145,49 @@ impl Collider {
 /// Fraction of a proposed step before first contact. Already overlapping units
 /// may move out, but cannot deepen the overlap. This also catches a single fast
 /// step that would otherwise start and end on opposite sides of another unit.
+/// Fraction of a proposed step before first contact. Two round bodies are swept
+/// exactly; with a box involved the step is bisected against the narrow phase
+/// (steps are small next to bodies, so the midpoint guards against tunnelling).
+/// Already overlapping bodies may move apart but not closer.
+/// Infantry pass through infantry, as in the original, where AI units get no
+/// collision push and `moveAllies` lets "infantry walk through other infantry".
 pub fn step_fraction(body: Collider, velocity: [f32; 2], other: Collider) -> f32 {
-    if !body.interacts(other) {
+    if !body.interacts(other) || (body.infantry && other.infantry) {
         return 1.0;
     }
+    if body.geom == Geom::Box || other.geom == Geom::Box {
+        let at = |t: f32| {
+            body.with_position([
+                body.position[0] + velocity[0] * t,
+                body.position[1] + velocity[1] * t,
+                body.position[2],
+            ])
+        };
+        let hit = |t: f32| shapes_touch(&at(t), &other, 0.0);
+        if hit(0.0) {
+            let away = (body.position[0] - other.position[0]) * velocity[0]
+                + (body.position[1] - other.position[1]) * velocity[1];
+            return if away >= 0.0 { 1.0 } else { 0.0 };
+        }
+        if !hit(1.0) && !hit(0.5) {
+            return 1.0;
+        }
+        let (mut lo, mut hi) = (0.0f32, if hit(0.5) { 0.5 } else { 1.0 });
+        for _ in 0..12 {
+            let mid = (lo + hi) * 0.5;
+            if hit(mid) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let speed = ih_math::length(velocity);
+        return if speed > 0.0 { (lo - CONTACT_GAP / speed).max(0.0) } else { lo };
+    }
+    step_fraction_round(body, velocity, other)
+}
+/// The exact sweep of two round bodies.
+fn step_fraction_round(body: Collider, velocity: [f32; 2], other: Collider) -> f32 {
     let p = [body.position[0] - other.position[0], body.position[1] - other.position[1]];
     let a = velocity[0] * velocity[0] + velocity[1] * velocity[1];
     if a == 0.0 {
@@ -142,14 +215,70 @@ pub fn step_fraction(body: Collider, velocity: [f32; 2], other: Collider) -> f32
     }
     (t - CONTACT_GAP / ih_math::sqrt(a)).max(0.0)
 }
+/// `rectToFourPoints`: a rect's corners (tl, tr, bl, br) at its facing.
+fn corners(c: &Collider, grow: f32) -> [[f32; 2]; 4] {
+    let (major, minor) = (c.major + grow, c.minor + grow);
+    let (cs, sn) = (ih_math::cos(c.angle), ih_math::sin(c.angle));
+    let (exc, eyc, exs, eys) = (major * cs, minor * cs, major * sn, minor * sn);
+    let [x, y, _] = c.position;
+    [
+        [x - exc - eys, y + eyc - exs],
+        [x + exc - eys, y + eyc + exs],
+        [x - exc + eys, y - eyc - exs],
+        [x + exc + eys, y - eyc + exs],
+    ]
+}
+/// `testRotatedPointsAgainstRect`: how many of the points lie inside the rect.
+fn points_inside(pts: &[[f32; 2]; 4], c: &Collider, grow: f32) -> usize {
+    let (major, minor) = (c.major + grow, c.minor + grow);
+    let (cs, sn) = (ih_math::cos(-c.angle), ih_math::sin(-c.angle));
+    pts.iter()
+        .filter(|p| {
+            let (x, y) = (p[0] - c.position[0], p[1] - c.position[1]);
+            (x * cs - y * sn).abs() <= major && (x * sn + y * cs).abs() <= minor
+        })
+        .count()
+}
+/// The 2D narrow phase (`PartitionManager.cpp`): `xy_collideTest_Rect_Rect` (any
+/// corner of one inside the other), circles against rects as squares at their own
+/// facing (`xy_collideTest_Rect_Circle`), circle against circle by radii, and
+/// non-spheres whose centres are closer than the smallest radius always touch
+/// (`z_collideTest_Nonsphere_Nonsphere`). `grow` widens `a` (contact range) or,
+/// negative, shrinks it.
+pub fn shapes_touch(a: &Collider, b: &Collider, grow: f32) -> bool {
+    let d2 = (a.position[0] - b.position[0]).powi(2) + (a.position[1] - b.position[1]).powi(2);
+    let round = |g: Geom| g != Geom::Box;
+    if round(a.geom) && round(b.geom) {
+        let r = (a.major + grow + b.major).max(0.0);
+        return d2 <= r * r;
+    }
+    if a.geom != Geom::Sphere && b.geom != Geom::Sphere {
+        let min = (a.major + grow).min(a.minor + grow).min(b.major).min(b.minor);
+        if min > 0.0 && min * min > d2 {
+            return true;
+        }
+    }
+    // Circles become squares (minor = major) at their own facing.
+    points_inside(&corners(a, grow), b, 0.0) > 0 || points_inside(&corners(b, 0.0), a, grow) > 0
+}
+
+/// The no-overlap invariant. Round bodies may not overlap at all. With a box
+/// involved, turning lets corners overlap a little, as the original allows; a
+/// breach is one body's centre inside the other.
 pub fn overlaps(a: Collider, b: Collider) -> bool {
-    if !a.interacts(b) {
+    if !a.interacts(b) || (a.infantry && b.infantry) {
         return false;
     }
-    let d = [a.position[0] - b.position[0], a.position[1] - b.position[1]];
-    // Float rounding at exact contact does not count as penetration.
-    let r = (a.radius + b.radius - 0.005).max(0.0);
-    d[0] * d[0] + d[1] * d[1] < r * r
+    if a.geom != Geom::Box && b.geom != Geom::Box {
+        // Float rounding at exact contact does not count as penetration.
+        return shapes_touch(&a, &b, -0.005);
+    }
+    let centre = |c: &Collider| Collider { geom: Geom::Cylinder, major: 0.0, minor: 0.0, ..*c };
+    shapes_touch(&centre(&a), &b, 0.0) || shapes_touch(&centre(&b), &a, 0.0)
+}
+/// Touching within `CONTACT_RANGE` (bodies never overlap here, so contact means close).
+pub fn contact(a: Collider, b: Collider) -> bool {
+    a.interacts(b) && shapes_touch(&a, &b, CONTACT_RANGE)
 }
 
 #[cfg(test)]
@@ -158,8 +287,12 @@ mod tests {
     fn body(id: u32, x: f32) -> Collider {
         Collider {
             id,
+            infantry: false,
             position: [x, 0.0, 0.0],
             radius: 5.0,
+            geom: Geom::Cylinder,
+            major: 5.0,
+            minor: 5.0,
             bottom: 0.0,
             top: 10.0,
             angle: 0.0,
@@ -179,8 +312,8 @@ mod tests {
         assert_eq!(step_fraction(body(1, 45.0), [1.0, 0.0], b), 0.0);
         assert_eq!(step_fraction(body(1, 45.0), [-1.0, 0.0], b), 1.0);
         assert_eq!(step_fraction(a, [0.0, 100.0], b), 1.0);
-        let small = Collider { radius: 1.0, ..a };
-        let distant = Collider { radius: 1.0, ..body(2, 2500.0) };
+        let small = Collider { radius: 1.0, major: 1.0, minor: 1.0, ..a };
+        let distant = Collider { radius: 1.0, major: 1.0, minor: 1.0, ..body(2, 2500.0) };
         let f = step_fraction(small, [5000.0, 0.0], distant);
         assert!(f > 0.499 && f < 0.5);
         assert!(!overlaps(small.with_position([5000.0 * f, 0.0, 0.0]), distant));

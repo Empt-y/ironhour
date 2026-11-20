@@ -4,6 +4,7 @@ pub mod bridges;
 pub mod disabled;
 pub mod footprint;
 pub mod goals;
+pub mod group;
 pub mod locomotion;
 pub mod map_objects;
 pub mod navigation;

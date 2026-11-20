@@ -110,8 +110,10 @@ struct State {
     simulation: Option<ih_sim::Simulation>,
     sim_draw: Option<ih_client::sim_draw::SimDrawables>,
     clock: ih_sim::LogicClock,
-    selected: Option<u32>,
+    selected: Vec<u32>,
     right_start: Option<Vec2>,
+    /// Where a left press began (drag-box selection).
+    left_start: Option<Vec2>,
     paused: bool,
 }
 
@@ -234,8 +236,9 @@ impl App {
             simulation,
             sim_draw,
             clock: ih_sim::LogicClock::default(),
-            selected: None,
+            selected: Vec::new(),
             right_start: None,
+            left_start: None,
             paused: false,
         });
         if self.cli.smoke {
@@ -262,7 +265,7 @@ impl App {
                         bail!("simulation smoke rejected commands: {:?}", sim.events);
                     }
                     if let Some(draw) = &mut s.sim_draw {
-                        draw.update(&s.renderer, &mut s.scene, sim, 1.0, step as f32 * 1000.0, s.selected);
+                        draw.update(&s.renderer, &mut s.scene, sim, 1.0, step as f32 * 1000.0, &s.selected);
                     }
                 }
                 let rgba = s.renderer.render_scene(
@@ -332,7 +335,7 @@ impl State {
                     sim,
                     self.clock.alpha(),
                     (sim.frame.saturating_sub(1) as f32 + self.clock.alpha()) * 1000.0 / 30.0,
-                    self.selected,
+                    &self.selected,
                 );
             }
             for event in sim.events.drain(..) {
@@ -442,8 +445,10 @@ impl ApplicationHandler for App {
                             KeyCode::KeyO => s.camera.overview(),
                             KeyCode::Space if !event.repeat => s.paused = !s.paused,
                             KeyCode::KeyX if !event.repeat => {
-                                if let (Some(sim), Some(object)) = (&mut s.simulation, s.selected) {
-                                    sim.enqueue(sim.frame, ih_sim::Command::Stop { object }).ok();
+                                if let Some(sim) = &mut s.simulation {
+                                    for &object in &s.selected {
+                                        sim.enqueue(sim.frame, ih_sim::Command::Stop { object }).ok();
+                                    }
                                 }
                             }
                             _ => {}
@@ -470,32 +475,50 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorLeft { .. } => s.cursor = None,
             WindowEvent::MouseInput { state, button, .. } => match button {
-                MouseButton::Left if state.is_pressed() => {
-                    if let (Some(sim), Some(cursor)) = (&s.simulation, s.cursor) {
+                MouseButton::Left if state.is_pressed() => s.left_start = s.cursor,
+                MouseButton::Left => {
+                    if let (Some(sim), Some(cursor), Some(start)) = (&s.simulation, s.cursor, s.left_start.take()) {
                         let vp = s
                             .camera
                             .camera(&self.world.map)
                             .view_proj(s.size.width as f32 / s.size.height.max(1) as f32);
-                        s.selected = sim
+                        let size = Vec2::new(s.size.width as f32, s.size.height as f32);
+                        // The map's own objects are scenery here; scenario units can be selected.
+                        let on_screen: Vec<(u32, Vec2)> = sim
                             .objects
                             .values()
                             .filter(|o| o.map_index.is_none())
                             .filter_map(|o| {
                                 let p = vp * glam::Vec3::from(o.position).extend(1.0);
-                                if p.w <= 0.0 {
-                                    return None;
-                                }
-                                let ndc = p.truncate() / p.w;
-                                let screen = Vec2::new(
-                                    (ndc.x + 1.0) * 0.5 * s.size.width as f32,
-                                    (1.0 - ndc.y) * 0.5 * s.size.height as f32,
-                                );
-                                let dist = screen.distance_squared(cursor);
-                                (dist < 24.0 * 24.0).then_some((dist, o.id))
+                                (p.w > 0.0).then(|| {
+                                    let ndc = p.truncate() / p.w;
+                                    (o.id, Vec2::new((ndc.x + 1.0) * 0.5 * size.x, (1.0 - ndc.y) * 0.5 * size.y))
+                                })
                             })
-                            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-                            .map(|(_, id)| id);
-                        s.window.set_title(&format!("ironhour — M4 movement — selected {:?}", s.selected));
+                            .collect();
+                        s.selected = if start.distance(cursor) > 5.0 {
+                            // Drag box: everything inside it.
+                            let (lo, hi) = (start.min(cursor), start.max(cursor));
+                            on_screen
+                                .iter()
+                                .filter(|(_, p)| p.x >= lo.x && p.y >= lo.y && p.x <= hi.x && p.y <= hi.y)
+                                .map(|(id, _)| *id)
+                                .collect()
+                        } else {
+                            on_screen
+                                .iter()
+                                .map(|(id, p)| (p.distance_squared(cursor), *id))
+                                .filter(|(d, _)| *d < 24.0 * 24.0)
+                                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                                .map(|(_, id)| id)
+                                .into_iter()
+                                .collect()
+                        };
+                        s.window.set_title(&format!(
+                            "ironhour — M4 movement — {} selected {:?}",
+                            s.selected.len(),
+                            s.selected
+                        ));
                     }
                 }
                 MouseButton::Right => {
@@ -503,11 +526,18 @@ impl ApplicationHandler for App {
                         s.right_start = s.cursor;
                     } else if let (Some(start), Some(cursor)) = (s.right_start, s.cursor)
                         && start.distance(cursor) <= 5.0
-                        && let (Some(object), Some(sim)) = (s.selected, &mut s.simulation)
+                        && !s.selected.is_empty()
+                        && let Some(sim) = &mut s.simulation
                         && let Some(target) =
                             s.camera.surface_at_pixel(&self.world.map, &sim.grid, [s.size.width, s.size.height], cursor)
                     {
-                        sim.enqueue(sim.frame, ih_sim::Command::Move { object, target: target.to_array() }).ok();
+                        let target = target.to_array();
+                        let command = if let [object] = s.selected[..] {
+                            ih_sim::Command::Move { object, target }
+                        } else {
+                            ih_sim::Command::GroupMove { objects: s.selected.clone(), target }
+                        };
+                        sim.enqueue(sim.frame, command).ok();
                     }
                     s.pan_drag = state.is_pressed();
                     if !state.is_pressed() {

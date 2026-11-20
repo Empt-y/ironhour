@@ -124,7 +124,9 @@ disabled = []
 [[check]]
 frame = 900
 object = 1
-position = [1000.0, 900.0]
+# The follow-path's final point is adjusted to its goal cell (AIFollowPathState).
+position = [1005.0, 905.0]
+tolerance = 1.0
 ai_state = "idle"
 outcome = "success"
 completed_orders = 1

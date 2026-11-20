@@ -29,6 +29,11 @@ pub enum Command {
         object: u32,
         target: [f32; 2],
     },
+    /// A selection ordered to one point (`AIGroup::groupMoveToPosition`).
+    GroupMove {
+        objects: Vec<u32>,
+        target: [f32; 2],
+    },
     Stop {
         object: u32,
     },
@@ -84,6 +89,8 @@ pub struct Object {
     pub owner: u32,
     pub position: [f32; 3],
     pub previous_position: [f32; 3],
+    /// The facing at the start of the frame (rotation guard in `integrate_ground`).
+    pub previous_angle: f32,
     pub layer: u32,
     pub angle: f32,
     pub speed: f32,
@@ -204,6 +211,12 @@ impl Simulation {
                 h.text(&m.class);
                 h.text(&m.tag);
             }
+        }
+        let g = templates.group;
+        for v in
+            [g.min_infantry as f32, g.min_vehicles as f32, g.min_distance, g.distance_requires_group, g.gather_factor]
+        {
+            h.float(v);
         }
         h.u64(templates.locomotors.len() as u64);
         for (name, l) in &templates.locomotors {
@@ -326,6 +339,7 @@ impl Simulation {
                 owner,
                 position,
                 previous_position: position,
+                previous_angle: angle,
                 layer,
                 angle,
                 speed: 0.0,
@@ -359,7 +373,9 @@ impl Simulation {
             return Err(SimError(format!("command frame {frame} is before current frame {}", self.frame)));
         }
         let finite = match &command {
-            Command::Move { target, .. } | Command::Face { target, .. } => target.iter().all(|f| f.is_finite()),
+            Command::Move { target, .. } | Command::Face { target, .. } | Command::GroupMove { target, .. } => {
+                target.iter().all(|f| f.is_finite())
+            }
             Command::FollowPath { points, .. } => points.iter().flatten().all(|f| f.is_finite()),
             Command::Spawn { position, .. } => position.iter().all(|f| f.is_finite()),
             _ => true,
@@ -387,6 +403,9 @@ impl Simulation {
             }
             Command::Move { object, target } => {
                 self.begin_move(object, target, AiState::MoveTo, VecDeque::new())?;
+            }
+            Command::GroupMove { objects, target } => {
+                self.group_move(&objects, target)?;
             }
             Command::FollowPath { object, points } => {
                 let mut points: VecDeque<_> = points.into();
@@ -490,7 +509,7 @@ impl Simulation {
             .and_then(|l| self.views.get(&l.surface_mask()))
             .unwrap_or(&self.grid)
     }
-    fn route_to(&self, id: u32, target: [f32; 2]) -> Result<VecDeque<Waypoint>, SimError> {
+    pub(crate) fn route_to(&self, id: u32, target: [f32; 2]) -> Result<VecDeque<Waypoint>, SimError> {
         // A held goal keeps the layer it was chosen on (`getLayerForDestination` picks
         // by height, and an adjusted goal sits at its layer's height).
         let o = &self.objects[&id];
@@ -514,7 +533,7 @@ impl Simulation {
             .map(Into::into)
             .ok_or_else(|| SimError(format!("object {id}: target is blocked or unreachable")))
     }
-    fn begin_move(
+    pub(crate) fn begin_move(
         &mut self,
         id: u32,
         target: [f32; 2],
@@ -537,6 +556,7 @@ impl Simulation {
         o.traffic.stuck = false;
         o.last_repath = self.frame;
         self.wake_ai(id);
+        self.move_allies(id);
         Ok(())
     }
     /// `AIInternalMoveToState::onEnter`: a move adjusts its goal to a free cell
@@ -552,8 +572,12 @@ impl Simulation {
             }
             self.update_goal(id, goal, layer);
         } else if last {
+            // The final leg adjusts its goal (`m_adjustFinal`) for ground movers.
+            if self.ground_movement(id) && !self.adjust_destination(id, &mut goal, layer) {
+                self.snap_closest_goal(id, &mut goal, layer);
+            }
             self.update_goal(id, goal, layer);
-        } else {
+        } else if !self.objects[&id].ai.keep_goal {
             self.remove_goal(id);
         }
         Waypoint { position: goal, layer }
@@ -614,6 +638,7 @@ impl Simulation {
     pub fn step(&mut self) {
         for o in self.objects.values_mut() {
             o.previous_position = o.position;
+            o.previous_angle = o.angle;
         }
         while self.commands.first_key_value().is_some_and(|((f, _), _)| *f <= self.frame) {
             let ((frame, seq), command) = self.commands.pop_first().unwrap();
@@ -726,7 +751,13 @@ impl Simulation {
                 self.drive(id);
                 let o = self.objects.get_mut(&id).unwrap();
                 if o.target.is_none() {
-                    let next = if o.ai.state == AiState::FollowPath { o.ai.remaining.pop_front() } else { None };
+                    let mut next = if o.ai.state == AiState::FollowPath { o.ai.remaining.pop_front() } else { None };
+                    // Points within a cell of the unit are skipped ("tooClose").
+                    while let Some(p) = next
+                        && (p[0] - o.position[0]).powi(2) + (p[1] - o.position[1]).powi(2) < CELL * CELL
+                    {
+                        next = o.ai.remaining.pop_front();
+                    }
                     if let Some(target) = next {
                         let last = self.objects[&id].ai.remaining.is_empty();
                         let goal = self.choose_goal(id, target, AiState::FollowPath, last);
@@ -739,6 +770,13 @@ impl Simulation {
                                 o.path
                                     .push_front(Waypoint { position: [o.position[0], o.position[1]], layer: o.layer });
                                 o.target = Some(target);
+                                o.last_repath = self.frame;
+                            }
+                            // AIFollowPathState: an unreachable point counts as a failed
+                            // leg, so the unit moves on; the order fails on the last one.
+                            Err(_) if !last => {
+                                let o = self.objects.get_mut(&id).unwrap();
+                                o.ai.retries = o.ai.retries.saturating_sub(1);
                                 o.last_repath = self.frame;
                             }
                             Err(_) => self.end_order(id, Outcome::Failure),
@@ -969,14 +1007,42 @@ impl Simulation {
         // contact instead of stopping: only motion into the other body is removed.
         let mut normal = None;
         if let Some(other) = hit {
-            let n = ih_math::normalized([other.position[0] - to[0], other.position[1] - to[1]]);
+            let mut n = ih_math::normalized([other.position[0] - to[0], other.position[1] - to[1]]);
             let rest = [velocity[0] * (1.0 - fraction), velocity[1] * (1.0 - fraction)];
             let into = rest[0] * n[0] + rest[1] * n[1];
             if into > 0.0 {
-                let slide = [rest[0] - n[0] * into, rest[1] - n[1] * into];
                 let at = body.with_position([to[0], to[1], body.position[2]]);
-                let (f2, _) = clip(at, slide);
-                to = [to[0] + slide[0] * f2, to[1] + slide[1] * f2];
+                // The centre-to-centre normal is a circle's contact normal. Against a
+                // box, sliding along one of the boxes' edge directions gets past a
+                // corner where that does not, so the best of those is taken too.
+                let mut slides = vec![[rest[0] - n[0] * into, rest[1] - n[1] * into]];
+                if other.geom == traffic::Geom::Box || body.geom == traffic::Geom::Box {
+                    for angle in [other.angle, body.angle] {
+                        let (c, s) = (ih_math::cos(angle), ih_math::sin(angle));
+                        for axis in [[c, s], [-s, c]] {
+                            let d = rest[0] * axis[0] + rest[1] * axis[1];
+                            slides.push([axis[0] * d, axis[1] * d]);
+                        }
+                    }
+                }
+                let mut best = ([0.0f32; 2], 0.0f32);
+                for slide in slides {
+                    let (f2, _) = clip(at, slide);
+                    let moved = [slide[0] * f2, slide[1] * f2];
+                    let len = ih_math::length(moved);
+                    if len > best.1 + 1e-6 {
+                        best = (moved, len);
+                    }
+                }
+                to = [to[0] + best.0[0], to[1] + best.0[1]];
+                if best.1 > 0.0 {
+                    // Velocity keeps only the component along the slide taken.
+                    let d = ih_math::normalized(best.0);
+                    n = [-d[1], d[0]];
+                    if n[0] * (other.position[0] - to[0]) + n[1] * (other.position[1] - to[1]) < 0.0 {
+                        n = [-n[0], -n[1]];
+                    }
+                }
             }
             normal = Some(n);
         }
@@ -1022,8 +1088,8 @@ impl Simulation {
                 if (cb.id <= a && !cb.immobile) || !ca.interacts(cb) {
                     continue;
                 }
-                let d = ih_math::length([cb.position[0] - ca.position[0], cb.position[1] - ca.position[1]]);
-                if d <= ca.radius + cb.radius + traffic::CONTACT_RANGE {
+                // The partition's collision test on the real shapes (within contact range).
+                if traffic::contact(ca, cb) {
                     pairs.push((a.min(cb.id), a.max(cb.id)));
                 }
             }
@@ -1051,7 +1117,7 @@ impl Simulation {
         }
     }
 
-    fn has_ai(&self, id: u32) -> bool {
+    pub(crate) fn has_ai(&self, id: u32) -> bool {
         self.objects[&id].modules.iter().any(|m| m.kind == ModuleKind::Steering)
     }
 
@@ -1191,6 +1257,11 @@ impl Simulation {
         if ta.has_kind("INFANTRY") && tb.has_kind("INFANTRY") && dot <= 0.25 {
             return false; // crossing infantry pass through
         }
+        if ta.has_kind("INFANTRY") && tb.has_kind("INFANTRY") && !other_moving {
+            // ironhour: infantry pass through infantry here (see `traffic`), so a
+            // stationary one does not hold them up.
+            return false;
+        }
         let (mut dx, mut dy) = (pos[0] - ob.position[0], pos[1] - ob.position[1]);
         let cur = dx * dx + dy * dy;
         if cur < CELL * CELL * 0.0001 {
@@ -1273,7 +1344,7 @@ impl Simulation {
 
     /// `AIUpdateInterface::privateMoveAwayFromUnit`: step off `unit`'s path (and the
     /// path of the unit made way for before) for up to ten seconds.
-    fn move_away_from_unit(&mut self, id: u32, unit: u32) {
+    pub(crate) fn move_away_from_unit(&mut self, id: u32, unit: u32) {
         let mobile = {
             let o = &self.objects[&id];
             let t = &self.templates.objects[&o.template];
@@ -1503,6 +1574,22 @@ impl Simulation {
         let Some(target) = o.target else {
             return;
         };
+        // ironhour stand-in for the original's routing around parked units' cells: a
+        // unit stuck within four cells of an intermediate follow-path point (often
+        // inside a parked unit at the end of a group path) moves on to the next one.
+        if o.traffic.stuck
+            && o.ai.state == AiState::FollowPath
+            && !o.ai.remaining.is_empty()
+            && ih_math::length([target[0] - o.position[0], target[1] - o.position[1]]) < 4.0 * CELL
+        {
+            let o = self.objects.get_mut(&id).unwrap();
+            o.target = None;
+            o.path.clear();
+            o.traffic.stuck = false;
+            o.blocked_frames = 0;
+            o.last_repath = self.frame;
+            return;
+        }
         let body = self.collider(id);
         if let Some(other) = o.blocked_by.filter(|id| self.objects.contains_key(id)).map(|id| self.collider(id))
             && other.moving
@@ -1553,6 +1640,13 @@ impl Simulation {
             &blocked,
             &segment_clear,
         );
+        // As the original plans through cells where allies stand (`getBlockedByAlly`)
+        // and then moves them: with no route around the units, take the terrain
+        // route and ask the idle allies on it to step aside (`moveAllies`).
+        let path = path.or_else(|| {
+            let o = &self.objects[&id];
+            self.terrain(id).path(from, goal, self.templates.objects[&o.template].radius())
+        });
         let o = self.objects.get_mut(&id).unwrap();
         o.last_repath = self.frame;
         if let Some(path) = path {
@@ -1563,6 +1657,18 @@ impl Simulation {
             o.blocked_frames = 0;
             o.blocked_by = None;
             o.traffic.stuck = false;
+            self.move_allies(id);
+        } else if o.ai.state == AiState::FollowPath && !o.ai.remaining.is_empty() {
+            // AIFollowPathState::update: a failed leg is retried while retries last,
+            // then the unit moves on to the next point.
+            if o.ai.retries > 0 {
+                o.ai.retries -= 1;
+            } else {
+                o.target = None;
+                o.path.clear();
+                o.traffic.stuck = false;
+                o.blocked_frames = 0;
+            }
         }
     }
     /// Live colliding object pairs, for headless invariants and diagnostics.
@@ -1583,7 +1689,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(13);
+        h.u32(14);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1628,6 +1734,8 @@ impl Simulation {
             h.u32(o.ai.transitions);
             h.u32(o.ai.outcome as u32);
             h.u32(o.ai.completed_orders);
+            h.u32(o.ai.retries);
+            h.u32(u32::from(o.ai.keep_goal));
             h.u32(o.ai.failed_orders);
             h.u32(o.ai.interrupted_orders);
             h.u64(o.ai.remaining.len() as u64);
@@ -1737,6 +1845,15 @@ fn hash_command(c: &Command, h: &mut StateHash) {
                 h.float(*v);
             }
             h.u32(*owner);
+        }
+        Command::GroupMove { objects, target } => {
+            h.u32(9);
+            h.u64(objects.len() as u64);
+            for o in objects {
+                h.u32(*o);
+            }
+            h.float(target[0]);
+            h.float(target[1]);
         }
         Command::FollowPath { object, points } => {
             h.u32(4);
@@ -1923,6 +2040,15 @@ fn steer(
     blocked: &mut bool,
 ) {
     let pos = [o.position[0], o.position[1]];
+    // setPathExtraDistance: on a follow-path leg with more points after it, the
+    // distance on to the next point (plus 4 cells if another follows) keeps the
+    // locomotor from braking for this one.
+    let extra = match (o.ai.state, o.target, o.ai.remaining.front()) {
+        (crate::ai::AiState::FollowPath, Some(t), Some(n)) => {
+            ih_math::length([n[0] - t[0], n[1] - t[1]]) + if o.ai.remaining.len() > 1 { 4.0 * CELL } else { 0.0 }
+        }
+        _ => 0.0,
+    };
     let arrived = o.path.len() < 2
         || (o.path.len() == 2 && {
             let last = o.path[1];
@@ -1958,6 +2084,16 @@ fn steer(
     }
     // Flyers take the straight line (`computeQuickPath`): their path is start and goal.
     let (goal, remaining, _) = point_on_path(o, grid, map, radii.2);
+    // With an extra distance the leg uses the "easy" success test: close enough
+    // along the path (`getTreatAsAircraftForLocoDistToGoal`, `CloseEnoughDist`).
+    if extra > 1.0 && remaining < l.close_enough_dist {
+        o.path.clear();
+        o.target = None;
+        o.blocked_frames = 0;
+        o.blocked_by = None;
+        o.traffic.stuck = false;
+        return;
+    }
     let layer = o.layer;
     // validMovementTerrain: the cell under the point is passable on this layer.
     let valid = |p: [f32; 2]| {
@@ -1975,7 +2111,7 @@ fn steer(
     };
     let before = [body.position[0], body.position[1]];
     let z = heights(grid, map, before, layer);
-    let slide = body.move_towards_position(l, goal, remaining, speed, blocked, &valid, z);
+    let slide = body.move_towards_position(l, goal, remaining + extra, speed, blocked, &valid, z);
     // Turning about an off-centre pivot moves the body; that motion goes through
     // the same collision clipping as the rest of this frame's displacement.
     let pivot = [o.position[0] - before[0], o.position[1] - before[1]];
@@ -2043,7 +2179,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x3947883484200a3e, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x95f860527d5842f6, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2188,9 +2324,10 @@ mod tests {
         }
         assert!(s.events.is_empty(), "{:?}", s.events);
         assert!(s.objects[&1].target.is_none(), "{:?}", s.objects[&1]);
-        assert!(s.objects[&1].traffic_repaths > 0);
+        // Either the mover repaths round the parked ally or the ally steps aside
+        // (`moveAllies`: the new path runs through its cells).
+        assert!(s.objects[&1].traffic_repaths > 0 || s.move_asides > 0);
         assert!((s.objects[&1].position[0] - snapped(&s, 1, [175.0, 0.0])[0]).abs() < 0.5);
-        assert_eq!(s.objects[&2].position[..2], [95.0, 105.0]);
     }
     #[test]
     fn stock_sized_box_units_escape_contact_when_start_is_off_cell_centre() {
@@ -2209,7 +2346,7 @@ mod tests {
             assert!(s.overlaps().is_empty());
         }
         assert!(s.objects[&1].target.is_none(), "{:?}", s.objects[&1]);
-        assert!(s.objects[&1].traffic_repaths > 0);
+        assert!(s.objects[&1].traffic_repaths > 0 || s.move_asides > 0);
     }
     #[test]
     fn ground_unit_passes_under_an_occupied_deck() {
@@ -2256,7 +2393,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xf0d6a0c26f57ed35, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xa4645e5ed8edf2ba, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2348,7 +2485,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x457f590fa4ca127b, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x2c08379c73f49e88, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

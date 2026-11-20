@@ -178,6 +178,10 @@ pub struct Locomotor {
     pub circling_radius: f32,
     pub allow_airborne_motive_force: bool,
     pub apply_2d_friction_when_airborne: bool,
+    /// `GroupMovementPriority`: 0 back, 1 middle (default), 2 front.
+    pub move_priority: i32,
+    /// `CloseEnoughDist`.
+    pub close_enough_dist: f32,
     /// Render-only chassis motion.
     pub chassis: Chassis,
 }
@@ -274,6 +278,32 @@ pub struct Templates {
     pub locomotors: BTreeMap<String, Locomotor>,
     pub warnings: Vec<String>,
     pub bridges: Vec<crate::bridges::Bridge>,
+    pub group: GroupSettings,
+}
+
+/// Group movement settings: `AIData` (`TAiData`) and `GameData`
+/// (`GroupMoveClickToGatherAreaFactor`), with the original defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupSettings {
+    pub min_infantry: i32,
+    pub min_vehicles: i32,
+    pub min_distance: f32,
+    pub distance_requires_group: f32,
+    pub gather_factor: f32,
+}
+impl Default for GroupSettings {
+    fn default() -> Self {
+        Self { min_infantry: 3, min_vehicles: 4, min_distance: 100.0, distance_requires_group: 0.0, gather_factor: 1.0 }
+    }
+}
+/// The last value of a field across every block of a single-instance kind
+/// (`AIData`, `GameData`), so later files and map overrides win.
+fn global(defs: &Definitions, kind: &str, field: &str) -> Option<f32> {
+    defs.all(kind, "")
+        .iter()
+        .rev()
+        .find_map(|b| b.fields().filter(|f| f.name.eq_ignore_ascii_case(field)).last().map(|f| f.values()))
+        .and_then(|v| v.first().and_then(|v| ih_ini::values::scan_real(v.as_bytes()).ok()))
 }
 impl Templates {
     /// Compile logic definitions and resolve map bridge dimensions without a
@@ -290,6 +320,15 @@ impl Templates {
     }
     pub fn from_definitions(defs: &Definitions) -> Self {
         let mut out = Self::default();
+        let g = GroupSettings::default();
+        out.group = GroupSettings {
+            min_infantry: global(defs, "AIData", "MinInfantryForGroup").map_or(g.min_infantry, |v| v as i32),
+            min_vehicles: global(defs, "AIData", "MinVehiclesForGroup").map_or(g.min_vehicles, |v| v as i32),
+            min_distance: global(defs, "AIData", "MinDistanceForGroup").unwrap_or(g.min_distance),
+            distance_requires_group: global(defs, "AIData", "DistanceRequiresGroup")
+                .unwrap_or(g.distance_requires_group),
+            gather_factor: global(defs, "GameData", "GroupMoveClickToGatherAreaFactor").unwrap_or(g.gather_factor),
+        };
         for name in defs.names("Object").chain(defs.names("ObjectReskin")) {
             let mut visiting = BTreeSet::new();
             let t = resolve(defs, name, &mut visiting, &mut out.warnings);
@@ -369,6 +408,13 @@ impl Templates {
                     circling_radius: number("CirclingRadius", 0.0),
                     allow_airborne_motive_force: flag("AllowAirborneMotiveForce"),
                     apply_2d_friction_when_airborne: flag("Apply2DFrictionWhenAirborne"),
+                    close_enough_dist: number("CloseEnoughDist", 1.0),
+                    move_priority: match fields.get("GroupMovementPriority").and_then(|v| v.first()).map(String::as_str)
+                    {
+                        Some("MOVES_BACK") => 0,
+                        Some("MOVES_FRONT") => 2,
+                        _ => 1,
+                    },
                     chassis: {
                         let rad = std::f32::consts::PI / 180.0;
                         Chassis {

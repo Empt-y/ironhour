@@ -4,7 +4,8 @@ seed = 42
 frames = 1800
 require_idle_at_end = true
 require_no_overlaps = true
-require_traffic_repaths = 2
+# Parked allies on a new path now step aside (moveAllies) rather than forcing repaths.
+require_traffic_repaths = 0
 
 [[spawn]]
 template = "AmericaTankCrusader"

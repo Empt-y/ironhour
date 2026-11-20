@@ -1,0 +1,71 @@
+# A mixed selection ordered across Tournament Desert as one group
+# (AIGroup::groupMoveToPosition): four Crusaders and six Rangers set off together
+# along a shared ground path (the Rangers in columns), and each unit stops in its
+# own spot near the goal. Then a click inside the group's own box gathers it
+# (groupTightenToPosition).
+map = "Tournament Desert"
+seed = 42
+frames = 2400
+require_idle_at_end = true
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [960.0, 860.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1000.0, 860.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [960.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [960.0, 960.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [975.0, 960.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [990.0, 960.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [960.0, 975.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [975.0, 975.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [990.0, 975.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "group_move"
+objects = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+target = [1300.0, 600.0]
+
+[[commands]]
+frame = 1500
+kind = "group_move"
+objects = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+target = [1310.0, 600.0]
