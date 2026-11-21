@@ -62,6 +62,17 @@ pub enum Command {
     Destroy {
         object: u32,
     },
+    /// Damage of a named type (`Object::attemptDamage`), e.g. from a script.
+    Damage {
+        object: u32,
+        amount: f32,
+        #[serde(default = "default_damage_type")]
+        damage_type: String,
+        #[serde(default = "default_death_type")]
+        death_type: String,
+        #[serde(default)]
+        source: u32,
+    },
     Spawn {
         template: String,
         position: [f32; 2],
@@ -69,11 +80,23 @@ pub enum Command {
         owner: u32,
     },
 }
+fn default_damage_type() -> String {
+    "EXPLOSION".into()
+}
+fn default_death_type() -> String {
+    "NORMAL".into()
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleKind {
     Stub,
     Steering,
     Physics,
+    /// The body module (`body`): not updated.
+    Body,
+    /// A die module (`body::DieKind`): runs when the object dies.
+    Die,
+    /// `SlowDeathBehavior`: a die module that updates while the object dies.
+    SlowDeath,
 }
 #[derive(Clone, Debug)]
 pub struct Module {
@@ -81,6 +104,9 @@ pub struct Module {
     pub tag: String,
     pub kind: ModuleKind,
     pub updates: u32,
+    pub die: Option<crate::body::DieKind>,
+    /// `SlowDeathBehavior` state.
+    pub death: crate::death::SlowDeathState,
 }
 #[derive(Clone, Debug)]
 pub struct Object {
@@ -121,6 +147,12 @@ pub struct Object {
     pub cur_cell: Option<(i32, i32)>,
     /// `getDestinationLayer`.
     pub destination_layer: u32,
+    /// The body module's health (`body`); `None` without a body.
+    pub health: Option<crate::body::Health>,
+    /// `isEffectivelyDead`.
+    pub dead: bool,
+    /// `ObjectStatusMaskType` bits (`body::status`).
+    pub status: u64,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -155,6 +187,8 @@ pub struct Simulation {
     commands: BTreeMap<(u32, u64), Command>,
     setup_hash: u64,
     collision_radius_bound: f32,
+    /// `m_objectsToDestroy`.
+    pub(crate) destroy_list: Vec<u32>,
 }
 impl Simulation {
     pub fn new(map: Arc<Map>, templates: Arc<Templates>, seed: u32) -> Self {
@@ -199,6 +233,15 @@ impl Simulation {
                 h.u32(u32::from(cell.entry));
             }
         }
+        h.u64(templates.armors.len() as u64);
+        for (name, a) in &templates.armors {
+            h.text(name);
+            for c in a.coefficients {
+                h.float(c);
+            }
+        }
+        h.float(templates.damage.damaged);
+        h.float(templates.damage.really_damaged);
         h.u64(templates.objects.len() as u64);
         for (name, t) in &templates.objects {
             h.text(name);
@@ -209,6 +252,11 @@ impl Simulation {
                 for v in v {
                     h.text(v);
                 }
+            }
+            h.u64(t.armor_sets.len() as u64);
+            for a in &t.armor_sets {
+                h.u32(a.conditions);
+                h.text(a.armor.as_deref().unwrap_or(""));
             }
             h.u64(t.modules.len() as u64);
             for m in &t.modules {
@@ -254,6 +302,7 @@ impl Simulation {
             commands: BTreeMap::new(),
             setup_hash: h.0,
             collision_radius_bound: 0.0,
+            destroy_list: Vec::new(),
         }
     }
     pub fn spawn(&mut self, name: &str, p: [f32; 2], owner: u32) -> Result<u32, SimError> {
@@ -304,7 +353,9 @@ impl Simulation {
         let mut modules = vec![];
         for m in t.modules.iter().filter(|m| matches!(m.kind.as_str(), "Behavior" | "Body")) {
             let known = ih_ini::schema::MODULES.iter().find(|d| d.name == m.class);
-            let kind = if m.class == "PhysicsBehavior" {
+            let kind = if let Some(k) = crate::body::module_kind(m) {
+                k
+            } else if m.class == "PhysicsBehavior" {
                 ModuleKind::Physics
             } else if known.is_some_and(|d| d.tables.iter().any(|t| t.starts_with("AIUpdateModuleData::"))) {
                 ModuleKind::Steering
@@ -314,14 +365,25 @@ impl Simulation {
             let index = modules.len();
             if kind == ModuleKind::Stub {
                 *self.stub_counts.entry(m.class.clone()).or_default() += 1;
-            } else {
+            } else if matches!(kind, ModuleKind::Steering | ModuleKind::Physics) {
                 self.scheduler.insert(
                     (id, index),
                     self.frame.max(1),
                     if kind == ModuleKind::Steering { Phase::Initial } else { Phase::Physics },
                 );
+            } else if kind == ModuleKind::SlowDeath {
+                // Asleep until the object dies.
+                self.scheduler.insert((id, index), FOREVER, Phase::Normal);
             }
-            modules.push(Module { class: m.class.clone(), tag: m.tag.clone(), kind, updates: 0 });
+            let die = crate::body::DieKind::from_module(&m.class, &m.block, &self.templates);
+            modules.push(Module {
+                class: m.class.clone(),
+                tag: m.tag.clone(),
+                kind,
+                updates: 0,
+                die,
+                death: Default::default(),
+            });
         }
         let mut physics = Physics { data: t.physics().unwrap_or_default(), ..Default::default() };
         let loco = match t.locomotor().and_then(|n| self.templates.locomotors.get(n)) {
@@ -335,6 +397,8 @@ impl Simulation {
             None => LocoState::default(),
         };
         let body = traffic::BodyShape::new(t, &modules, &self.templates);
+        let thresholds = (self.templates.damage.damaged, self.templates.damage.really_damaged);
+        let health = crate::body::body_of(t).map(|(k, m)| crate::body::Health::new(k, &m.block, thresholds));
         self.objects.insert(
             id,
             Object {
@@ -366,6 +430,9 @@ impl Simulation {
                 goal_cell: None,
                 cur_cell: None,
                 destination_layer: 0,
+                health,
+                dead: false,
+                status: 0,
             },
         );
         self.rebuild_partition();
@@ -395,6 +462,16 @@ impl Simulation {
         match c {
             Command::Spawn { template, position, owner } => {
                 self.spawn(&template, position, owner)?;
+            }
+            Command::Damage { object, amount, damage_type, death_type, source } => {
+                if !self.objects.contains_key(&object) {
+                    return Err(SimError(format!("object {object} is missing")));
+                }
+                let t = crate::body::damage_type(&damage_type)
+                    .ok_or_else(|| SimError(format!("unknown damage type {damage_type}")))?;
+                let d = crate::body::death_type(&death_type)
+                    .ok_or_else(|| SimError(format!("unknown death type {death_type}")))?;
+                self.attempt_damage(object, crate::body::DamageInfo::new(source, t, d, amount));
             }
             Command::Destroy { object } => {
                 self.remove(object)?;
@@ -455,7 +532,7 @@ impl Simulation {
     fn validate_mobile(&self, id: u32, face: bool) -> Result<(), SimError> {
         let o = self.objects.get(&id).ok_or_else(|| SimError(format!("object {id} is missing")))?;
         let t = &self.templates.objects[&o.template];
-        if t.has_kind("IMMOBILE") || o.disabled.any() {
+        if t.has_kind("IMMOBILE") || o.disabled.any() || o.dead {
             return Err(SimError(format!("object {id} is immobile or disabled")));
         }
         let l = t.locomotor().and_then(|n| self.templates.locomotors.get(n));
@@ -662,7 +739,7 @@ impl Simulation {
         self.wake_ai(id);
         Ok(())
     }
-    fn wake_ai(&mut self, id: u32) {
+    pub(crate) fn wake_ai(&mut self, id: u32) {
         for (i, m) in self.objects[&id].modules.iter().enumerate() {
             if m.kind == ModuleKind::Steering {
                 self.scheduler.awaken((id, i), self.frame, 1);
@@ -714,8 +791,8 @@ impl Simulation {
             let kind = self.objects[&id].modules[index].kind;
             let exceptions = match kind {
                 ModuleKind::Steering => 1 << (DisabledReason::Held as u32),
-                ModuleKind::Physics => u32::MAX,
-                ModuleKind::Stub => 0,
+                ModuleKind::Physics | ModuleKind::SlowDeath => u32::MAX,
+                ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => 0,
             };
             if !self.objects[&id].disabled.allows_module(exceptions) {
                 self.scheduler.reschedule((id, index), self.frame.saturating_add(1));
@@ -736,7 +813,8 @@ impl Simulation {
                     self.integrate_ground(id);
                     self.physics_sleep(id)
                 }
-                ModuleKind::Stub => FOREVER,
+                ModuleKind::SlowDeath => self.slow_death_update(id, index),
+                ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => FOREVER,
             };
             self.update_pos(id);
             self.scheduler.reschedule((id, index), self.frame.saturating_add(delay.max(1)));
@@ -753,6 +831,7 @@ impl Simulation {
         self.process_collisions();
         self.wake_forced();
         self.rebuild_partition();
+        self.process_destroy_list();
         self.frame = self.frame.checked_add(1).expect("logic frame overflow");
     }
     /// `PhysicsBehavior::calcSleepTime` (`SLEEPY_PHYSICS`), after the update ran.
@@ -800,6 +879,9 @@ impl Simulation {
     }
     fn update_ai(&mut self, id: u32) -> u32 {
         let o = &self.objects[&id];
+        if o.ai.dead {
+            return self.update_dead(id);
+        }
         if o.disabled.any() {
             return if o.ai.active() { 1 } else { FOREVER };
         }
@@ -814,6 +896,7 @@ impl Simulation {
         }
         match o.ai.state {
             AiState::Idle => return self.idle_locomotor(id),
+            AiState::Dead => return self.update_dead(id),
             AiState::MoveTo | AiState::FollowPath => {
                 self.repath_traffic(id);
                 self.drive(id);
@@ -1191,10 +1274,15 @@ impl Simulation {
             }
         }
         for (victim, crusher) in squished {
-            // HUGE_DAMAGE_AMOUNT of DAMAGE_CRUSH: until bodies and death modules exist
-            // (M5), a squished object is removed outright.
+            // SquishCollide: HUGE_DAMAGE_AMOUNT of DAMAGE_CRUSH.
             self.crushed.push((self.frame, victim, crusher));
-            let _ = self.remove(victim);
+            let info = crate::body::DamageInfo::new(
+                crusher,
+                crate::body::DAMAGE_CRUSH,
+                crate::body::DEATH_CRUSHED,
+                crate::body::HUGE_DAMAGE_AMOUNT,
+            );
+            self.attempt_damage(victim, info);
         }
     }
 
@@ -1708,7 +1796,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(17);
+        h.u32(18);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1736,6 +1824,31 @@ impl Simulation {
             h.text(&o.template);
             h.u32(o.owner);
             h.u32(o.map_index.map_or(0, |i| i as u32 + 1));
+            h.u32(u32::from(o.dead));
+            h.u64(o.status);
+            h.u32(u32::from(o.health.is_some()));
+            if let Some(b) = &o.health {
+                h.u32(b.kind as u32);
+                for v in [b.current, b.previous, b.max, b.initial, b.subdual, b.subdual_cap, b.scalar] {
+                    h.float(v);
+                }
+                h.u32(b.state as u32);
+                h.u32(u32::from(b.indestructible));
+                h.u32(b.armor_flags);
+                h.u32(b.last_damage_frame);
+                h.u32(b.last_healing_frame);
+                h.u32(u32::from(b.die_called));
+                h.u32(u32::from(b.last_damage.is_some()));
+                if let Some(d) = b.last_damage {
+                    h.u32(d.source);
+                    h.u32(u32::from(d.damage_type));
+                    h.u32(u32::from(d.death_type));
+                    h.float(d.amount);
+                    h.u32(u32::from(d.kill));
+                    h.float(d.dealt);
+                    h.float(d.clipped);
+                }
+            }
             for c in [o.goal_cell, o.cur_cell] {
                 h.u32(u32::from(c.is_some()));
                 let (x, y) = c.unwrap_or_default();
@@ -1824,7 +1937,15 @@ impl Simulation {
                 h.text(&m.tag);
                 h.u32(m.kind as u32);
                 h.u32(m.updates);
+                let d = m.death;
+                for v in [d.sink_frame, d.midpoint_frame, d.destruction_frame] {
+                    h.u32(v);
+                }
+                for b in [d.activated, d.midpoint_done, d.flung, d.bounced] {
+                    h.u32(u32::from(b));
+                }
             }
+            h.u32(u32::from(o.ai.dead));
         }
         h.u64(self.scheduler.heap.len() as u64);
         for e in &self.scheduler.heap {
@@ -1858,6 +1979,14 @@ fn hash_command(c: &Command, h: &mut StateHash) {
         Command::Destroy { object } => {
             h.u32(2);
             h.u32(*object);
+        }
+        Command::Damage { object, amount, damage_type, death_type, source } => {
+            h.u32(10);
+            h.u32(*object);
+            h.float(*amount);
+            h.text(damage_type);
+            h.text(death_type);
+            h.u32(*source);
         }
         Command::Spawn { template, position, owner } => {
             h.u32(3);
@@ -2215,7 +2344,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x47b60629732b08cf, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x1ca894b4bfa34d26, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2306,6 +2435,28 @@ mod tests {
         squish.class = "SquishCollide".into();
         squish.tag = "Squish".into();
         soldier.modules.push(squish);
+        // A body and a death that removes it (`ActiveBody`, `DestroyDie`).
+        let defs = ih_ini::parse(
+            b"Object X
+Body = ActiveBody Body
+MaxHealth = 100
+InitialHealth = 100
+End
+Behavior = DestroyDie Die
+End
+End
+",
+        );
+        let x = &defs.blocks[0];
+        for b in x.blocks() {
+            let args = b.args();
+            soldier.modules.push(crate::templates::ModuleDef {
+                class: args[0].clone(),
+                tag: args[1].clone(),
+                kind: b.kind.clone(),
+                block: b.clone(),
+            });
+        }
         templates.objects.insert("Soldier".into(), soldier);
         Simulation::new(base.map, Arc::new(templates), 1)
     }
@@ -2429,7 +2580,7 @@ mod tests {
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x83d672c19cc9a9ed, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xc2893ca6584acd42, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2521,7 +2672,7 @@ mod tests {
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x6102ebcddb58c498, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xc9162aeaa9b686da, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

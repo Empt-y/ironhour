@@ -16,6 +16,8 @@ pub struct Template {
     pub name: String,
     pub fields: BTreeMap<String, Vec<String>>,
     pub modules: Vec<ModuleDef>,
+    /// `ArmorSet` blocks (`body`).
+    pub armor_sets: Vec<crate::body::ArmorSetDef>,
 }
 impl Template {
     pub fn values(&self, key: &str) -> &[String] {
@@ -279,6 +281,25 @@ pub struct Templates {
     pub warnings: Vec<String>,
     pub bridges: Vec<crate::bridges::Bridge>,
     pub group: GroupSettings,
+    /// `Armor` definitions by name.
+    pub armors: BTreeMap<String, crate::body::ArmorTemplate>,
+    pub damage: DamageSettings,
+    /// Defined effects by (block kind, name): `FXList`, `ObjectCreationList`, `Weapon`.
+    pub effects: BTreeSet<(String, String)>,
+}
+
+/// `GameData`'s damage-state thresholds, with the original defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DamageSettings {
+    /// `UnitDamagedThreshold`.
+    pub damaged: f32,
+    /// `UnitReallyDamagedThreshold`.
+    pub really_damaged: f32,
+}
+impl Default for DamageSettings {
+    fn default() -> Self {
+        Self { damaged: 0.5, really_damaged: 0.1 }
+    }
 }
 
 /// Group movement settings: `AIData` (`TAiData`) and `GameData`
@@ -329,6 +350,19 @@ impl Templates {
                 .unwrap_or(g.distance_requires_group),
             gather_factor: global(defs, "GameData", "GroupMoveClickToGatherAreaFactor").unwrap_or(g.gather_factor),
         };
+        out.damage = DamageSettings {
+            damaged: global(defs, "GameData", "UnitDamagedThreshold").unwrap_or(0.5),
+            really_damaged: global(defs, "GameData", "UnitReallyDamagedThreshold").unwrap_or(0.1),
+        };
+        for kind in ["FXList", "ObjectCreationList", "Weapon"] {
+            out.effects.extend(defs.names(kind).map(|n| (kind.to_string(), n.clone())));
+        }
+        for name in defs.names("Armor") {
+            // A later definition replaces an earlier one (`clear` then parse).
+            if let Some(b) = defs.all("Armor", name).last() {
+                out.armors.insert(name.clone(), crate::body::ArmorTemplate::parse(b));
+            }
+        }
         for name in defs.names("Object").chain(defs.names("ObjectReskin")) {
             let mut visiting = BTreeSet::new();
             let t = resolve(defs, name, &mut visiting, &mut out.warnings);
@@ -490,12 +524,15 @@ fn resolve(
         if b.kind == "ObjectReskin" && b.blocks().any(|m| m.kind == "Draw") {
             t.modules.retain(|m| m.kind != "Draw");
         }
-        apply(&mut t, &b.items, warnings);
+        // `setCopiedFromDefault`: this definition's first ArmorSet replaces the
+        // inherited ones.
+        let mut armor_copied = true;
+        apply(&mut t, &b.items, &mut armor_copied, warnings);
     }
     visiting.remove(name);
     Some(t)
 }
-fn apply(t: &mut Template, items: &[Item], warnings: &mut Vec<String>) {
+fn apply(t: &mut Template, items: &[Item], armor_copied: &mut bool, warnings: &mut Vec<String>) {
     for item in items {
         match item {
             Item::Field(f) if f.name == "RemoveModule" => {
@@ -565,7 +602,16 @@ fn apply(t: &mut Template, items: &[Item], warnings: &mut Vec<String>) {
                         block: b.clone(),
                     });
                 }
-                "AddModule" | "InheritableModule" | "OverrideableByLikeKind" => apply(t, &b.items, warnings),
+                "AddModule" | "InheritableModule" | "OverrideableByLikeKind" => {
+                    apply(t, &b.items, armor_copied, warnings)
+                }
+                "ArmorSet" => {
+                    if *armor_copied {
+                        *armor_copied = false;
+                        t.armor_sets.clear();
+                    }
+                    t.armor_sets.push(crate::body::ArmorSetDef::parse(b));
+                }
                 "ReplaceModule" => {
                     let old = b.args().first().cloned().unwrap_or_default();
                     let class = remove(t, &old, warnings);
@@ -580,7 +626,7 @@ fn apply(t: &mut Template, items: &[Item], warnings: &mut Vec<String>) {
                             }
                         }
                     }
-                    apply(t, &b.items, warnings);
+                    apply(t, &b.items, armor_copied, warnings);
                 }
                 _ => {}
             },

@@ -11,6 +11,8 @@ pub enum AiState {
     Idle = 0,
     MoveTo = 1,
     FollowPath = 6,
+    /// `AI_DEAD`.
+    Dead = 13,
     FaceObject = 33,
     FacePosition = 34,
 }
@@ -41,6 +43,8 @@ pub struct AiMachine {
     pub move_out_of_way: [Option<u32>; 2],
     /// `AIFollowPathState::m_retryCount` (10 per order, shared by its legs).
     pub retries: u32,
+    /// `m_isAiDead` (`markAsDead`).
+    pub dead: bool,
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {

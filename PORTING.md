@@ -858,3 +858,67 @@ Moved to M5, because they need weapons, bodies, containers or production:
 
 Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the
 M3 visual review ([docs/map-viewer.md](docs/map-viewer.md)).
+
+## M5. Combat and economy (in progress)
+
+### Bodies, damage and death (state hash v18)
+
+From `ActiveBody.cpp`, `StructureBody.cpp`, `HighlanderBody.cpp`,
+`ImmortalBody.cpp`, `InactiveBody.cpp`, `Armor.cpp`, `Damage.h`,
+`Object::attemptDamage`/`attemptHealing`/`kill`/`onDie`, `DieModule.cpp`
+(`DieMuxData`), `DestroyDie.cpp`, `SlowDeathBehavior.cpp`, `AIDeadState`
+(`markAsDead`), `GameLogic::destroyObject` and `processDestroyList`, and
+`ThingTemplate::parseArmorTemplateSet` with `SparseMatchFinder`:
+`crates/ih-sim/src/body.rs` and `death.rs`.
+
+- `Armor` definitions (`Default` and per damage type, as percentages) and each
+  template's `ArmorSet`s: a definition's first `ArmorSet` replaces the inherited
+  ones, and the set with the most matching conditions (then the fewest extra)
+  applies. Unresistable damage ignores armour.
+- Bodies keep health, maximum and initial health, subdual damage (with the
+  `DISABLED_SUBDUED` switch), the damage state (`UnitDamagedThreshold` and
+  `UnitReallyDamagedThreshold` from GameData) and the last damage. Highlander
+  bodies stop at one hit point except to unresistable damage, immortal ones
+  always do, inactive ones die only to unresistable damage. Healing caps at the
+  maximum. Crossing a quarter of health draws the fear voice's random roll.
+- Death runs each die module in order. `DestroyDie` (death types, veterancy,
+  exempt and required status) destroys the object, which is removed at the end
+  of the frame. `SlowDeathBehavior` marks the AI dead, rolls among the
+  applicable slow-death modules by probability plus overkill bonus, sinks the
+  body after its delay (holding it), runs its midpoint and final phases and
+  destroys it; flung deaths get their random force. Units in the dead state stop
+  (infantry slow by a fifth each frame) and take no orders.
+- Crushing deals `HUGE_DAMAGE_AMOUNT` of `CRUSH` with a `CRUSHED` death
+  (`SquishCollide`), so crushed units die through their own die modules.
+- A `damage` scenario command (named damage and death types) stands in for
+  weapons and scripts. Drawables show `DAMAGED`, `REALLYDAMAGED`, `RUBBLE` and
+  `DYING`.
+- Not yet: damage FX, body particle systems, damaged sounds and the fear voice
+  itself; retaliation; killing pilots and garrisons and status damage; veterancy
+  and upgrade armour sets; structure rubble height and its pathfinding update;
+  the phases' FX, object creation lists and weapons (their random choices are
+  drawn); slow-death subclasses (helicopter, jet, battle bus and others); the
+  game LOD's slow-death scale (always full); a bounce model for flung bodies;
+  other die and damage modules. The map's own objects are still drawn by the
+  static scene, so one destroyed by a command stays visible.
+
+All seventeen scenarios pass with v18 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `3d7410f1f15adc41` | `9caea83f77aeb8fa` |
+| AI/status orders | `6879bc25a296c681` | `3cc9a469fee93897` |
+| Bridges | `0202bf4b647acc86` | `3ab5c85622b787de` |
+| Traffic, Tournament Desert (three move-asides) | `13cdd24e8a137a79` | `dee4ba3edf8a32c0` |
+| Traffic, Winding River | `99f1e9daf2674bec` | `5f75eb20ed989183` |
+| Long map travel | `39cad5878bdf5bcb` | `98f226b7b9c12e0a` |
+| Crusader through an enemy Ranger (crushed at frame 132, removed by its `DestroyDie`) | `4726f75067e747b4` | |
+| Crusader through an allied Ranger (steps aside) | `df73bb880242f11a` | |
+| Comanche out and back | `ff6cdd3898328ab8` | `259e95cb35e7dd79` |
+| Group move across Tournament Desert, then gather (`m4-group`) | `33dafea8b9bfcfee` | |
+
+Asset-free fixtures: `1ca894b4bfa34d26` (ground), `c9162aeaa9b686da` (bridge),
+`c2893ca6584acd42` (head-on traffic), `afafec6389d4c4e1` (AI/status orders).
+`tests/bodies.rs` covers armour, damage states, healing, the three special
+bodies, `DestroyDie` death types, the end-of-frame removal, and a slow death
+that sinks and is destroyed on schedule with matching hashes in two runs.

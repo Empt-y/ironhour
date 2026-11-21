@@ -133,14 +133,26 @@ impl SimDrawables {
         }
     }
 
-    /// The object's condition flags: map-wide ones plus `MOVING` while a move order
+    /// The object's condition flags: map-wide ones, `MOVING` while a move order
     /// is underway and not blocked for more than a quarter second
-    /// (`AIInternalMoveToState`).
+    /// (`AIInternalMoveToState`), the body's damage state
+    /// (`reactToBodyDamageStateChange`) and `DYING` in the dead AI state.
     fn flags_for(&self, o: &ih_sim::simulation::Object) -> Flags {
+        use ih_sim::body::DamageState;
         let mut f = self.base_flags.clone();
-        if o.target.is_some() && o.blocked_frames <= 7 && !o.disabled.any() {
+        let dying = o.ai.state == ih_sim::ai::AiState::Dead;
+        if o.target.is_some() && o.blocked_frames <= 7 && !o.disabled.any() && !dying {
             f.insert("MOVING".into());
         }
+        if dying {
+            f.insert("DYING".into());
+        }
+        match o.health.as_ref().map(|h| h.state) {
+            Some(DamageState::Damaged) => f.insert("DAMAGED".into()),
+            Some(DamageState::ReallyDamaged) => f.insert("REALLYDAMAGED".into()),
+            Some(DamageState::Rubble) => f.insert("RUBBLE".into()),
+            _ => false,
+        };
         f
     }
 

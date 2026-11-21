@@ -1,6 +1,8 @@
 //! Headless 30 Hz logic. The renderer/client never participate in state updates.
 pub mod ai;
+pub mod body;
 pub mod bridges;
+pub mod death;
 pub mod disabled;
 pub mod footprint;
 pub mod goals;
