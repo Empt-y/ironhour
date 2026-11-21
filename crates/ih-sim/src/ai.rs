@@ -17,6 +17,8 @@ pub enum AiState {
     AttackObject = 10,
     /// `AI_DEAD`.
     Dead = 13,
+    /// `AI_DOCK`.
+    Dock = 14,
     /// `AI_GUARD`.
     Guard = 16,
     FaceObject = 33,
@@ -61,6 +63,10 @@ pub struct AiMachine {
     pub guard: Option<crate::guard::GuardMachine>,
     /// `m_ignoreObstacleID`: the factory a produced unit is leaving.
     pub ignore_obstacle: Option<u32>,
+    /// The `AI_DOCK` sub-machine (`supply`).
+    pub dock: Option<crate::supply::DockMachine>,
+    /// A dock machine left by a new order or the end of one, still to be halted.
+    pub halted_dock: Option<crate::supply::DockMachine>,
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {
@@ -76,6 +82,9 @@ impl AiMachine {
         self.attack = None;
         self.guard = None;
         self.ignore_obstacle = None;
+        if let Some(d) = self.dock.take() {
+            self.halted_dock = Some(d);
+        }
         self.state = state;
         self.entered_frame = frame;
         self.transitions += 1;
@@ -104,6 +113,9 @@ impl AiMachine {
         self.face_position = None;
         self.face_object = None;
         self.attack = None;
+        if let Some(d) = self.dock.take() {
+            self.halted_dock = Some(d);
+        }
     }
     pub fn active(&self) -> bool {
         self.state != AiState::Idle || self.move_out.is_some()

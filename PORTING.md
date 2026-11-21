@@ -1221,3 +1221,68 @@ Asset-free fixtures: `9131a353573eafc4` (ground), `424d3a3306db6ff1` (bridge),
 point; the power and multiple-factory time changes; prerequisites, money, the
 nine-entry queue and refunds; a queue exit's delay between a batch's two units
 and the rally point; the door delay; and matching hashes in two runs.
+
+### Supply gathering (state hash v24)
+
+From `DockUpdate.cpp`, `SupplyWarehouseDockUpdate.cpp`, `SupplyCenterDockUpdate.cpp`,
+`AIDock.cpp` (`AIDockMachine` and its eight states), `AIDockState` and
+`privateDock`, `SupplyTruckAIUpdate.cpp` (`SupplyTruckStateMachine`),
+`ResourceGatheringManager.cpp`, `ActionManager::canTransferSuppliesAt`,
+`Player::findClosestByKindOf`, `PartitionManager::findPositionAround` and
+`tryPosition`, and `getPristineBonePositionsForConditionState`:
+`crates/ih-sim/src/supply.rs`, with dock bones loaded in `bridges.rs`.
+
+- Supply warehouses hold `StartingBoxes`; supply centres pay
+  `BaseValuePerSupplyBox` (100) per box to their owner. `DeleteWhenEmpty`
+  warehouses are destroyed with their last box.
+- Docks queue trucks at approach positions (`DockWaitingNN` bones, or as many
+  as needed with `NumberApproachPositions = -1`, placed with
+  `findPositionAround` next to the building), let one in at a time, and move it
+  through `DockStart`, `DockAction` and `DockEnd`. Bones come from the default
+  model's hierarchy at rest, scaled by `Scale`; a model without `DockStart`
+  docks the truck where it stands. Trucks take a box every
+  `SupplyWarehouseActionDelay` (up to `MaxBoxes`) and unload after
+  `SupplyCenterActionDelay`.
+- Truck autopilot: trucks leaving a supply centre start gathering; afterwards
+  they go to the closest warehouse within `SupplyWarehouseScanDistance` (or
+  their player-chosen one) and the closest own supply centre, and wait by a
+  cash generator, command centre or structure when there is nothing to
+  gather. `dock` command (truck, warehouse or centre) sends one by hand; `stop`
+  takes it off autopilot.
+- `m5-supply` (stock): a China Supply Center builds two trucks that earn
+  8,800 from the north-west supply dock in three minutes. `sim-run` now prints
+  money, trucks and partly emptied warehouses.
+- Not yet: GLA workers (`WorkerAIUpdate`), the Chinook's own flight states (it
+  uses the truck machine), supply drones, stealth grants, supply boosts from
+  upgrades, crippled docks, sold or unfinished docks, shroud, computer
+  players' doubled scan range, rally points after docking, damaged-model
+  bones. Docks are searched in object order rather than each player's
+  registration list (the same order for objects present from the start).
+  Supply trucks keep their last command source when an order ends (other
+  units still reset it).
+
+All scenarios pass with v24 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `7822ea366c50f9cc` | `c157a1a8804731ea` |
+| AI/status orders | `3d17229b57194c72` | `caa10c902baa3ebd` |
+| Bridges | `7eeb6072d0bd8823` | `4794ae2189c4e3ef` |
+| Traffic, Tournament Desert | `554a51dd9b1a6bf3` | `ba6e93789862c3ff` |
+| Traffic, Winding River | `f237410d62c07263` | `14edf2896872d4a5` |
+| Long map travel | `0f121a9bd7b00637` | `99f40c0864aae1f1` |
+| Crush enemy / crush ally | `b7af128753638191` / `a30e1d8116fe215b` | |
+| Comanche out and back | `46166dd4786b6539` | `7635c1bd9c1c4d5d` |
+| Group move (`m4-group`) | `80f238471cb651b6` | |
+| Fight (`m5-fight`) | `44f57851395e6f03` | |
+| Missiles (`m5-missiles`) | `a28d0ddb10e4500b` | |
+| Guard (`m5-guard`) | `0ede913608e66b73` | |
+| Skirmish (`m5-skirmish`) | `759675c931c62a28` | |
+| Production (`m5-production`) | `3eacf8d699c19841` | |
+| Supply (`m5-supply`) | `19b889b4f72af5dc` | |
+
+Asset-free fixtures: `de857b77f7dac677` (ground), `159641d53719732e` (bridge),
+`fecbe9542aa0a586` (head-on traffic), `93f3fe7f0c1a0928` (AI/status orders).
+`tests/supply.rs` covers a truck ferrying a warehouse's boxes until it is
+deleted, a truck from the supply centre gathering on its own, a stopped truck
+giving its slot back, and matching hashes in two runs.

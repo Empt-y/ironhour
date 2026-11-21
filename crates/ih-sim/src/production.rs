@@ -218,7 +218,7 @@ pub enum CanMake {
 }
 
 /// `Object::getTransformMatrix` applied to a point: rotation about z, then translation.
-fn transform(position: [f32; 3], angle: f32, p: [f32; 3]) -> [f32; 3] {
+pub(crate) fn transform(position: [f32; 3], angle: f32, p: [f32; 3]) -> [f32; 3] {
     let (s, c) = (ih_math::sin(angle), ih_math::cos(angle));
     [position[0] + c * p[0] - s * p[1], position[1] + s * p[0] + c * p[1], position[2] + p[2]]
 }
@@ -513,6 +513,8 @@ impl Simulation {
             if loc[2] != ground && !e.allow_airborne {
                 loc[2] = ground;
             }
+        } else if e.kind == ExitKind::SupplyCenter {
+            loc[2] = self.map.ground_height(loc[0], loc[1]);
         } else {
             loc[2] = self.grid.height_at(&self.map, Waypoint { position: [loc[0], loc[1]], layer });
         }
@@ -532,7 +534,9 @@ impl Simulation {
             first = coord_of_cell((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32, center);
         }
         let mut rest = VecDeque::new();
-        if let Some(mut r) = e.rally {
+        if e.kind == ExitKind::SupplyCenter {
+            rest.extend(e.rally);
+        } else if let Some(mut r) = e.rally {
             let layer = self.grid.destination(&self.map, r).layer;
             if self.ground_movement(new) && self.adjust_destination(new, &mut r, layer) {
                 rest.push_back(r);
@@ -547,6 +551,11 @@ impl Simulation {
                     let o = self.objects.get_mut(&new).unwrap();
                     o.ai.cmd_from_ai = true;
                     o.ai.ignore_obstacle = Some(factory);
+                    if e.kind == ExitKind::SupplyCenter
+                        && let Some(t) = o.truck.as_mut()
+                    {
+                        t.force_wanting = true;
+                    }
                 }
                 Err(err) => self.events.push(format!("frame {}: produced {new} cannot exit: {err}", self.frame)),
             }

@@ -157,6 +157,10 @@ impl Terrain {
         };
         i == j || self.zones.get(self, radius).connected(i, j)
     }
+    /// A ground cell's type (`PathfindCell::getType`), if the cell exists.
+    pub fn ground_kind(&self, x: i32, y: i32) -> Option<crate::footprint::CellType> {
+        self.index(0, x, y).map(|i| self.obstacles.kind[i])
+    }
     /// Whether the layer has this cell (`getCell` is non-null).
     pub fn has_cell(&self, layer: u32, x: i32, y: i32) -> bool {
         self.index(layer, x, y).is_some()

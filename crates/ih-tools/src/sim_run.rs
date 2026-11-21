@@ -149,6 +149,18 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     }
     println!("stub module instances (loaded, gameplay not implemented): {:?}", a.stub_counts);
     println!("crushed (frame, victim, crusher): {:?}; move-asides: {}", a.crushed, a.move_asides);
+    let money: Vec<(u32, u32)> = a.players.iter().map(|(id, p)| (*id, p.money)).collect();
+    println!("money (player, amount): {money:?}");
+    for o in a.objects.values() {
+        if let Some(t) = &o.truck {
+            println!("  truck {} {:?}: {} boxes, AI {:?}", o.id, t.state, t.boxes, o.ai.state);
+        }
+        if let Some(d) =
+            o.dock.as_ref().filter(|d| d.kind == ih_sim::supply::DockKind::Warehouse && d.boxes != d.starting_boxes)
+        {
+            println!("  warehouse {} {}: {} of {} boxes left", o.id, o.template, d.boxes, d.starting_boxes);
+        }
+    }
     println!("completed bridge traversals: {traversals}");
     let repaths: u32 = a.objects.values().map(|o| o.traffic_repaths).sum();
     if !a.events.is_empty() {

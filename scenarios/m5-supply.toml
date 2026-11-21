@@ -1,0 +1,34 @@
+# Supply gathering on Tournament Desert: a China Supply Center (1) next to the
+# north-west supply dock builds two trucks that start ferrying boxes on their
+# own; a Power Plant (2) keeps production at full speed.
+map = "Tournament Desert"
+seed = 11
+frames = 5400
+
+[[spawn]]
+template = "ChinaSupplyCenter"
+position = [760.0, 300.0]
+owner = 1
+
+[[spawn]]
+template = "ChinaPowerPlant"
+position = [950.0, 300.0]
+owner = 1
+
+[[commands]]
+frame = 0
+kind = "deposit"
+player = 1
+amount = 2000
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 1
+template = "ChinaVehicleSupplyTruck"
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 1
+template = "ChinaVehicleSupplyTruck"

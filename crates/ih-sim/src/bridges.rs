@@ -333,6 +333,74 @@ fn posed_point(h: &Hierarchy, mut bone: usize, mut p: [f32; 3]) -> Result<[f32; 
     Ok(p)
 }
 
+/// Dock bones for every template with a supply dock (`DockUpdate::loadDockPositions`
+/// through `getPristineBonePositions`): the default condition state's model,
+/// posed at rest and scaled by the template's `Scale`. Templates whose model or
+/// hierarchy cannot be loaded keep no bones (every position zero).
+pub fn dock_bones(
+    templates: &crate::templates::Templates,
+    vfs: &Vfs,
+    language: &str,
+) -> BTreeMap<String, crate::supply::DockBones> {
+    let mut files = Files { vfs, language, files: BTreeMap::new() };
+    let mut out = BTreeMap::new();
+    for (name, t) in &templates.objects {
+        let docks = t
+            .modules
+            .iter()
+            .any(|m| matches!(m.class.as_str(), "SupplyWarehouseDockUpdate" | "SupplyCenterDockUpdate"));
+        if !docks {
+            continue;
+        }
+        let scale = t.number("Scale", 1.0);
+        let mut bones = crate::supply::DockBones::default();
+        // Each draw module answers in turn; the first with the bone wins.
+        let models: Vec<String> =
+            t.modules.iter().filter(|m| m.kind == "Draw").filter_map(|m| default_model(&m.block)).collect();
+        let hierarchies: Vec<Hierarchy> = models.iter().filter_map(|m| files.hierarchy(m)).collect();
+        let find = |bone: &str| {
+            hierarchies.iter().find_map(|h| {
+                let i = h.pivots.iter().position(|p| p.name.eq_ignore_ascii_case(bone))?;
+                let p = posed_point(h, i, [0.0; 3]).ok()?;
+                Some([p[0] * scale, p[1] * scale, p[2] * scale])
+            })
+        };
+        bones.start = find("DockStart").unwrap_or_default();
+        bones.action = find("DockAction").unwrap_or_default();
+        bones.end = find("DockEnd").unwrap_or_default();
+        for i in 1..=99 {
+            match find(&format!("DockWaiting{i:02}")) {
+                Some(p) => bones.waiting.push(p),
+                None => break,
+            }
+        }
+        out.insert(name.clone(), bones);
+    }
+    out
+}
+/// The `Model` of a draw module's `DefaultConditionState`.
+fn default_model(b: &ih_ini::Block) -> Option<String> {
+    let state = b.blocks().find(|s| s.kind == "DefaultConditionState")?;
+    let model = state.fields().find(|f| f.name.eq_ignore_ascii_case("Model"))?.values().first()?.clone();
+    (!model.eq_ignore_ascii_case("NONE")).then_some(model)
+}
+impl Files<'_> {
+    /// A model's hierarchy: its HLOD's, or the file's own.
+    fn hierarchy(&mut self, model: &str) -> Option<Hierarchy> {
+        let file = self.file(model).ok()?;
+        let name = file.hlods.iter().find(|h| h.name.eq_ignore_ascii_case(model)).map(|h| h.hierarchy.clone());
+        match name {
+            Some(n) => file
+                .hierarchies
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(&n))
+                .cloned()
+                .or_else(|| self.file(&n).ok()?.hierarchies.into_iter().find(|t| t.name.eq_ignore_ascii_case(&n))),
+            None => file.hierarchies.first().cloned(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -319,6 +319,11 @@ pub struct Templates {
     pub command_sets: BTreeMap<String, Vec<String>>,
     /// `CommandButton` (command, object) by name.
     pub command_buttons: BTreeMap<String, (String, String)>,
+    /// `GameData`'s `BaseValuePerSupplyBox` (100).
+    pub supply_box_value: u32,
+    /// Dock bones of templates with supply docks, from their default models
+    /// (loaded with assets by `for_map`).
+    pub dock_bones: BTreeMap<String, crate::supply::DockBones>,
 }
 
 /// `GameData`'s damage-state thresholds, with the original defaults.
@@ -370,6 +375,7 @@ impl Templates {
     ) -> Result<Self, crate::SimError> {
         let mut out = Self::from_definitions(defs);
         out.bridges = crate::bridges::load(map, defs, vfs, language)?;
+        out.dock_bones = crate::bridges::dock_bones(&out, vfs, language);
         Ok(out)
     }
     pub fn from_definitions(defs: &Definitions) -> Self {
@@ -417,6 +423,7 @@ impl Templates {
             low_energy_penalty: global(defs, "GameData", "LowEnergyPenaltyModifier").unwrap_or(0.0),
             multiple_factory: global(defs, "GameData", "MultipleFactory").unwrap_or(0.0),
         };
+        out.supply_box_value = global(defs, "GameData", "BaseValuePerSupplyBox").map_or(100, |v| v as u32);
         for name in defs.names("CommandSet") {
             // Slots 1..=MAX_COMMANDS_PER_SET; later definitions replace slots.
             let mut slots = BTreeMap::new();

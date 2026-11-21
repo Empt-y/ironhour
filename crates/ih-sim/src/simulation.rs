@@ -119,6 +119,11 @@ pub enum Command {
         object: u32,
         position: [f32; 2],
     },
+    /// `aiDock` (`MSG_DOCK`): a supply truck to a warehouse or supply centre.
+    Dock {
+        object: u32,
+        target: u32,
+    },
 }
 fn default_damage_type() -> String {
     "EXPLOSION".into()
@@ -133,6 +138,8 @@ pub enum ModuleKind {
     Production,
     /// A production exit module (`production::Exit`).
     ProductionExit,
+    /// A supply dock (`supply::Dock`).
+    Dock,
     Steering,
     Physics,
     /// The body module (`body`): not updated.
@@ -211,6 +218,10 @@ pub struct Object {
     pub production: Option<crate::production::Production>,
     /// The production exit module (`production`).
     pub exit: Option<crate::production::Exit>,
+    /// A supply dock (`supply`).
+    pub dock: Option<crate::supply::Dock>,
+    /// `SupplyTruckAIUpdate` state (`supply`).
+    pub truck: Option<crate::supply::Truck>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -244,7 +255,7 @@ pub struct Simulation {
     sequence: u64,
     commands: BTreeMap<(u32, u64), Command>,
     setup_hash: u64,
-    collision_radius_bound: f32,
+    pub(crate) collision_radius_bound: f32,
     /// `m_objectsToDestroy`.
     pub(crate) destroy_list: Vec<u32>,
     /// The weapon store's delayed damage.
@@ -427,6 +438,8 @@ impl Simulation {
                 ModuleKind::Physics
             } else if m.class == "ProductionUpdate" {
                 ModuleKind::Production
+            } else if crate::supply::Dock::from_module(&m.class, &m.block).is_some() {
+                ModuleKind::Dock
             } else if crate::production::Exit::from_module(&m.class, &m.block).is_some() {
                 ModuleKind::ProductionExit
             } else if known.is_some_and(|d| d.tables.iter().any(|t| t.starts_with("AIUpdateModuleData::"))) {
@@ -450,6 +463,7 @@ impl Simulation {
                 // Updated every frame from creation.
                 self.scheduler.insert((id, index), self.frame.max(1), Phase::Normal);
             } else if kind == ModuleKind::Production
+                || kind == ModuleKind::Dock
                 || kind == ModuleKind::ProductionExit && m.class == "QueueProductionExitUpdate"
             {
                 // Updated every frame (UPDATE_SLEEP_NONE); the other exits sleep forever.
@@ -489,6 +503,16 @@ impl Simulation {
             .iter()
             .filter(|m| m.kind == "Behavior")
             .find_map(|m| crate::production::Exit::from_module(&m.class, &m.block));
+        let dock = t
+            .modules
+            .iter()
+            .filter(|m| m.kind == "Behavior")
+            .find_map(|m| crate::supply::Dock::from_module(&m.class, &m.block));
+        let truck = t
+            .modules
+            .iter()
+            .filter(|m| m.kind == "Behavior")
+            .find_map(|m| crate::supply::Truck::from_module(&m.class, &m.block));
         let body = traffic::BodyShape::new(t, &modules, &self.templates);
         let thresholds = (self.templates.damage.damaged, self.templates.damage.really_damaged);
         let health = crate::body::body_of(t).map(|(k, m)| crate::body::Health::new(k, &m.block, thresholds));
@@ -531,6 +555,8 @@ impl Simulation {
                 missile: None,
                 production,
                 exit,
+                dock,
+                truck,
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
@@ -573,7 +599,8 @@ impl Simulation {
             | Command::FaceObject { object, .. }
             | Command::Attack { object, .. }
             | Command::AttackPosition { object, .. }
-            | Command::Guard { object, .. } => vec![*object],
+            | Command::Guard { object, .. }
+            | Command::Dock { object, .. } => vec![*object],
             Command::GroupMove { objects, .. } => objects.clone(),
             _ => vec![],
         };
@@ -595,6 +622,12 @@ impl Simulation {
             }
             Command::CancelProduction { factory, production } => self.cancel_unit_create(factory, production)?,
             Command::SetRallyPoint { object, position } => self.set_rally_point(object, position)?,
+            Command::Dock { object, target } => {
+                if !self.objects.contains_key(&object) || !self.objects.contains_key(&target) {
+                    return Err(SimError(format!("object {object} or {target} is missing")));
+                }
+                self.begin_dock(object, target, false);
+            }
             Command::Damage { object, amount, damage_type, death_type, source } => {
                 if !self.objects.contains_key(&object) {
                     return Err(SimError(format!("object {object} is missing")));
@@ -622,6 +655,10 @@ impl Simulation {
             Command::Stop { object } => {
                 if !self.objects.contains_key(&object) {
                     return Err(SimError(format!("object {object} is missing")));
+                }
+                // SupplyTruckAIUpdate::privateIdle from the player.
+                if let Some(t) = self.objects.get_mut(&object).unwrap().truck.as_mut() {
+                    t.force_busy = true;
                 }
                 self.end_order(object, Outcome::Interrupted);
             }
@@ -671,6 +708,9 @@ impl Simulation {
             }
         }
         Ok(())
+    }
+    pub(crate) fn validate_mobile_quiet(&self, id: u32) -> Result<(), SimError> {
+        self.validate_mobile(id, false)
     }
     fn validate_mobile(&self, id: u32, face: bool) -> Result<(), SimError> {
         let o = self.objects.get(&id).ok_or_else(|| SimError(format!("object {id} is missing")))?;
@@ -904,7 +944,11 @@ impl Simulation {
             self.failed_orders += 1;
         }
         o.ai.finish(outcome, self.frame);
-        o.ai.cmd_from_ai = false;
+        // Supply trucks keep their last command source (`ownerPlayerCommanded`
+        // reads it after an AI-given move or dock ends).
+        if o.truck.is_none() {
+            o.ai.cmd_from_ai = false;
+        }
         o.target = None;
         o.path.clear();
         o.speed = 0.0;
@@ -913,6 +957,12 @@ impl Simulation {
         o.blocked_frames = 0;
         o.blocked_by = None;
         o.traffic.stuck = false;
+    }
+    fn halt_all_docks(&mut self) {
+        let ids: Vec<u32> = self.objects.values().filter(|o| o.ai.halted_dock.is_some()).map(|o| o.id).collect();
+        for id in ids {
+            self.halt_docks(id);
+        }
     }
     /// A new object (projectiles and other created objects).
     pub(crate) fn create_object(
@@ -947,6 +997,7 @@ impl Simulation {
                 self.events.push(format!("frame {frame} command {seq}: {e}"));
             }
         }
+        self.halt_all_docks();
         self.wake_forced();
         while let Some((id, index)) = self.scheduler.due(self.frame) {
             let kind = self.objects[&id].modules[index].kind;
@@ -957,7 +1008,11 @@ impl Simulation {
                 }
                 // DisabledTypesToProcess defaults to HELD.
                 ModuleKind::Production => 1 << (DisabledReason::Held as u32),
-                ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die | ModuleKind::ProductionExit => 0,
+                ModuleKind::Stub
+                | ModuleKind::Body
+                | ModuleKind::Die
+                | ModuleKind::ProductionExit
+                | ModuleKind::Dock => 0,
             };
             if !self.objects[&id].disabled.allows_module(exceptions) {
                 self.scheduler.reschedule((id, index), self.frame.saturating_add(1));
@@ -987,6 +1042,7 @@ impl Simulation {
                 ModuleKind::Missile => self.missile_update(id),
                 ModuleKind::Production => self.production_update(id),
                 ModuleKind::ProductionExit => self.exit_update(id),
+                ModuleKind::Dock => self.dock_update(id),
                 ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => FOREVER,
             };
             self.update_pos(id);
@@ -1007,6 +1063,7 @@ impl Simulation {
         self.rebuild_partition();
         self.process_destroy_list();
         self.update_delayed_damage();
+        self.halt_all_docks();
         self.frame = self.frame.checked_add(1).expect("logic frame overflow");
     }
     /// `PhysicsBehavior::calcSleepTime` (`SLEEPY_PHYSICS`), after the update ran.
@@ -1053,6 +1110,19 @@ impl Simulation {
         }
     }
     fn update_ai(&mut self, id: u32) -> u32 {
+        if self.objects[&id].truck.is_some() && !self.objects[&id].ai.dead {
+            self.truck_update(id);
+            self.halt_docks(id);
+            let delay = self.update_ai_inner(id);
+            self.halt_docks(id);
+            // The truck machine never sleeps.
+            return delay.min(1);
+        }
+        let delay = self.update_ai_inner(id);
+        self.halt_docks(id);
+        delay
+    }
+    fn update_ai_inner(&mut self, id: u32) -> u32 {
         let o = &self.objects[&id];
         if o.ai.dead {
             return self.update_dead(id);
@@ -1079,6 +1149,7 @@ impl Simulation {
                 return 1;
             }
             AiState::Guard => return self.update_guard(id),
+            AiState::Dock => return self.update_dock(id),
             AiState::Dead => return self.update_dead(id),
             AiState::AttackObject | AiState::AttackPosition => return self.update_attack(id),
             AiState::MoveTo | AiState::FollowPath => {
@@ -1988,7 +2059,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(23);
+        h.u32(24);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2267,6 +2338,39 @@ impl Simulation {
                     h.u32(e.door.unwrap_or(u32::MAX));
                 }
             }
+            h.u32(u32::from(o.dock.is_some()));
+            if let Some(d) = &o.dock {
+                h.u32(u32::from(d.open));
+                h.u32(u32::from(d.loaded));
+                h.u32(d.approach_bones as u32);
+                h.u32(d.active.unwrap_or(0));
+                h.u32(u32::from(d.inside));
+                h.u32(d.boxes as u32);
+                h.u64(d.owners.len() as u64);
+                for (o, r) in d.owners.iter().zip(&d.reached) {
+                    h.u32(o.unwrap_or(0));
+                    h.u32(u32::from(*r));
+                }
+            }
+            h.u32(u32::from(o.truck.is_some()));
+            if let Some(t) = &o.truck {
+                h.u32(t.state as u32);
+                h.u32(t.boxes as u32);
+                h.u32(t.preferred.unwrap_or(0));
+                h.u32(u32::from(t.force_wanting));
+                h.u32(u32::from(t.force_busy));
+            }
+            h.u32(u32::from(o.ai.dock.is_some()));
+            if let Some(m) = &o.ai.dock {
+                h.u32(m.goal);
+                h.u32(m.sub.map_or(u32::MAX, |s| s as u32));
+                h.u32(m.approach as u32);
+                h.u32(m.enter_frame);
+                h.u32(m.next_action);
+                for v in m.goal_position {
+                    h.float(v);
+                }
+            }
             h.u32(u32::from(o.exit.is_some()));
             if let Some(e) = &o.exit {
                 h.u32(e.current_delay);
@@ -2421,6 +2525,11 @@ fn hash_command(c: &Command, h: &mut StateHash) {
             h.u32(*object);
             h.float(position[0]);
             h.float(position[1]);
+        }
+        Command::Dock { object, target } => {
+            h.u32(19);
+            h.u32(*object);
+            h.u32(*target);
         }
     }
 }
@@ -2727,7 +2836,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x9131a353573eafc4, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xde857b77f7dac677, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2963,7 +3072,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xbc2ec9dcb92ea481, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xfecbe9542aa0a586, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3055,7 +3164,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x424d3a3306db6ff1, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x159641d53719732e, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

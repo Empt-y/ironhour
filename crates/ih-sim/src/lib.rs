@@ -22,6 +22,7 @@ pub mod scenario;
 pub mod scheduler;
 pub mod simulation;
 pub mod state_hash;
+pub mod supply;
 pub mod targeting;
 pub mod templates;
 pub mod terrain;
