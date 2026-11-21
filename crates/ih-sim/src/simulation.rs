@@ -62,6 +62,16 @@ pub enum Command {
     Destroy {
         object: u32,
     },
+    /// `aiAttackObject`.
+    Attack {
+        object: u32,
+        target: u32,
+    },
+    /// `aiAttackPosition` (force-fire at the ground).
+    AttackPosition {
+        object: u32,
+        target: [f32; 2],
+    },
     /// Damage of a named type (`Object::attemptDamage`), e.g. from a script.
     Damage {
         object: u32,
@@ -153,6 +163,8 @@ pub struct Object {
     pub dead: bool,
     /// `ObjectStatusMaskType` bits (`body::status`).
     pub status: u64,
+    /// `m_weaponSet` (`weapons`).
+    pub weapon_set: crate::weapons::WeaponSet,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -189,6 +201,8 @@ pub struct Simulation {
     collision_radius_bound: f32,
     /// `m_objectsToDestroy`.
     pub(crate) destroy_list: Vec<u32>,
+    /// The weapon store's delayed damage.
+    pub(crate) delayed_damage: Vec<crate::weapons::DelayedDamage>,
 }
 impl Simulation {
     pub fn new(map: Arc<Map>, templates: Arc<Templates>, seed: u32) -> Self {
@@ -303,6 +317,7 @@ impl Simulation {
             setup_hash: h.0,
             collision_radius_bound: 0.0,
             destroy_list: Vec::new(),
+            delayed_damage: Vec::new(),
         }
     }
     pub fn spawn(&mut self, name: &str, p: [f32; 2], owner: u32) -> Result<u32, SimError> {
@@ -433,8 +448,10 @@ impl Simulation {
                 health,
                 dead: false,
                 status: 0,
+                weapon_set: Default::default(),
             },
         );
+        self.update_weapon_set(id);
         self.rebuild_partition();
         self.update_pos(id);
         Ok(id)
@@ -444,9 +461,10 @@ impl Simulation {
             return Err(SimError(format!("command frame {frame} is before current frame {}", self.frame)));
         }
         let finite = match &command {
-            Command::Move { target, .. } | Command::Face { target, .. } | Command::GroupMove { target, .. } => {
-                target.iter().all(|f| f.is_finite())
-            }
+            Command::Move { target, .. }
+            | Command::Face { target, .. }
+            | Command::GroupMove { target, .. }
+            | Command::AttackPosition { target, .. } => target.iter().all(|f| f.is_finite()),
             Command::FollowPath { points, .. } => points.iter().flatten().all(|f| f.is_finite()),
             Command::Spawn { position, .. } => position.iter().all(|f| f.is_finite()),
             _ => true,
@@ -475,6 +493,14 @@ impl Simulation {
             }
             Command::Destroy { object } => {
                 self.remove(object)?;
+            }
+            Command::Attack { object, target } => {
+                let pos = self.objects.get(&target).map_or([0.0; 3], |o| o.position);
+                self.begin_attack(object, Some(target), pos)?;
+            }
+            Command::AttackPosition { object, target } => {
+                let z = self.grid.height_at(&self.map, Waypoint::ground(target));
+                self.begin_attack(object, None, [target[0], target[1], z])?;
             }
             Command::Stop { object } => {
                 if !self.objects.contains_key(&object) {
@@ -639,7 +665,7 @@ impl Simulation {
     /// point take the straight line (`computeQuickPath`); otherwise `findPath`,
     /// falling back to `findClosestPath`. Returns the path (without its start) and
     /// the goal it ends at.
-    fn route_to_waypoint(
+    pub(crate) fn route_to_waypoint(
         &self,
         id: u32,
         goal: Waypoint,
@@ -703,7 +729,7 @@ impl Simulation {
     /// (`adjustDestination`, else `snapClosestGoalPosition`) and claims it
     /// (`updateGoal`). Follow-path legs do not adjust; the final leg claims its
     /// point, earlier legs release the goal.
-    fn choose_goal(&mut self, id: u32, target: [f32; 2], state: AiState, last: bool) -> Waypoint {
+    pub(crate) fn choose_goal(&mut self, id: u32, target: [f32; 2], state: AiState, last: bool) -> Waypoint {
         let layer = self.grid.destination(&self.map, target).layer;
         let mut goal = target;
         if state == AiState::MoveTo {
@@ -746,7 +772,7 @@ impl Simulation {
             }
         }
     }
-    fn end_order(&mut self, id: u32, outcome: Outcome) {
+    pub(crate) fn end_order(&mut self, id: u32, outcome: Outcome) {
         // AIIdleState::onEnter: the goal becomes where the unit stands.
         let (p, layer) = (self.objects[&id].position, self.objects[&id].layer);
         self.update_goal(id, [p[0], p[1]], layer);
@@ -832,6 +858,7 @@ impl Simulation {
         self.wake_forced();
         self.rebuild_partition();
         self.process_destroy_list();
+        self.update_delayed_damage();
         self.frame = self.frame.checked_add(1).expect("logic frame overflow");
     }
     /// `PhysicsBehavior::calcSleepTime` (`SLEEPY_PHYSICS`), after the update ran.
@@ -897,6 +924,7 @@ impl Simulation {
         match o.ai.state {
             AiState::Idle => return self.idle_locomotor(id),
             AiState::Dead => return self.update_dead(id),
+            AiState::AttackObject | AiState::AttackPosition => return self.update_attack(id),
             AiState::MoveTo | AiState::FollowPath => {
                 self.repath_traffic(id);
                 self.drive(id);
@@ -971,7 +999,11 @@ impl Simulation {
     }
     /// `AIUpdateInterface::doLocomotor` for path following: collisions found last
     /// frame block this frame's drive, capped to how fast the blocker moves away.
-    fn drive(&mut self, id: u32) {
+    pub(crate) fn drive(&mut self, id: u32) {
+        let t = &self.templates.objects[&self.objects[&id].template];
+        if t.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_none() {
+            return;
+        }
         let mover = self.mover(id);
         // Out of the map while it steers, so the pathfinder can read the others.
         let mut owned = self.objects.remove(&id).unwrap();
@@ -1723,7 +1755,7 @@ impl Simulation {
         crushed || crushing
     }
 
-    fn repath_traffic(&mut self, id: u32) {
+    pub(crate) fn repath_traffic(&mut self, id: u32) {
         let o = &self.objects[&id];
         // AIInternalMoveToState: recompute when blocked and stuck, or blocked for two
         // seconds; ironhour also spaces recomputations by REPATH_DELAY.
@@ -1796,7 +1828,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(18);
+        h.u32(19);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1946,6 +1978,35 @@ impl Simulation {
                 }
             }
             h.u32(u32::from(o.ai.dead));
+            let ws = &o.weapon_set;
+            h.u32(ws.set.map_or(0, |s| s as u32 + 1));
+            h.u32(u32::from(ws.current));
+            h.u32(u32::from(ws.lock));
+            h.u32(u32::from(ws.shared_reload));
+            for w in &ws.weapons {
+                h.u32(u32::from(w.is_some()));
+                if let Some(w) = w {
+                    h.text(&w.template);
+                    h.u32(w.status as u32);
+                    for v in [w.ammo, w.max_shots, w.barrel, w.shots_for_barrel] {
+                        h.u32(v as u32);
+                    }
+                    for v in [w.fire_again_frame, w.pre_attack_finished, w.last_reload_started, w.last_fire_frame] {
+                        h.u32(v);
+                    }
+                }
+            }
+            h.u32(u32::from(o.ai.attack.is_some()));
+            if let Some(m) = &o.ai.attack {
+                h.u32(m.victim.unwrap_or(0));
+                for v in m.position.into_iter().chain(m.prev_victim_pos) {
+                    h.float(v);
+                }
+                h.u32(m.sub as u32);
+                h.u32(m.approach_frame);
+                h.u32(u32::from(m.stop_if_in_range));
+                h.u32(u32::from(m.can_turn_in_place));
+            }
         }
         h.u64(self.scheduler.heap.len() as u64);
         for e in &self.scheduler.heap {
@@ -1953,6 +2014,16 @@ impl Simulation {
             h.u64(e.key.1 as u64);
             h.u32(e.frame);
             h.u32(e.phase as u32);
+        }
+        h.u64(self.delayed_damage.len() as u64);
+        for d in &self.delayed_damage {
+            h.text(&d.weapon);
+            for v in d.position {
+                h.float(v);
+            }
+            h.u32(d.frame);
+            h.u32(d.source);
+            h.u32(d.victim);
         }
         h.u64(self.commands.len() as u64);
         for ((f, seq), c) in &self.commands {
@@ -1979,6 +2050,17 @@ fn hash_command(c: &Command, h: &mut StateHash) {
         Command::Destroy { object } => {
             h.u32(2);
             h.u32(*object);
+        }
+        Command::Attack { object, target } => {
+            h.u32(11);
+            h.u32(*object);
+            h.u32(*target);
+        }
+        Command::AttackPosition { object, target } => {
+            h.u32(12);
+            h.u32(*object);
+            h.float(target[0]);
+            h.float(target[1]);
         }
         Command::Damage { object, amount, damage_type, death_type, source } => {
             h.u32(10);
@@ -2344,7 +2426,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x1ca894b4bfa34d26, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xb09fcd2ac1f31379, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2580,7 +2662,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xc2893ca6584acd42, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x5e5c5299b925f3f7, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2672,7 +2754,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xc9162aeaa9b686da, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x3342568b41d0ffed, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

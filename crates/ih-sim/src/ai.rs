@@ -11,6 +11,10 @@ pub enum AiState {
     Idle = 0,
     MoveTo = 1,
     FollowPath = 6,
+    /// `AI_ATTACK_POSITION`.
+    AttackPosition = 9,
+    /// `AI_ATTACK_OBJECT`.
+    AttackObject = 10,
     /// `AI_DEAD`.
     Dead = 13,
     FaceObject = 33,
@@ -45,6 +49,8 @@ pub struct AiMachine {
     pub retries: u32,
     /// `m_isAiDead` (`markAsDead`).
     pub dead: bool,
+    /// The attack state's sub-machine (`attack`).
+    pub attack: Option<crate::attack::AttackMachine>,
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {
@@ -57,6 +63,7 @@ impl AiMachine {
         self.face_position = None;
         self.face_object = None;
         self.retries = if state == AiState::FollowPath { 10 } else { 0 };
+        self.attack = None;
         self.state = state;
         self.entered_frame = frame;
         self.transitions += 1;
@@ -84,6 +91,7 @@ impl AiMachine {
         self.remaining.clear();
         self.face_position = None;
         self.face_object = None;
+        self.attack = None;
     }
     pub fn active(&self) -> bool {
         self.state != AiState::Idle || self.move_out.is_some()

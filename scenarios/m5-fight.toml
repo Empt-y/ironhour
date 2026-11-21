@@ -1,0 +1,45 @@
+# A Crusader attacks another out of range (it closes in, then fires its cannon
+# until the other dies), and two Rangers duel with their rifles on Tournament
+# Desert.
+map = "Tournament Desert"
+seed = 42
+frames = 1500
+require_idle_at_end = true
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1400.0, 900.0]
+owner = 2
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1000.0, 1100.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1100.0, 1100.0]
+owner = 2
+
+[[commands]]
+frame = 1
+kind = "attack"
+object = 1
+target = 2
+
+[[commands]]
+frame = 1
+kind = "attack"
+object = 3
+target = 4
+
+[[commands]]
+frame = 1
+kind = "attack"
+object = 4
+target = 3

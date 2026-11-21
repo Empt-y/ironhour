@@ -1,5 +1,6 @@
 //! Headless 30 Hz logic. The renderer/client never participate in state updates.
 pub mod ai;
+pub mod attack;
 pub mod body;
 pub mod bridges;
 pub mod death;
@@ -20,5 +21,6 @@ pub mod state_hash;
 pub mod templates;
 pub mod terrain;
 pub mod traffic;
+pub mod weapons;
 pub mod zones;
 pub use simulation::{Command, LogicClock, SimError, Simulation};

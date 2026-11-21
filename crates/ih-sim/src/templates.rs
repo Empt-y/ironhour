@@ -18,6 +18,8 @@ pub struct Template {
     pub modules: Vec<ModuleDef>,
     /// `ArmorSet` blocks (`body`).
     pub armor_sets: Vec<crate::body::ArmorSetDef>,
+    /// `WeaponSet` blocks (`weapons`).
+    pub weapon_sets: Vec<crate::weapons::WeaponSetDef>,
 }
 impl Template {
     pub fn values(&self, key: &str) -> &[String] {
@@ -286,6 +288,8 @@ pub struct Templates {
     pub damage: DamageSettings,
     /// Defined effects by (block kind, name): `FXList`, `ObjectCreationList`, `Weapon`.
     pub effects: BTreeSet<(String, String)>,
+    /// `Weapon` definitions by name.
+    pub weapons: BTreeMap<String, crate::weapons::WeaponTemplate>,
 }
 
 /// `GameData`'s damage-state thresholds, with the original defaults.
@@ -356,6 +360,10 @@ impl Templates {
         };
         for kind in ["FXList", "ObjectCreationList", "Weapon"] {
             out.effects.extend(defs.names(kind).map(|n| (kind.to_string(), n.clone())));
+        }
+        for name in defs.names("Weapon") {
+            let blocks: Vec<&ih_ini::Block> = defs.all("Weapon", name).iter().collect();
+            out.weapons.insert(name.clone(), crate::weapons::WeaponTemplate::parse(name, &blocks));
         }
         for name in defs.names("Armor") {
             // A later definition replaces an earlier one (`clear` then parse).
@@ -526,13 +534,13 @@ fn resolve(
         }
         // `setCopiedFromDefault`: this definition's first ArmorSet replaces the
         // inherited ones.
-        let mut armor_copied = true;
-        apply(&mut t, &b.items, &mut armor_copied, warnings);
+        let mut copied = (true, true);
+        apply(&mut t, &b.items, &mut copied, warnings);
     }
     visiting.remove(name);
     Some(t)
 }
-fn apply(t: &mut Template, items: &[Item], armor_copied: &mut bool, warnings: &mut Vec<String>) {
+fn apply(t: &mut Template, items: &[Item], copied: &mut (bool, bool), warnings: &mut Vec<String>) {
     for item in items {
         match item {
             Item::Field(f) if f.name == "RemoveModule" => {
@@ -602,15 +610,21 @@ fn apply(t: &mut Template, items: &[Item], armor_copied: &mut bool, warnings: &m
                         block: b.clone(),
                     });
                 }
-                "AddModule" | "InheritableModule" | "OverrideableByLikeKind" => {
-                    apply(t, &b.items, armor_copied, warnings)
-                }
+                "AddModule" | "InheritableModule" | "OverrideableByLikeKind" => apply(t, &b.items, copied, warnings),
                 "ArmorSet" => {
-                    if *armor_copied {
-                        *armor_copied = false;
+                    if copied.0 {
+                        copied.0 = false;
                         t.armor_sets.clear();
                     }
                     t.armor_sets.push(crate::body::ArmorSetDef::parse(b));
+                }
+                "WeaponSet" => {
+                    // parseWeaponTemplateSet: the first in a definition replaces the inherited ones.
+                    if copied.1 {
+                        copied.1 = false;
+                        t.weapon_sets.clear();
+                    }
+                    t.weapon_sets.push(crate::weapons::WeaponSetDef::parse(b));
                 }
                 "ReplaceModule" => {
                     let old = b.args().first().cloned().unwrap_or_default();
@@ -626,7 +640,7 @@ fn apply(t: &mut Template, items: &[Item], armor_copied: &mut bool, warnings: &m
                             }
                         }
                     }
-                    apply(t, &b.items, armor_copied, warnings);
+                    apply(t, &b.items, copied, warnings);
                 }
                 _ => {}
             },

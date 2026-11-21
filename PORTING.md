@@ -922,3 +922,67 @@ Asset-free fixtures: `1ca894b4bfa34d26` (ground), `c9162aeaa9b686da` (bridge),
 `tests/bodies.rs` covers armour, damage states, healing, the three special
 bodies, `DestroyDie` death types, the end-of-frame removal, and a slow death
 that sinks and is destroyed on schedule with matching hashes in two runs.
+
+### Weapons and the attack order (state hash v19)
+
+From `Weapon.cpp` (`WeaponTemplate` fields, `getAttackRange` and the other
+accessors with `RATIONALIZE_ATTACK_RANGE`, `fireWeaponTemplate`,
+`dealDamageInternal`, `estimateWeaponTemplateDamage`, `Weapon` construction,
+`reloadWithBonus`, `privateFireWeapon`, `preFireWeapon`, `getStatus`,
+`isWithinAttackRange`, the weapon store's delayed damage), `WeaponSet.cpp`
+(`parseWeaponTemplateSet`, `updateWeaponSet`, `getVictimAntiMask`,
+`chooseBestWeaponForTarget`), `PartitionManager`'s boundary distances, and
+`AIStates.cpp` (`AIAttackState`, `AttackStateMachine`, the aim, fire and
+approach states and their range transitions) with `StateMachine`'s transition
+order: `crates/ih-sim/src/weapons.rs` and `attack.rs`.
+
+- Weapon definitions and each template's `WeaponSet`s (a definition's first set
+  replaces the inherited ones; the best condition match applies). Objects get
+  their weapons with full clips when created.
+- Firing: clips, clip reloads, delays between shots (random between `Min` and
+  `Max`), pre-attack delays per shot, attack or clip, shared reload times, one
+  barrel per model. Range uses the 2D distance between bounding circles, less a
+  quarter cell. Instant weapons deal damage now; slow ones after the flight time
+  (distance over `WeaponSpeed`). Area damage reaches objects whose bounding
+  spheres are within the radius, with the primary and secondary amounts and the
+  allies, enemies, neutrals, self, suicide, similar and airborne rules, and
+  directional damage within `RadiusDamageAngle`.
+- `attack` and `attack_position` commands: the unit aims, fires when ready, aims
+  again while reloading, and closes in when out of range. The attack succeeds
+  when the victim dies and fails when the attacker runs out of ammo. As in the
+  original, aiming and firing alternate frames, so shot delays round up to even
+  frame counts.
+- Relationships until players exist: the same owner is an ally, the neutral
+  player is neutral, other owners are enemies.
+- Stand-ins: a projectile weapon's damage lands at its (scattered) destination
+  after the flight time instead of launching its projectile object
+  (projectiles come next); the approach paths to the victim and stops once in
+  range (`findAttackPath` is not ported); the chase is the approach (no
+  pursuit); aiming turns the body (no turrets).
+- Not yet: weapon bonuses (all neutral), FX, OCLs, fire sounds, lasers and
+  streams, historic bonuses, scatter-target tables, shockwaves, request-assist,
+  leech range, continued attacks, firing line of sight, pitch limits, weapon
+  locks, auto-targeting, retaliation and guard.
+
+All scenarios pass with v19 hashes. `m5-fight` (stock): a Crusader closes on
+another and kills it with its cannon while two Rangers duel; both attacks
+succeed.
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `92dcce6ece5fb53d` | `84c18d5059ad4895` |
+| AI/status orders | `341bd9068e5e1233` | `a74fb36a525e6400` |
+| Bridges | `2f01fea0569a04fa` | `a4afc94009038079` |
+| Traffic, Tournament Desert | `132ffa7db58e479c` | `397aa432361b0306` |
+| Traffic, Winding River | `535422fdc3ea0a76` | `b53643c864df3626` |
+| Long map travel | `eac430d5a5668475` | `61be301a8529eec5` |
+| Crush enemy / crush ally | `c9f1be7a3d420baf` / `4696436a97b705b6` | |
+| Comanche out and back | `7d6c2873ea937e3c` | `f7d79dfeb3d1b415` |
+| Group move (`m4-group`) | `4f499b57d231d345` | |
+| Fight (`m5-fight`) | `cc0f042ff17f26d9` | |
+
+Asset-free fixtures: `b09fcd2ac1f31379` (ground), `3342568b41d0ffed` (bridge),
+`5e5c5299b925f3f7` (head-on traffic), `73ae2a0f752820ea` (AI/status orders).
+`tests/weapons.rs` covers firing cadence, clip reloads, closing into range,
+area damage that spares allies, and delayed projectile damage with matching
+hashes in two runs.
