@@ -208,6 +208,8 @@ pub struct Health {
     pub last_damage: Option<DamageInfo>,
     /// `0xffffffff` until damaged.
     pub last_damage_frame: u32,
+    /// `m_lastDamageCleared` (`getClearableLastAttacker`).
+    pub last_damage_cleared: bool,
     pub last_healing_frame: u32,
     /// `InactiveBody::m_dieCalled`.
     pub die_called: bool,
@@ -237,6 +239,7 @@ impl Health {
             armor_flags: 0,
             last_damage: None,
             last_damage_frame: u32::MAX,
+            last_damage_cleared: false,
             last_healing_frame: u32::MAX,
             die_called: false,
         };
@@ -494,12 +497,14 @@ impl Simulation {
             info.clipped = hb.previous - hb.current;
             if hb.last_damage_frame != frame && hb.last_damage_frame != frame.wrapping_sub(1) {
                 hb.last_damage = Some(info);
+                hb.last_damage_cleared = false;
                 hb.last_damage_frame = frame;
             } else if let Some(counts) = source_counts {
                 // A new source replaces a recent one only when it is a unit or a
                 // faction building (or the recent one is gone).
                 if !last_alive || counts {
                     hb.last_damage = Some(info);
+                    hb.last_damage_cleared = false;
                     hb.last_damage_frame = frame;
                 }
             }
@@ -537,6 +542,7 @@ impl Simulation {
             info.dealt = amount;
             info.clipped = hb.previous - hb.current;
             hb.last_damage = Some(info);
+            hb.last_damage_cleared = false;
             hb.last_damage_frame = frame;
             hb.last_healing_frame = frame;
             let state = hb.state;

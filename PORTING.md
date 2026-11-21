@@ -1085,3 +1085,61 @@ Asset-free fixtures: `5d61b43b47c11dcf` (ground), `6ecd8cf53572cdbf` (bridge),
 `tests/missiles.rs` covers the state sequence of a missile that turns onto a
 target off its launch line and hits it once (matching hashes in two runs), and
 a missile that destroys itself when its target is gone.
+
+### Auto-targeting and guard (state hash v22)
+
+From `AIIdleState` (`AIStates.cpp`), `AIUpdateInterface::getNextMoodTarget`,
+`resetNextMoodCheckTime`, `AI::findClosestEnemy` and its partition filters,
+`AI::getAdjustedVisionRangeForObject`, `Object::isAbleToAttack`,
+`WeaponSet::getAbleToAttackSpecificObject`/`getAbleToUseWeaponAgainstTarget`,
+`AIGuard.cpp` (`AIGuardMachine`, its inner, outer, return, idle, crate and
+attack-aggressor states, `lookForInnerTarget`, `hasAttackedMeAndICanReturnFire`,
+`ExitConditions`) and `AIGuardState`: `crates/ih-sim/src/targeting.rs` and
+`guard.rs`.
+
+- Idle units enter `AIIdleState` (a random first sleep of up to two seconds)
+  and, with `AutoAcquireEnemiesWhenIdle = YES`, check every
+  `MoodAttackCheckRate` (the first check randomly offset by up to half of it)
+  for the closest enemy within vision range (times `GuardOuterModifierHuman`)
+  that a weapon can already reach; they attack it as the AI's own order, so they
+  do not chase it out of range. Enemy buildings count only with
+  `ATTACK_BUILDINGS` or as base defences; insignificant buildings are skipped
+  with `AttackIgnoreInsignificantBuildings`.
+- `guard` command (a position): the unit returns to its post, scans every
+  `GuardEnemyScanRate` within its inner range (vision times
+  `GuardInnerModifierHuman`), attacks what it finds until it dies or leaves that
+  range, pursues it within the outer range for `GuardChaseUnitsDuration`, then
+  returns; anything that damages it while it guards is attacked back and
+  followed. The original's transition limit (twenty nested transitions) applies.
+- Player orders clear the AI-picked flag, so attacks ordered by the player
+  still close in.
+- `m5-guard` (stock): two Rangers guarding a point shoot down an enemy Ranger
+  and return to their posts.
+- Not yet: guarding objects or areas, the flying-only and no-pursuit modes,
+  entering and hijacking guards, crates, team targets, attack priorities, mood
+  for computer players (every player is treated as human), fog, stealth, line
+  of sight, retaliation by nearby friends.
+
+All scenarios pass with v22 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `a5379f8623070107` | `0e66aabd7e3487e1` |
+| AI/status orders | `6b6739d6bc7f2aea` | `c458c305abe7e6c5` |
+| Bridges | `b2fd995c6680b812` | `5da7b6c20c0b3ac4` |
+| Traffic, Tournament Desert | `efc270b2ae6b3cc2` | `efedc6e7480ff8c6` |
+| Traffic, Winding River | `a84b72351f97ca87` | `983bc9a98c5cdf9d` |
+| Long map travel | `cca97896b540f998` | `20137a0db77db178` |
+| Crush enemy / crush ally | `86b3430e9e325355` / `95d9e726b8428f3e` | |
+| Comanche out and back | `d78d09f6ef3f8fe3` | `76fde6240f1be8ed` |
+| Group move (`m4-group`) | `465aecb74284d311` | |
+| Fight (`m5-fight`) | `673237b5acaa6cbb` | |
+| Missiles (`m5-missiles`) | `29267b4d3bccaab8` | |
+| Guard (`m5-guard`) | `0210974d049f4be0` | |
+
+Asset-free fixtures: `83a9ed56e8160497` (ground), `18c270831950fb5a` (bridge),
+`45f03e44a29c2b00` (head-on traffic), `7b652696f20dc574` (AI/status orders).
+`tests/targeting.rs` covers an idle unit shooting an enemy that walks into
+range (with matching hashes in two runs), not chasing an auto-acquired target
+that runs, and a guard that returns to its post, hunts an intruder within its
+range and goes back.

@@ -67,6 +67,11 @@ pub enum Command {
         object: u32,
         target: u32,
     },
+    /// `aiGuardPosition` (normal guard mode).
+    Guard {
+        object: u32,
+        position: [f32; 2],
+    },
     /// `aiAttackPosition` (force-fire at the ground).
     AttackPosition {
         object: u32,
@@ -471,6 +476,8 @@ impl Simulation {
                 missile: None,
             },
         );
+        // The AI state machine starts idle (AIIdleState::onEnter).
+        self.idle_enter(id);
         self.update_weapon_set(id);
         self.rebuild_partition();
         self.update_pos(id);
@@ -484,7 +491,8 @@ impl Simulation {
             Command::Move { target, .. }
             | Command::Face { target, .. }
             | Command::GroupMove { target, .. }
-            | Command::AttackPosition { target, .. } => target.iter().all(|f| f.is_finite()),
+            | Command::AttackPosition { target, .. }
+            | Command::Guard { position: target, .. } => target.iter().all(|f| f.is_finite()),
             Command::FollowPath { points, .. } => points.iter().flatten().all(|f| f.is_finite()),
             Command::Spawn { position, .. } => position.iter().all(|f| f.is_finite()),
             _ => true,
@@ -497,6 +505,24 @@ impl Simulation {
         Ok(())
     }
     fn command(&mut self, c: Command) -> Result<(), SimError> {
+        // Orders from the player (CMD_FROM_PLAYER).
+        let ordered: Vec<u32> = match &c {
+            Command::Move { object, .. }
+            | Command::Stop { object }
+            | Command::FollowPath { object, .. }
+            | Command::Face { object, .. }
+            | Command::FaceObject { object, .. }
+            | Command::Attack { object, .. }
+            | Command::AttackPosition { object, .. }
+            | Command::Guard { object, .. } => vec![*object],
+            Command::GroupMove { objects, .. } => objects.clone(),
+            _ => vec![],
+        };
+        for id in ordered {
+            if let Some(o) = self.objects.get_mut(&id) {
+                o.ai.cmd_from_ai = false;
+            }
+        }
         match c {
             Command::Spawn { template, position, owner } => {
                 self.spawn(&template, position, owner)?;
@@ -513,6 +539,9 @@ impl Simulation {
             }
             Command::Destroy { object } => {
                 self.remove(object)?;
+            }
+            Command::Guard { object, position } => {
+                self.begin_guard(object, position)?;
             }
             Command::Attack { object, target } => {
                 let pos = self.objects.get(&target).map_or([0.0; 3], |o| o.position);
@@ -793,6 +822,12 @@ impl Simulation {
         }
     }
     pub(crate) fn end_order(&mut self, id: u32, outcome: Outcome) {
+        self.end_order_inner(id, outcome);
+        // AIIdleState::onEnter.
+        self.idle_enter(id);
+        self.wake_ai(id);
+    }
+    fn end_order_inner(&mut self, id: u32, outcome: Outcome) {
         // AIIdleState::onEnter: the goal becomes where the unit stands.
         let (p, layer) = (self.objects[&id].position, self.objects[&id].layer);
         self.update_goal(id, [p[0], p[1]], layer);
@@ -801,6 +836,7 @@ impl Simulation {
             self.failed_orders += 1;
         }
         o.ai.finish(outcome, self.frame);
+        o.ai.cmd_from_ai = false;
         o.target = None;
         o.path.clear();
         o.speed = 0.0;
@@ -962,7 +998,15 @@ impl Simulation {
             return 1;
         }
         match o.ai.state {
-            AiState::Idle => return self.idle_locomotor(id),
+            AiState::Idle => {
+                let loco = self.idle_locomotor(id);
+                let idle = self.idle_update(id);
+                if !self.objects[&id].ai.active() {
+                    return loco.min(idle);
+                }
+                return 1;
+            }
+            AiState::Guard => return self.update_guard(id),
             AiState::Dead => return self.update_dead(id),
             AiState::AttackObject | AiState::AttackPosition => return self.update_attack(id),
             AiState::MoveTo | AiState::FollowPath => {
@@ -1868,7 +1912,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(21);
+        h.u32(22);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2078,8 +2122,34 @@ impl Simulation {
                     h.float(v);
                 }
             }
+            h.u32(u32::from(o.ai.cmd_from_ai));
+            let i = o.ai.idle;
+            for v in [u32::from(i.inited), i.sleep_offset, i.next_mood_check, u32::from(i.randomly_offset)] {
+                h.u32(v);
+            }
+            h.u32(u32::from(o.ai.guard.is_some()));
+            if let Some(g) = &o.ai.guard {
+                for v in g.position {
+                    h.float(v);
+                }
+                h.u32(g.nemesis);
+                h.u32(g.sub as u32);
+                h.u32(g.next_scan);
+            }
+            h.u32(o.health.as_ref().map_or(0, |b| u32::from(b.last_damage_cleared)));
             h.u32(u32::from(o.ai.attack.is_some()));
             if let Some(m) = &o.ai.attack {
+                h.u32(u32::from(m.follow));
+                if let Some(e) = m.exit {
+                    for v in e.center {
+                        h.float(v);
+                    }
+                    h.float(e.radius_sqr);
+                    h.u32(e.give_up_frame);
+                    for b in [e.if_expired, e.if_outside_radius, e.if_no_unit] {
+                        h.u32(u32::from(b));
+                    }
+                }
                 h.u32(m.victim.unwrap_or(0));
                 for v in m.position.into_iter().chain(m.prev_victim_pos) {
                     h.float(v);
@@ -2132,6 +2202,12 @@ fn hash_command(c: &Command, h: &mut StateHash) {
         Command::Destroy { object } => {
             h.u32(2);
             h.u32(*object);
+        }
+        Command::Guard { object, position } => {
+            h.u32(13);
+            h.u32(*object);
+            h.float(position[0]);
+            h.float(position[1]);
         }
         Command::Attack { object, target } => {
             h.u32(11);
@@ -2508,7 +2584,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x5d61b43b47c11dcf, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x83a9ed56e8160497, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2744,7 +2820,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x39eef15d88b28099, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x45f03e44a29c2b00, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2836,7 +2912,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x6ecd8cf53572cdbf, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x18c270831950fb5a, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

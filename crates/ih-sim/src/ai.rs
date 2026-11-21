@@ -17,6 +17,8 @@ pub enum AiState {
     AttackObject = 10,
     /// `AI_DEAD`.
     Dead = 13,
+    /// `AI_GUARD`.
+    Guard = 16,
     FaceObject = 33,
     FacePosition = 34,
 }
@@ -51,6 +53,12 @@ pub struct AiMachine {
     pub dead: bool,
     /// The attack state's sub-machine (`attack`).
     pub attack: Option<crate::attack::AttackMachine>,
+    /// `m_lastCommandSource == CMD_FROM_AI`.
+    pub cmd_from_ai: bool,
+    /// `AIIdleState` and the mood-check timer (`targeting`).
+    pub idle: crate::targeting::IdleState,
+    /// The guard machine (`guard`).
+    pub guard: Option<crate::guard::GuardMachine>,
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {
@@ -64,6 +72,7 @@ impl AiMachine {
         self.face_object = None;
         self.retries = if state == AiState::FollowPath { 10 } else { 0 };
         self.attack = None;
+        self.guard = None;
         self.state = state;
         self.entered_frame = frame;
         self.transitions += 1;

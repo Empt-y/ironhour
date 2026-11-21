@@ -1,0 +1,38 @@
+# Two Rangers guard a point on Tournament Desert; an enemy Ranger walks
+# towards them and is shot down, and the guards return to their post.
+map = "Tournament Desert"
+seed = 42
+frames = 1500
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1010.0, 920.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1400.0, 900.0]
+owner = 2
+
+[[commands]]
+frame = 1
+kind = "guard"
+object = 1
+position = [1100.0, 900.0]
+
+[[commands]]
+frame = 1
+kind = "guard"
+object = 2
+position = [1100.0, 930.0]
+
+[[commands]]
+frame = 120
+kind = "move"
+object = 3
+target = [1000.0, 900.0]

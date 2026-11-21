@@ -456,7 +456,7 @@ impl Simulation {
     }
 
     /// `getVictimAntiMask`.
-    fn victim_anti_mask(&self, victim: u32) -> u32 {
+    pub(crate) fn victim_anti_mask(&self, victim: u32) -> u32 {
         let o = &self.objects[&victim];
         let t = &self.templates.objects[&o.template];
         if t.has_kind("SMALL_MISSILE") {
@@ -561,7 +561,7 @@ impl Simulation {
     }
 
     /// `estimateWeaponDamage` (no containers yet).
-    fn estimate_weapon_damage(&self, id: u32, slot: usize, victim: u32) -> f32 {
+    pub(crate) fn estimate_weapon_damage(&self, id: u32, slot: usize, victim: u32) -> f32 {
         let o = &self.objects[&id];
         let Some(w) = &o.weapon_set.weapons[slot] else { return 0.0 };
         let Some(wt) = self.weapon_template(&w.template) else { return 0.0 };

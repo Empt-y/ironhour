@@ -303,6 +303,8 @@ pub struct Templates {
     pub weapons: BTreeMap<String, crate::weapons::WeaponTemplate>,
     /// `GameData`'s `PartitionCellSize` (the original's default is 0, used as 1).
     pub partition_cell_size: f32,
+    /// `AIData` targeting and guard values.
+    pub ai: crate::targeting::AiData,
 }
 
 /// `GameData`'s damage-state thresholds, with the original defaults.
@@ -375,6 +377,26 @@ impl Templates {
             out.effects.extend(defs.names(kind).map(|n| (kind.to_string(), n.clone())));
         }
         out.partition_cell_size = global(defs, "GameData", "PartitionCellSize").unwrap_or(0.0);
+        let a = crate::targeting::AiData::default();
+        let ms = |key: &str, d: u32| global(defs, "AIData", key).map_or(d, crate::death::duration);
+        let flag = |key: &str, d: bool| {
+            defs.all("AIData", "")
+                .iter()
+                .rev()
+                .find_map(|b| b.fields().filter(|f| f.name.eq_ignore_ascii_case(key)).last().map(|f| f.values()))
+                .and_then(|v| v.first().map(|s| s.eq_ignore_ascii_case("yes")))
+                .unwrap_or(d)
+        };
+        out.ai = crate::targeting::AiData {
+            force_idle_frames: ms("ForceIdleMSEC", a.force_idle_frames),
+            guard_inner_human: global(defs, "AIData", "GuardInnerModifierHuman").unwrap_or(a.guard_inner_human),
+            guard_outer_human: global(defs, "AIData", "GuardOuterModifierHuman").unwrap_or(a.guard_outer_human),
+            guard_chase_frames: ms("GuardChaseUnitsDuration", a.guard_chase_frames),
+            guard_scan: ms("GuardEnemyScanRate", a.guard_scan),
+            guard_return_scan: ms("GuardEnemyReturnScanRate", a.guard_return_scan),
+            attack_uses_los: flag("AttackUsesLineOfSight", a.attack_uses_los),
+            attack_ignore_insignificant: flag("AttackIgnoreInsignificantBuildings", a.attack_ignore_insignificant),
+        };
         for name in defs.names("Weapon") {
             let blocks: Vec<&ih_ini::Block> = defs.all("Weapon", name).iter().collect();
             out.weapons.insert(name.clone(), crate::weapons::WeaponTemplate::parse(name, &blocks));

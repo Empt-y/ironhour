@@ -41,10 +41,25 @@ pub struct AttackMachine {
     pub prev_victim_pos: [f32; 3],
     pub stop_if_in_range: bool,
     pub can_turn_in_place: bool,
+    /// `m_follow`: keep after a mobile victim once in range.
+    pub follow: bool,
+    /// `m_attackParameters` (the guard states' exit conditions).
+    pub exit: Option<ExitConditions>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Ret {
+/// `ExitConditions` (`AIGuard.cpp`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ExitConditions {
+    pub center: [f32; 3],
+    pub radius_sqr: f32,
+    pub give_up_frame: u32,
+    pub if_expired: bool,
+    pub if_outside_radius: bool,
+    pub if_no_unit: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ret {
     Continue,
     Success,
     Failure,
@@ -90,11 +105,27 @@ impl Simulation {
         o.path.clear();
         o.ai.attack = None;
         self.wake_ai(id);
-        let ret = self.attack_enter(id, victim, position);
+        let ret = self.attack_enter(id, victim, position, false, None);
         if ret != Ret::Continue {
             self.finish_attack(id, ret);
         }
         Ok(())
+    }
+
+    /// `ExitConditions::shouldExit` for the attack machine's victim.
+    fn should_exit(&self, m: &AttackMachine) -> bool {
+        let Some(e) = m.exit else { return false };
+        let Some(v) = m.victim.and_then(|v| self.objects.get(&v)) else { return e.if_no_unit };
+        if e.if_expired && self.frame >= e.give_up_frame {
+            return true;
+        }
+        if e.if_outside_radius {
+            let d = [v.position[0] - e.center[0], v.position[1] - e.center[1]];
+            if d[0] * d[0] + d[1] * d[1] > e.radius_sqr {
+                return true;
+            }
+        }
+        false
     }
 
     fn finish_attack(&mut self, id: u32, ret: Ret) {
@@ -102,7 +133,19 @@ impl Simulation {
         self.end_order(id, if ret == Ret::Success { Outcome::Success } else { Outcome::Failure });
     }
 
-    fn attack_enter(&mut self, id: u32, victim: Option<u32>, position: [f32; 3]) -> Ret {
+    /// `AIAttackState::onEnter`.
+    pub(crate) fn attack_enter(
+        &mut self,
+        id: u32,
+        victim: Option<u32>,
+        position: [f32; 3],
+        follow: bool,
+        exit: Option<ExitConditions>,
+    ) -> Ret {
+        let probe = AttackMachine { victim, exit, ..Default::default() };
+        if self.should_exit(&probe) {
+            return Ret::Success;
+        }
         let projectile = self.templates.objects[&self.objects[&id].template].has_kind("PROJECTILE");
         if self.out_of_ammo(id) && !projectile {
             return Ret::Failure;
@@ -121,18 +164,32 @@ impl Simulation {
         }
         let pos = victim.map_or(position, |v| self.objects[&v].position);
         self.objects.get_mut(&id).unwrap().ai.attack =
-            Some(AttackMachine { victim, position: pos, ..Default::default() }.with_default());
+            Some(AttackMachine { victim, position: pos, follow, exit, ..Default::default() }.with_default());
         self.enter_sub(id, Sub::Aim)
     }
 
-    /// `AIAttackState::update`.
+    /// The attack order (`AI_ATTACK_OBJECT`, `AI_ATTACK_POSITION`).
     pub(crate) fn update_attack(&mut self, id: u32) -> u32 {
-        let Some(m) = self.objects[&id].ai.attack.clone() else {
+        if self.objects[&id].ai.attack.is_none() {
             self.end_order(id, Outcome::Failure);
             return FOREVER;
-        };
+        }
+        let ret = self.attack_tick(id);
+        if ret != Ret::Continue {
+            self.finish_attack(id, ret);
+        }
+        1
+    }
+
+    /// `AIAttackState::update`.
+    pub(crate) fn attack_tick(&mut self, id: u32) -> Ret {
+        let Some(m) = self.objects[&id].ai.attack.clone() else { return Ret::Failure };
+        if self.should_exit(&m) {
+            return Ret::Success;
+        }
         let projectile = self.templates.objects[&self.objects[&id].template].has_kind("PROJECTILE");
-        let ret = if self.out_of_ammo(id) && !projectile {
+
+        if self.out_of_ammo(id) && !projectile {
             Ret::Failure
         } else if m.victim.is_some_and(|v| self.objects.get(&v).is_none_or(|o| o.dead)) {
             Ret::Success
@@ -144,11 +201,7 @@ impl Simulation {
                 Some(w) if w.max_shots > 0 => self.update_attack_machine(id),
                 _ => Ret::Failure,
             }
-        };
-        if ret != Ret::Continue {
-            self.finish_attack(id, ret);
         }
-        1
     }
 
     fn machine(&self, id: u32) -> AttackMachine {
@@ -334,6 +387,17 @@ impl Simulation {
         if m.victim.is_some() && self.in_range(id, &m) {
             return Ret::Success;
         }
+        // A human player's unit does not chase a target it picked itself
+        // (`isAllowedToChase` is off) unless its weapon is a contact weapon.
+        let o = &self.objects[&id];
+        let cur = o.weapon_set.current as usize;
+        let contact = o.weapon_set.weapons[cur]
+            .as_ref()
+            .and_then(|w| self.templates.weapons.get(&w.template))
+            .is_some_and(|w| w.is_contact());
+        if m.victim.is_some() && o.ai.cmd_from_ai && !contact {
+            return Ret::Failure;
+        }
         m.prev_victim_pos = [0.0; 3];
         m.approach_frame = self.frame.wrapping_sub(MIN_RECOMPUTE_TIME);
         self.set_machine(id, m);
@@ -379,7 +443,22 @@ impl Simulation {
         }
     }
 
+    /// `AIAttackApproachTargetState::update`: with `m_follow`, a mobile victim is
+    /// followed whatever the approach returns.
     fn approach_update(&mut self, id: u32) -> Ret {
+        let m = self.machine(id);
+        let ret = self.approach_update_internal(id);
+        if m.follow
+            && let Some(v) = m.victim.and_then(|v| self.objects.get(&v))
+            && !self.templates.objects[&v.template].has_kind("IMMOBILE")
+            && !self.templates.objects[&self.objects[&id].template].has_kind("IMMOBILE")
+        {
+            return Ret::Continue;
+        }
+        ret
+    }
+
+    fn approach_update_internal(&mut self, id: u32) -> Ret {
         let m = self.machine(id);
         if m.victim.is_some_and(|v| !self.objects.contains_key(&v)) {
             return Ret::Failure;
