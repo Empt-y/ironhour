@@ -148,7 +148,7 @@ impl Simulation {
         t.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_some_and(|l| l.surface_movement())
             && !o.disabled.has(crate::disabled::DisabledReason::Held)
     }
-    fn footprint(&self, id: u32) -> (i32, bool) {
+    pub(crate) fn footprint(&self, id: u32) -> (i32, bool) {
         radius_and_center(self.templates.objects[&self.objects[&id].template].collision_radius())
     }
     fn cell_exists(&self, layer: u32, x: i32, y: i32) -> bool {

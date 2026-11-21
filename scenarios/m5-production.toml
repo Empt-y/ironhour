@@ -1,0 +1,64 @@
+# Production on Tournament Desert: a Barracks (1), War Factory (2) and Power
+# Plant (3) for owner 1 with 10,000 to spend. Three Rangers and two Crusaders
+# are queued; the War Factory's units go to a rally point.
+map = "Tournament Desert"
+seed = 7
+frames = 1800
+require_idle_at_end = true
+
+[[spawn]]
+template = "AmericaBarracks"
+position = [900.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaWarFactory"
+position = [900.0, 1150.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaPowerPlant"
+position = [1100.0, 900.0]
+owner = 1
+
+[[commands]]
+frame = 0
+kind = "deposit"
+player = 1
+amount = 10000
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 1
+template = "AmericaInfantryRanger"
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 1
+template = "AmericaInfantryRanger"
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 1
+template = "AmericaInfantryRanger"
+
+[[commands]]
+frame = 1
+kind = "set_rally_point"
+object = 2
+position = [1150.0, 1150.0]
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 2
+template = "AmericaTankCrusader"
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 2
+template = "AmericaTankCrusader"

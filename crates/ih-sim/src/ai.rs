@@ -59,6 +59,8 @@ pub struct AiMachine {
     pub idle: crate::targeting::IdleState,
     /// The guard machine (`guard`).
     pub guard: Option<crate::guard::GuardMachine>,
+    /// `m_ignoreObstacleID`: the factory a produced unit is leaving.
+    pub ignore_obstacle: Option<u32>,
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {
@@ -73,6 +75,7 @@ impl AiMachine {
         self.retries = if state == AiState::FollowPath { 10 } else { 0 };
         self.attack = None;
         self.guard = None;
+        self.ignore_obstacle = None;
         self.state = state;
         self.entered_frame = frame;
         self.transitions += 1;

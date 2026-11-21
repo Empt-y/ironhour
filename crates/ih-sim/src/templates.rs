@@ -20,6 +20,14 @@ pub struct Template {
     pub armor_sets: Vec<crate::body::ArmorSetDef>,
     /// `WeaponSet` blocks (`weapons`).
     pub weapon_sets: Vec<crate::weapons::WeaponSetDef>,
+    /// `Prerequisites` (`m_prereqInfo`), in order.
+    pub prerequisites: Vec<Prerequisite>,
+}
+/// One `ProductionPrerequisite`: an `Object` line (any one of its objects) or a `Science`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Prerequisite {
+    Objects(Vec<String>),
+    Science(String),
 }
 impl Template {
     pub fn values(&self, key: &str) -> &[String] {
@@ -305,6 +313,12 @@ pub struct Templates {
     pub partition_cell_size: f32,
     /// `AIData` targeting and guard values.
     pub ai: crate::targeting::AiData,
+    /// `GameData` production values.
+    pub production: crate::production::ProductionSettings,
+    /// `CommandSet` buttons by set name, in slot order.
+    pub command_sets: BTreeMap<String, Vec<String>>,
+    /// `CommandButton` (command, object) by name.
+    pub command_buttons: BTreeMap<String, (String, String)>,
 }
 
 /// `GameData`'s damage-state thresholds, with the original defaults.
@@ -397,6 +411,37 @@ impl Templates {
             attack_uses_los: flag("AttackUsesLineOfSight", a.attack_uses_los),
             attack_ignore_insignificant: flag("AttackIgnoreInsignificantBuildings", a.attack_ignore_insignificant),
         };
+        out.production = crate::production::ProductionSettings {
+            min_low_energy_speed: global(defs, "GameData", "MinLowEnergyProductionSpeed").unwrap_or(0.0),
+            max_low_energy_speed: global(defs, "GameData", "MaxLowEnergyProductionSpeed").unwrap_or(0.0),
+            low_energy_penalty: global(defs, "GameData", "LowEnergyPenaltyModifier").unwrap_or(0.0),
+            multiple_factory: global(defs, "GameData", "MultipleFactory").unwrap_or(0.0),
+        };
+        for name in defs.names("CommandSet") {
+            // Slots 1..=MAX_COMMANDS_PER_SET; later definitions replace slots.
+            let mut slots = BTreeMap::new();
+            for b in defs.all("CommandSet", name) {
+                for f in b.fields() {
+                    if let (Ok(i), Some(v)) = (f.name.parse::<u32>(), f.values().first()) {
+                        slots.insert(i, v.clone());
+                    }
+                }
+            }
+            out.command_sets.insert(name.clone(), slots.into_values().collect());
+        }
+        for name in defs.names("CommandButton") {
+            let (mut command, mut object) = (String::new(), String::new());
+            for b in defs.all("CommandButton", name) {
+                for f in b.fields() {
+                    match f.name.as_str() {
+                        "Command" => command = f.values().first().cloned().unwrap_or_default(),
+                        "Object" => object = f.values().first().cloned().unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            }
+            out.command_buttons.insert(name.clone(), (command, object));
+        }
         for name in defs.names("Weapon") {
             let blocks: Vec<&ih_ini::Block> = defs.all("Weapon", name).iter().collect();
             out.weapons.insert(name.clone(), crate::weapons::WeaponTemplate::parse(name, &blocks));
@@ -662,6 +707,20 @@ fn apply(t: &mut Template, items: &[Item], copied: &mut (bool, bool), warnings: 
                         t.weapon_sets.clear();
                     }
                     t.weapon_sets.push(crate::weapons::WeaponSetDef::parse(b));
+                }
+                "Prerequisites" => {
+                    t.prerequisites.clear();
+                    for f in b.fields() {
+                        match f.name.as_str() {
+                            "Object" => t.prerequisites.push(Prerequisite::Objects(f.values())),
+                            "Science" => {
+                                if let Some(v) = f.values().first() {
+                                    t.prerequisites.push(Prerequisite::Science(v.clone()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 "ReplaceModule" => {
                     let old = b.args().first().cloned().unwrap_or_default();

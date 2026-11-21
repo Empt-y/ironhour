@@ -1154,3 +1154,70 @@ missiles pitched along their flight. `m5-skirmish` sets up a small battle to
 command: try it with
 `cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m5-skirmish.toml`.
 Map objects destroyed in the logic are still drawn by the static scene.
+
+### Money, power and unit production (state hash v23)
+
+From `Money.cpp`, `Energy.cpp`, `ProductionPrerequisite.cpp`,
+`ThingTemplate::calcCostToBuild`/`calcTimeToBuild`/`getBuildFacilityTemplate`,
+`BuildAssistant::canMakeUnit`/`isPossibleToMakeUnit`, `Player::canBuild`/
+`canBuildMoreOfType`, `ProductionUpdate.cpp` and the default, queue and
+supply-centre production exits: `crates/ih-sim/src/production.rs`.
+
+- Players have money (`deposit` command; withdrawals never go below zero) and
+  sciences (`grant_science`). Power is the sum of owned objects'
+  `EnergyProduction`: positive values produce, negative ones consume.
+- `produce` command (factory, unit): the unit needs a build button in the
+  factory's `CommandSet`, its `Buildable` status, every `Prerequisites` line
+  (any one object of an `Object` line, each `Science`), room under
+  `MaxSimultaneousOfType` (queued units count) and a free queue slot
+  (`MaxQueueEntries`, 9). The cost is withdrawn when queued.
+  `cancel_production` refunds it in full.
+- Build time is `BuildTime` in frames, slowed by low power
+  (`LowEnergyPenaltyModifier`, `Min`/`MaxLowEnergyProductionSpeed`; no power at
+  all counts as a supply ratio of 0) and sped up by `MultipleFactory` for each
+  extra factory of the unit's first prerequisite. It is recomputed every frame,
+  as in the original.
+- `QuantityModifier` builds several units per entry. Factories with
+  `NumDoorAnimations` open the door (`DoorOpeningTime`) before the unit leaves
+  and keep it waiting open while units follow.
+- Exits: the unit appears at `UnitCreatePoint`, faces the factory's way and
+  follows an exit path (as the AI's own order) to `NaturalRallyPoint`, then to
+  the rally point (`set_rally_point`) if one is set. It ignores collisions with
+  its factory while leaving. Queue exits (War Factory) wait `ExitDelay` between
+  units after the `InitialBurst`.
+- `m5-production` (stock): a Barracks makes three Rangers and a War Factory two
+  Crusaders that drive to a rally point.
+- Not yet: upgrades in the queue, handicaps and faction cost/time changes,
+  dozer construction and structures under construction, spawn-point exits
+  (bones), parking places (airfields), the airborne-creation push, power
+  bonuses and disabled power plants, sold factories, max-simultaneous link
+  keys, script-disabled factories, computer players (`ONLY_BY_AI` units are
+  refused), the exit path's path-through-units flag and its own state ID (it
+  uses the follow-path state), supply gathering, sciences from player
+  templates.
+
+All scenarios pass with v23 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `fdc79f7b9c1042f0` | `95a7b54cf948cfa5` |
+| AI/status orders | `4c017667743f7032` | `3eeba263bed102f2` |
+| Bridges | `088adca66c474509` | `e3cc1d0f19136396` |
+| Traffic, Tournament Desert | `da7a38a29b26df8c` | `2185195b0c48d485` |
+| Traffic, Winding River | `272ca6b786b2f2c1` | `f5fb263d6afe6193` |
+| Long map travel | `7e18d2bba63867c1` | `3356193203ec647a` |
+| Crush enemy / crush ally | `bae37b906dff2fd0` / `35f544b0cd855ea7` | |
+| Comanche out and back | `8578cd5c5ebf036c` | `0926024f055d6391` |
+| Group move (`m4-group`) | `24bf3d4ddf4ca127` | |
+| Fight (`m5-fight`) | `2dd640aed16fa1d7` | |
+| Missiles (`m5-missiles`) | `24604e8be0711ef7` | |
+| Guard (`m5-guard`) | `58b0731ca1c75c98` | |
+| Skirmish (`m5-skirmish`) | `3be775044bd9bdc7` | |
+| Production (`m5-production`) | `ac3bb3767d236ded` | |
+
+Asset-free fixtures: `9131a353573eafc4` (ground), `424d3a3306db6ff1` (bridge),
+`bc2ec9dcb92ea481` (head-on traffic), `7dc29ebf6aca1043` (AI/status orders).
+`tests/production.rs` covers cost, build time and the exit to the natural rally
+point; the power and multiple-factory time changes; prerequisites, money, the
+nine-entry queue and refunds; a queue exit's delay between a batch's two units
+and the rally point; the door delay; and matching hashes in two runs.

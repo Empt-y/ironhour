@@ -15,6 +15,7 @@ pub mod missiles;
 pub mod navigation;
 pub mod partition;
 pub mod pathfind;
+pub mod production;
 pub mod projectiles;
 pub mod rng;
 pub mod scenario;
