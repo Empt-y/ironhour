@@ -1352,3 +1352,86 @@ Asset-free fixtures: `5ba417034bdeee4c` (ground), `3717a0b7a6465625` (bridge),
 units (and not another player's), a weapon set upgrade, an object upgrade on
 one building with a cancelled one refunded, a cost modifier ending with its
 building, and matching hashes in two runs.
+
+### Construction and workers (state hash v26)
+
+From `BuildAssistant.cpp` (`buildObjectNow`, `isLocationLegalToBuild`,
+`isLocationClearOfObjects`, `iterateFootprint`, `checkSampleBuildLocation`,
+`clearRemovableForConstruction`, `moveObjectsForConstruction`),
+`DozerAIUpdate.cpp` (`construct`, `newTask`, the task bookkeeping,
+`findGoodBuildOrRepairPosition`, `DozerPrimaryStateMachine`, the build half of
+`DozerActionStateMachine`, `aiDoCommand`, `privateResumeConstruction`),
+`WorkerAIUpdate.cpp` (`WorkerStateMachine`, `construct`, `newTask`,
+`exitingSupplyTruckState`), `Player::onStructureConstructionComplete`, and
+`Pathfinder::addObjectToPathfindMap`/`removeObjectFromPathfindMap` and
+`getIgnoredObstacleID`: `crates/ih-sim/src/construction.rs`.
+
+- `construct` command (dozer, building, position, angle): the dozer needs a
+  construct button for it and the usual prerequisites and money. Shrubs and
+  `CLEARED_BY_BUILD` objects on the site are removed; your and neutral units
+  standing there are sent away (a random spot 0.5 to 1.5 times 1.4 site radii
+  out); anything else in the way, enemies, immobile objects or disabled ones,
+  refuses the build. The site must be on the map, on the ground layer, free of
+  water, cliffs and impassable cells (sampled every three cells, then every
+  cell), within `AllowedHeightVariationForBuilding`, clear of other buildings
+  and their `FactoryExitWidth` lanes and `FactoryExtraBibWidth`, and reachable
+  by the dozer.
+- The cost is paid when the site is placed. The site starts at 1 health and
+  blocks pathing at once. The dozer drives to a spot beside it and adds
+  100 / `BuildTime` frames percent each frame (slowed by low power), with the
+  health to match. When it finishes, power and upgrades count, and the dozer
+  backs off five cells. Player orders stop the job; `resume_construction`
+  (dozer, site) picks it up at the same percent.
+- Buildings under construction produce and use no power, count for no
+  prerequisites, cannot fire, cannot take or give supplies, and run no upgrade
+  modules.
+- GLA Workers switch between the dozer and supply truck brains as the original
+  does. A worker from a supply centre gathers on its own, a construct order
+  takes it off supply duty, and a `dock` order puts it back. As in the
+  original, the worker states' exit hooks never run (their signature does not
+  override `State::onExit`). Workers finish where they built.
+- Every structure created during the game (spawned, built or produced) now
+  joins the pathfinder, and objects that are removed leave it. Units leaving a
+  factory ignore its cells (`ignoreObstacle`) until their next order. Goals are
+  not tested for reachability from a unit standing on a structure's cells.
+- `m5-construction` (stock): a USA dozer builds a Power Plant and a Barracks; a
+  GLA Supply Stash trains a Worker that gathers, and another Worker builds a
+  GLA Barracks. `sim-run` reports buildings under construction and their
+  builders.
+- Not yet: repair and fortify, bored dozers (repairs and mine clearing),
+  bridges, walls (line builds), rebuilding, selling, flattening terrain under
+  new buildings, `RestrictConstruction` terrain tiles, shroud,
+  `SupplyBuildBorder`, stealthed objects in the way, computer players'
+  placement rules. Cells a removed structure pinched shut stay impassable. The
+  supply test's warehouse is no longer a structure, so it keeps its cells open
+  for trucks without dock bones.
+
+All scenarios pass with v26 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `8cca96590b8fa2ba` | `a1edeebe77d8385c` |
+| AI/status orders | `dae0859e3682fa6c` | `a4b6d1d021de14d3` |
+| Bridges | `ca3c1adf77fb5b71` | `3794f71baba382ed` |
+| Traffic, Tournament Desert | `3fb9c0202030844d` | `9f726e4706a415a9` |
+| Traffic, Winding River | `a468dc9cbd3f8f7d` | `1f8a08cab7e43f5b` |
+| Long map travel | `f837be84dab74275` | `b5ccd5afcc399abf` |
+| Crush enemy / crush ally | `059b0e84ad03514f` / `633f23aa039e0445` | |
+| Comanche out and back | `8f87cb1c75e6d65f` | `32ed0051597b4d3b` |
+| Group move (`m4-group`) | `dffdbeaabfbd472c` | |
+| Fight (`m5-fight`) | `64488ed7802bf60d` | |
+| Missiles (`m5-missiles`) | `1cf2fd454ab46891` | |
+| Guard (`m5-guard`) | `f517a8bcef4e7dc5` | |
+| Skirmish (`m5-skirmish`) | `1d493dcc60d79ac2` | |
+| Production (`m5-production`) | `e02877d1c59248a3` | |
+| Supply (`m5-supply`) | `200ef2903a7748c7` | |
+| Upgrades (`m5-upgrades`) | `bcdda671a0a079a6` | |
+| Construction (`m5-construction`) | `d3be0767b626771e` | |
+
+Asset-free fixtures: `1eebff4f0e84cd21` (ground), `acbb55dd3bd50234` (bridge),
+`f5abc456948df1ec` (head-on traffic), `dd1e2546fd0f884e` (AI/status orders).
+`tests/construction.rs` covers a dozer building a barracks (cost, 1 health,
+blocked cells, build time, full health, backing off), sites refused for
+overlap, the map edge and money, power counting only once built, stopping and
+resuming construction, a worker that gathers, builds and gathers again, and
+matching hashes in two runs.

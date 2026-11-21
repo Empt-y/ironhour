@@ -1,0 +1,61 @@
+# Construction on Tournament Desert. USA (owner 1): a dozer (1) builds a Power
+# Plant, then a Barracks. GLA (owner 2): a Supply Stash (2) next to the
+# north-west supply dock trains a Worker, which gathers, and a second Worker
+# (3) builds a GLA Barracks.
+map = "Tournament Desert"
+seed = 17
+frames = 5400
+
+[[spawn]]
+template = "AmericaVehicleDozer"
+position = [1000.0, 1000.0]
+owner = 1
+
+[[spawn]]
+template = "GLASupplyStash"
+position = [760.0, 300.0]
+owner = 2
+
+[[spawn]]
+template = "GLAInfantryWorker"
+position = [900.0, 400.0]
+owner = 2
+
+[[commands]]
+frame = 0
+kind = "deposit"
+player = 1
+amount = 3000
+
+[[commands]]
+frame = 0
+kind = "deposit"
+player = 2
+amount = 3000
+
+[[commands]]
+frame = 1
+kind = "construct"
+dozer = 1
+template = "AmericaPowerPlant"
+position = [1150.0, 1000.0]
+
+[[commands]]
+frame = 1
+kind = "produce"
+factory = 2
+template = "GLAInfantryWorker"
+
+[[commands]]
+frame = 1
+kind = "construct"
+dozer = 3
+template = "GLABarracks"
+position = [950.0, 500.0]
+
+[[commands]]
+frame = 1500
+kind = "construct"
+dozer = 1
+template = "AmericaBarracks"
+position = [850.0, 950.0]

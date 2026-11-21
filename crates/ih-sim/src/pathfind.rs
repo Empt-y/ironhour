@@ -117,6 +117,9 @@ pub struct Mover {
     pub downhill: bool,
     /// `isAircraftThatAdjustsDestination`.
     pub aircraft_goals: bool,
+    /// `getIgnoredObstacleID` as an obstacle key (0 for none): that structure's
+    /// cells count as clear.
+    pub ignore_obstacle: u32,
 }
 
 /// `checkForMovement`'s `TCheckMovementInfo` results.
@@ -291,8 +294,24 @@ pub struct Pathfinder<'a> {
 }
 
 impl Pathfinder<'_> {
+    /// `isObstaclePresent(m_ignoreObstacleID)`.
+    fn ignored(&self, c: &Cell) -> bool {
+        self.mover.ignore_obstacle != 0
+            && c.layer == 0
+            && c.node.is_some_and(|i| {
+                self.terrain.obstacles.kind[i] == CellType::Obstacle
+                    && self.terrain.obstacles.owner[i] == self.mover.ignore_obstacle
+            })
+    }
     fn cell(&self, layer: u32, x: i32, y: i32) -> Option<Cell> {
-        self.terrain.cell_at(layer, x, y)
+        let mut c = self.terrain.cell_at(layer, x, y)?;
+        if self.mover.ignore_obstacle != 0
+            && c.kind == CellType::Obstacle
+            && c.node.is_some_and(|i| layer == 0 && self.terrain.obstacles.owner[i] == self.mover.ignore_obstacle)
+        {
+            c.kind = CellType::Clear;
+        }
+        Some(c)
     }
     /// `getClippedCell`.
     fn clipped_cell(&self, layer: u32, p: [f32; 2]) -> Option<Cell> {
@@ -301,6 +320,11 @@ impl Pathfinder<'_> {
     }
     /// `validMovementPosition(isCrusher, surfaces, toCell)`.
     pub fn valid(&self, c: &Cell) -> bool {
+        // "check if the destination cell is classified as an obstacle, and we
+        // happen to be ignoring it"
+        if self.ignored(c) {
+            return true;
+        }
         if self.mover.crusher && c.fence && c.kind == CellType::Obstacle {
             return true;
         }
@@ -692,7 +716,12 @@ impl Pathfinder<'_> {
         let connected = start.node.zip(goal.node).is_some_and(|(a, b)| s.zones.connected(a, b));
         // Into or out of a structure the original compares terrain zones, which
         // ignore structures; ironhour's zones do not, so that test is skipped.
-        if !(goal.kind == CellType::Obstacle || s.tunneling) && !connected {
+        // That includes leaving or entering the ignored obstacle, whose cells
+        // `cell` reports as clear.
+        let raw_obstacle =
+            |c: &Cell| self.terrain.cell_at(c.layer, c.x, c.y).is_some_and(|r| r.kind == CellType::Obstacle);
+        let ignored = self.mover.ignore_obstacle != 0 && (raw_obstacle(&start) || raw_obstacle(&goal));
+        if !(goal.kind == CellType::Obstacle || s.tunneling || ignored) && !connected {
             return None;
         }
         if !self.valid(&goal) {

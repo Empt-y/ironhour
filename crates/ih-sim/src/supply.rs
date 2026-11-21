@@ -134,7 +134,7 @@ pub struct Truck {
 }
 impl Truck {
     pub fn from_module(class: &str, b: &ih_ini::Block) -> Option<Self> {
-        if !matches!(class, "SupplyTruckAIUpdate" | "ChinookAIUpdate") {
+        if !matches!(class, "SupplyTruckAIUpdate" | "ChinookAIUpdate" | "WorkerAIUpdate") {
             return None;
         }
         let mut t = Self {
@@ -293,7 +293,7 @@ impl Simulation {
             }
         }
         let ignore = self.airborne(docker).then_some(dock);
-        self.find_position_around(p, 0.0, 100.0, ignore, Some(docker)).unwrap_or(p)
+        self.find_position_around(p, 0.0, 100.0, ignore, Some(docker), 1e10).unwrap_or(p)
     }
 
     /// `PartitionManager::findPositionAround` with a random start angle.
@@ -304,6 +304,7 @@ impl Simulation {
         max: f32,
         ignore: Option<u32>,
         path_for: Option<u32>,
+        max_z: f32,
     ) -> Option<[f32; 3]> {
         let (w, h) = (self.map.width as f32 * CELL, self.map.height as f32 * CELL);
         if center[0] < 0.0 || center[1] < 0.0 || center[0] >= w || center[1] >= h {
@@ -315,11 +316,12 @@ impl Simulation {
             let spacing = if dist == min { ih_math::TAU } else { (5.0 / (dist + 1.0)) * (ih_math::TAU / 6.0) };
             let samples = ((ih_math::TAU / spacing) / 2.0).ceil() as i32;
             for i in 0..samples {
-                if let Some(p) = self.try_position(center, dist, start + spacing * i as f32, ignore, path_for) {
+                if let Some(p) = self.try_position(center, dist, start + spacing * i as f32, ignore, path_for, max_z) {
                     return Some(p);
                 }
                 if i != 0
-                    && let Some(p) = self.try_position(center, dist, start - spacing * i as f32, ignore, path_for)
+                    && let Some(p) =
+                        self.try_position(center, dist, start - spacing * i as f32, ignore, path_for, max_z)
                 {
                     return Some(p);
                 }
@@ -337,11 +339,15 @@ impl Simulation {
         angle: f32,
         ignore: Option<u32>,
         path_for: Option<u32>,
+        max_z: f32,
     ) -> Option<[f32; 3]> {
         use crate::footprint::CellType;
         let x = dist * ih_math::cos(angle) + center[0];
         let y = dist * ih_math::sin(angle) + center[1];
         let z = self.map.ground_height(x, y);
+        if (z - center[2]).abs() > max_z {
+            return None;
+        }
         let (cx, cy) = ((x / CELL).floor() as i32, (y / CELL).floor() as i32);
         let kind = self.grid.ground_kind(cx, cy)?;
         // Cliffs, impassable cells and water (`isUnderwater`) are refused.
@@ -551,7 +557,7 @@ impl Simulation {
     fn can_transfer(&self, truck: u32, dest: u32) -> bool {
         let Some(o) = self.objects.get(&dest) else { return false };
         let Some(d) = o.dock.as_ref() else { return false };
-        if o.dead {
+        if o.dead || self.under_construction(dest) || self.under_construction(truck) {
             return false;
         }
         let Some(t) = self.objects[&truck].truck.as_ref() else { return false };
@@ -985,7 +991,10 @@ impl Simulation {
         match state {
             TruckState::Busy => t.force_busy = false,
             TruckState::Wanting | TruckState::Docking => t.force_wanting = false,
-            TruckState::Idle => {}
+            TruckState::Idle => {
+                // SupplyTruckIdleState::onEnter: a worker goes back to being a dozer.
+                self.exiting_supply_truck_state(id);
+            }
             TruckState::Regrouping => return self.regroup_enter(id),
         }
         Ret::Continue
@@ -1039,7 +1048,7 @@ impl Simulation {
             return Ret::Continue;
         }
         let at = self.objects[&dest].position;
-        let Some(to) = self.find_position_around(at, 0.0, 100.0, None, None) else { return Ret::Failure };
+        let Some(to) = self.find_position_around(at, 0.0, 100.0, None, None, 1e10) else { return Ret::Failure };
         if self.begin_move(id, [to[0], to[1]], AiState::MoveTo, Default::default()).is_ok() {
             self.objects.get_mut(&id).unwrap().ai.cmd_from_ai = true;
         }

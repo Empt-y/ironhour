@@ -238,13 +238,18 @@ impl Simulation {
 
     /// `countObjectsByThingTemplate` (dead objects count; nothing is under construction yet).
     fn count_owned(&self, player: u32, template: &str) -> usize {
-        self.objects.values().filter(|o| o.owner == player && o.template == template).count()
+        let building = crate::construction::under_construction_bit();
+        self.objects
+            .values()
+            .filter(|o| o.owner == player && o.template == template && o.status & building == 0)
+            .count()
     }
 
     /// `Energy`: production and consumption from each owned object's `EnergyProduction`.
     pub fn energy(&self, player: u32) -> (i32, i32) {
         let (mut production, mut consumption) = (0, 0);
-        for o in self.objects.values().filter(|o| o.owner == player && o.status & crate::body::status::DESTROYED == 0) {
+        let skip = crate::body::status::DESTROYED | crate::construction::under_construction_bit();
+        for o in self.objects.values().filter(|o| o.owner == player && o.status & skip == 0) {
             let e = self.templates.objects[&o.template].number("EnergyProduction", 0.0) as i32;
             if e < 0 {
                 consumption -= e;
@@ -576,11 +581,10 @@ impl Simulation {
         }
         if self.has_ai(new) {
             // aiFollowExitProductionPath(path, factory, CMD_FROM_AI)
-            match self.begin_move(new, first, AiState::FollowPath, rest) {
+            match self.begin_move_ignoring(new, first, AiState::FollowPath, rest, Some(factory)) {
                 Ok(()) => {
                     let o = self.objects.get_mut(&new).unwrap();
                     o.ai.cmd_from_ai = true;
-                    o.ai.ignore_obstacle = Some(factory);
                     if e.kind == ExitKind::SupplyCenter
                         && let Some(t) = o.truck.as_mut()
                     {

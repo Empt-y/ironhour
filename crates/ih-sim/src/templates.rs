@@ -323,11 +323,20 @@ pub struct Templates {
     pub upgrades: BTreeMap<String, crate::upgrades::UpgradeTemplate>,
     /// `CommandButton`s' `Upgrade` by button name.
     pub command_button_upgrades: BTreeMap<String, String>,
+    /// `GameData` building placement values.
+    pub build: BuildSettings,
     /// `GameData`'s `BaseValuePerSupplyBox` (100).
     pub supply_box_value: u32,
     /// Dock bones of templates with supply docks, from their default models
     /// (loaded with assets by `for_map`).
     pub dock_bones: BTreeMap<String, crate::supply::DockBones>,
+}
+
+/// `GameData`'s `AllowedHeightVariationForBuilding` and `MinDistFromEdgeOfMapForBuild` (both 0).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BuildSettings {
+    pub height_variation: f32,
+    pub min_edge_distance: f32,
 }
 
 /// `GameData`'s damage-state thresholds, with the original defaults.
@@ -426,6 +435,10 @@ impl Templates {
             max_low_energy_speed: global(defs, "GameData", "MaxLowEnergyProductionSpeed").unwrap_or(0.0),
             low_energy_penalty: global(defs, "GameData", "LowEnergyPenaltyModifier").unwrap_or(0.0),
             multiple_factory: global(defs, "GameData", "MultipleFactory").unwrap_or(0.0),
+        };
+        out.build = BuildSettings {
+            height_variation: global(defs, "GameData", "AllowedHeightVariationForBuilding").unwrap_or(0.0),
+            min_edge_distance: global(defs, "GameData", "MinDistFromEdgeOfMapForBuild").unwrap_or(0.0),
         };
         out.supply_box_value = global(defs, "GameData", "BaseValuePerSupplyBox").map_or(100, |v| v as u32);
         for name in defs.names("CommandSet") {

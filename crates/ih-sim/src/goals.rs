@@ -354,7 +354,19 @@ impl Simulation {
         let adjusted = coord_of_cell(x, y, center);
         let o = &self.objects[&id];
         let t = &self.templates.objects[&o.template];
-        if !t.has_kind("AIRCRAFT") {
+        // A unit standing on a structure's cells (leaving its factory, or stopped
+        // at a rally point on the footprint's edge) is in that structure's zone,
+        // so reachability is not measured from there.
+        let inside_ignored = {
+            let (cx, cy) = ((o.position[0] / CELL).floor() as i32, (o.position[1] / CELL).floor() as i32);
+            let w = self.grid.width;
+            cx >= 0
+                && cy >= 0
+                && cx < w
+                && cy < self.grid.height
+                && self.grid.obstacles.kind[(cy * w + cx) as usize] == CellType::Obstacle
+        };
+        if !t.has_kind("AIRCRAFT") && !inside_ignored {
             let terrain = self.terrain(id);
             // The pathfinder's zones ignore unit size.
             let radius = 0.0;

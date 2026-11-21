@@ -102,7 +102,8 @@ impl Simulation {
     /// `Object::isAbleToAttack` (no containers, turrets or construction yet).
     pub fn able_to_attack(&self, id: u32) -> bool {
         let o = &self.objects[&id];
-        if o.dead || o.disabled.has(crate::disabled::DisabledReason::Subdued) {
+        // Nothing under construction can fire.
+        if o.dead || o.disabled.has(crate::disabled::DisabledReason::Subdued) || self.under_construction(id) {
             return false;
         }
         let t = &self.templates.objects[&o.template];

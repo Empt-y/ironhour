@@ -1,6 +1,8 @@
 //! Supply gathering (`SupplyWarehouseDockUpdate`, `SupplyCenterDockUpdate`,
 //! `AIDockMachine`, `SupplyTruckAIUpdate`). No models here, so the docks have
-//! no bones and trucks dock where they stand next to the building.
+//! no bones and trucks dock where they stand next to the building. The
+//! warehouse is not a structure, so it leaves the pathfinder's cells open and
+//! trucks can stop close enough to it without dock bones.
 use ih_formats::map::Map;
 use ih_ini::definitions::Definitions;
 use ih_sim::{Command, Simulation, supply::TruckState, templates::Templates};
@@ -13,7 +15,7 @@ Object Center\nKindOf = STRUCTURE IMMOBILE CASH_GENERATOR\nCommandSet = CenterSe
 Behavior = SupplyCenterDockUpdate Dock\nNumberApproachPositions = -1\nEnd\n\
 Behavior = ProductionUpdate PU\nEnd\n\
 Behavior = SupplyCenterProductionExitUpdate Exit\nUnitCreatePoint = X:30.0 Y:0.0 Z:0.0\nNaturalRallyPoint = X:60.0 Y:0.0 Z:0.0\nEnd\nEnd\n\
-Object Warehouse\nKindOf = STRUCTURE IMMOBILE\nGeometryMajorRadius = 20\n\
+Object Warehouse\nKindOf = IMMOBILE\nGeometryMajorRadius = 20\n\
 Behavior = SupplyWarehouseDockUpdate Dock\nNumberApproachPositions = -1\nStartingBoxes = 3\nDeleteWhenEmpty = Yes\nEnd\nEnd\n\
 Object Truck\nKindOf = VEHICLE HARVESTER\nBuildCost = 600\nBuildTime = 1.0\nLocomotor = SET_NORMAL L\nGeometryMajorRadius = 5\n\
 Behavior = SupplyTruckAIUpdate AI\nMaxBoxes = 2\nSupplyCenterActionDelay = 500\nSupplyWarehouseActionDelay = 500\nSupplyWarehouseScanDistance = 500\nEnd\n\

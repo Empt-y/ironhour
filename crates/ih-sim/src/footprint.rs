@@ -249,6 +249,23 @@ impl Obstacles {
     }
 
     /// `Terrain::ground` is the view for `GROUND` locomotors.
+    /// Clears a footprint's cells (`removeObjectFromPathfindMap`); false if it had none.
+    /// Cells it pinched shut stay impassable.
+    pub fn remove(&mut self, grid: &mut Grid, key: u32) -> bool {
+        let mut any = false;
+        for i in 0..self.kind.len() {
+            if self.owner[i] == key && self.kind[i] == CellType::Obstacle {
+                self.kind[i] = CellType::Clear;
+                self.owner[i] = 0;
+                self.fence[i] = false;
+                any = true;
+            }
+        }
+        if any {
+            self.write_back(grid);
+        }
+        any
+    }
     fn write_back(&self, grid: &mut Grid) {
         for (b, k) in grid.blocked.iter_mut().zip(&self.kind) {
             *b = !k.allows(surface::GROUND);

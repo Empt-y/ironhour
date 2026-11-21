@@ -151,6 +151,12 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     println!("crushed (frame, victim, crusher): {:?}; move-asides: {}", a.crushed, a.move_asides);
     let money: Vec<(u32, u32)> = a.players.iter().map(|(id, p)| (*id, p.money)).collect();
     println!("money (player, amount): {money:?}");
+    for o in a.objects.values().filter(|o| o.builder.is_some()) {
+        match o.construction {
+            Some(p) => println!("  {} {} under construction, {p:.1}% (builder {:?})", o.id, o.template, o.builder),
+            None => println!("  {} {} built by {:?}", o.id, o.template, o.builder),
+        }
+    }
     for (id, p) in &a.players {
         if !p.upgrades.completed.is_empty() || !p.upgrades.in_progress.is_empty() {
             println!(

@@ -124,6 +124,19 @@ pub enum Command {
         object: u32,
         target: u32,
     },
+    /// `BuildAssistant::buildObjectNow` (`MSG_DOZER_CONSTRUCT`): a dozer places a building.
+    Construct {
+        dozer: u32,
+        template: String,
+        position: [f32; 2],
+        #[serde(default)]
+        angle: f32,
+    },
+    /// `aiResumeConstruction` (`MSG_RESUME_CONSTRUCTION`).
+    ResumeConstruction {
+        dozer: u32,
+        target: u32,
+    },
     /// `ProductionUpdate::queueUpgrade` (`MSG_QUEUE_UPGRADE`).
     Research {
         factory: u32,
@@ -234,6 +247,12 @@ pub struct Object {
     pub truck: Option<crate::supply::Truck>,
     /// Upgrades and upgrade modules (`upgrades`).
     pub upgrades: crate::upgrades::ObjectUpgrades,
+    /// `DozerAIUpdate` state (`construction`).
+    pub dozer: Option<crate::construction::Dozer>,
+    /// `getConstructionPercent` while under construction.
+    pub construction: Option<f32>,
+    /// `getBuilderID`.
+    pub builder: Option<u32>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -398,7 +417,10 @@ impl Simulation {
         }
         let surface = self.grid.destination(&self.map, p);
         let z = self.grid.height_at(&self.map, surface);
-        self.create(name, [p[0], p[1], z], 0.0, surface.layer, owner, None)
+        let id = self.create(name, [p[0], p[1], z], 0.0, surface.layer, owner, None)?;
+        // addObjectToPathfindMap for objects created in the game.
+        self.add_to_pathfind_map(id);
+        Ok(id)
     }
 
     /// Creates the map's own logic objects, in map order (`GameLogic::startNewGame`):
@@ -432,6 +454,31 @@ impl Simulation {
         layer: u32,
         owner: u32,
         map_index: Option<usize>,
+    ) -> Result<u32, SimError> {
+        self.create_full(name, position, angle, layer, owner, map_index, 0)
+    }
+    /// `newObject` with starting status bits (for example `UNDER_CONSTRUCTION`).
+    pub(crate) fn create_with_status(
+        &mut self,
+        name: &str,
+        position: [f32; 3],
+        angle: f32,
+        layer: u32,
+        owner: u32,
+        status: u64,
+    ) -> Result<u32, SimError> {
+        self.create_full(name, position, angle, layer, owner, None, status)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn create_full(
+        &mut self,
+        name: &str,
+        position: [f32; 3],
+        angle: f32,
+        layer: u32,
+        owner: u32,
+        map_index: Option<usize>,
+        status: u64,
     ) -> Result<u32, SimError> {
         let t =
             self.templates.objects.get(name).ok_or_else(|| SimError(format!("object template {name} is missing")))?;
@@ -525,6 +572,11 @@ impl Simulation {
             .iter()
             .filter(|m| m.kind == "Behavior")
             .find_map(|m| crate::supply::Truck::from_module(&m.class, &m.block));
+        let dozer = t
+            .modules
+            .iter()
+            .filter(|m| m.kind == "Behavior")
+            .find_map(|m| crate::construction::Dozer::from_module(&m.class, &m.block));
         let upgrade_modules: Vec<crate::upgrades::UpgradeModuleDef> = t
             .modules
             .iter()
@@ -572,7 +624,7 @@ impl Simulation {
                 destination_layer: 0,
                 health,
                 dead: false,
-                status: 0,
+                status,
                 weapon_set: Default::default(),
                 flight: None,
                 missile: None,
@@ -581,6 +633,9 @@ impl Simulation {
                 dock,
                 truck,
                 upgrades,
+                dozer,
+                construction: None,
+                builder: None,
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
@@ -603,9 +658,9 @@ impl Simulation {
             | Command::AttackPosition { target, .. }
             | Command::Guard { position: target, .. } => target.iter().all(|f| f.is_finite()),
             Command::FollowPath { points, .. } => points.iter().flatten().all(|f| f.is_finite()),
-            Command::Spawn { position, .. } | Command::SetRallyPoint { position, .. } => {
-                position.iter().all(|f| f.is_finite())
-            }
+            Command::Spawn { position, .. }
+            | Command::SetRallyPoint { position, .. }
+            | Command::Construct { position, .. } => position.iter().all(|f| f.is_finite()),
             _ => true,
         };
         if !finite {
@@ -630,11 +685,19 @@ impl Simulation {
             Command::GroupMove { objects, .. } => objects.clone(),
             _ => vec![],
         };
-        for id in ordered {
-            if let Some(o) = self.objects.get_mut(&id) {
+        for id in &ordered {
+            self.dozer_player_order(*id);
+            if let Some(o) = self.objects.get_mut(id) {
                 o.ai.cmd_from_ai = false;
             }
         }
+        let r = self.apply_command(c);
+        for id in ordered {
+            self.dozer_after_player_order(id);
+        }
+        r
+    }
+    fn apply_command(&mut self, c: Command) -> Result<(), SimError> {
         match c {
             Command::Spawn { template, position, owner } => {
                 self.spawn(&template, position, owner)?;
@@ -649,6 +712,10 @@ impl Simulation {
             Command::CancelProduction { factory, production } => self.cancel_unit_create(factory, production)?,
             Command::SetRallyPoint { object, position } => self.set_rally_point(object, position)?,
             Command::Research { factory, upgrade } => self.queue_upgrade(factory, &upgrade)?,
+            Command::Construct { dozer, template, position, angle } => {
+                self.build_object_now(dozer, &template, position, angle)?;
+            }
+            Command::ResumeConstruction { dozer, target } => self.resume_construction(dozer, target)?,
             Command::CancelResearch { factory, upgrade } => self.cancel_upgrade(factory, &upgrade)?,
             Command::Dock { object, target } => {
                 if !self.objects.contains_key(&object) || !self.objects.contains_key(&target) {
@@ -684,8 +751,11 @@ impl Simulation {
                 if !self.objects.contains_key(&object) {
                     return Err(SimError(format!("object {object} is missing")));
                 }
-                // SupplyTruckAIUpdate::privateIdle from the player.
-                if let Some(t) = self.objects.get_mut(&object).unwrap().truck.as_mut() {
+                // SupplyTruckAIUpdate::privateIdle from the player (not workers).
+                let o = self.objects.get_mut(&object).unwrap();
+                if o.dozer.is_none()
+                    && let Some(t) = o.truck.as_mut()
+                {
                     t.force_busy = true;
                 }
                 self.end_order(object, Outcome::Interrupted);
@@ -833,6 +903,11 @@ impl Simulation {
                 && l.is_some_and(|l| {
                     matches!(l.appearance, crate::templates::Appearance::Hover | crate::templates::Appearance::Wings)
                 }),
+            ignore_obstacle: o
+                .ai
+                .ignore_obstacle
+                .filter(|other| self.objects.contains_key(other))
+                .map_or(0, |other| self.obstacle_key(other)),
         }
     }
     /// The pathfinder for an object, over its terrain view.
@@ -875,14 +950,14 @@ impl Simulation {
             return Err(unreachable());
         }
         if !pf.valid_position(goal.layer, target) {
-            return Err(unreachable());
+            return Err(SimError(format!("object {id}: target {target:?} is blocked")));
         }
         if let Some(path) = pf.find_path(from, target, goal.layer) {
             return Ok((path.optimized().into(), path.nodes.last().map_or(target, |w| w.position)));
         }
         pf.find_closest_path(from, target, goal.layer, false, 0.0)
             .map(|(path, to)| (path.optimized().into(), path.nodes.last().map_or(to, |w| w.position)))
-            .ok_or_else(unreachable)
+            .ok_or_else(|| SimError(format!("object {id}: no path from {from:?} to {target:?}")))
     }
     pub(crate) fn begin_move(
         &mut self,
@@ -891,7 +966,32 @@ impl Simulation {
         state: AiState,
         remaining: VecDeque<[f32; 2]>,
     ) -> Result<(), SimError> {
+        self.begin_move_ignoring(id, target, state, remaining, None)
+    }
+    /// `begin_move` with `ignoreObstacle` set before the path is computed.
+    pub(crate) fn begin_move_ignoring(
+        &mut self,
+        id: u32,
+        target: [f32; 2],
+        state: AiState,
+        remaining: VecDeque<[f32; 2]>,
+        ignore: Option<u32>,
+    ) -> Result<(), SimError> {
         self.validate_mobile(id, false)?;
+        let previous = self.objects[&id].ai.ignore_obstacle;
+        self.objects.get_mut(&id).unwrap().ai.ignore_obstacle = ignore;
+        let r = self.begin_move_inner(id, target, state, remaining);
+        let o = self.objects.get_mut(&id).unwrap();
+        o.ai.ignore_obstacle = if r.is_ok() { ignore } else { previous };
+        r
+    }
+    fn begin_move_inner(
+        &mut self,
+        id: u32,
+        target: [f32; 2],
+        state: AiState,
+        remaining: VecDeque<[f32; 2]>,
+    ) -> Result<(), SimError> {
         let last = remaining.is_empty();
         let goal = self.choose_goal(id, target, state, last);
         let (path, target) = self.route_to_waypoint(id, goal, state == AiState::MoveTo || last)?;
@@ -1007,6 +1107,7 @@ impl Simulation {
         if self.objects.contains_key(&id) {
             self.forget_cells(id);
             self.upgrades_on_delete(id);
+            self.remove_from_pathfind_map(id);
         }
         let o = self.objects.remove(&id).ok_or_else(|| SimError(format!("object {id} is missing")))?;
         for i in 0..o.modules.len() {
@@ -1139,6 +1240,14 @@ impl Simulation {
         }
     }
     fn update_ai(&mut self, id: u32) -> u32 {
+        // Workers: the AI first, then the worker machine and one of its brains.
+        if self.objects[&id].dozer.as_ref().is_some_and(|d| d.worker.is_some()) {
+            self.update_ai_inner(id);
+            self.halt_docks(id);
+            self.worker_update(id);
+            self.halt_docks(id);
+            return 1;
+        }
         if self.objects[&id].truck.is_some() && !self.objects[&id].ai.dead {
             self.truck_update(id);
             self.halt_docks(id);
@@ -1149,6 +1258,11 @@ impl Simulation {
         }
         let delay = self.update_ai_inner(id);
         self.halt_docks(id);
+        if self.objects.get(&id).is_some_and(|o| o.dozer.is_some()) {
+            self.dozer_update(id);
+            self.halt_docks(id);
+            return 1;
+        }
         delay
     }
     fn update_ai_inner(&mut self, id: u32) -> u32 {
@@ -2088,7 +2202,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(25);
+        h.u32(26);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2361,6 +2475,31 @@ impl Simulation {
             }
         }
         for o in self.objects.values() {
+            h.u32(o.construction.map_or(u32::MAX, f32::to_bits));
+            h.u32(o.builder.unwrap_or(0));
+            h.u32(u32::from(o.dozer.is_some()));
+            if let Some(d) = &o.dozer {
+                for t in &d.tasks {
+                    h.u32(t.target.unwrap_or(0));
+                    h.u32(t.order_frame);
+                    for p in t.dock {
+                        for v in p.unwrap_or([f32::NAN; 3]) {
+                            h.float(v);
+                        }
+                    }
+                }
+                h.u32(d.current.map_or(u32::MAX, |c| c as u32));
+                h.u32(d.primary as u32);
+                h.u32(d.idle_since);
+                h.u32(d.action as u32);
+                h.u32(d.goal.unwrap_or(0));
+                for v in d.goal_position {
+                    h.float(v);
+                }
+                h.u32(d.build_sub as u32);
+                h.u32(d.enter_frame);
+                h.u32(d.worker.map_or(u32::MAX, u32::from));
+            }
             let u = &o.upgrades;
             h.u64(u.completed.len() as u64);
             for s in &u.completed {
@@ -2585,6 +2724,19 @@ fn hash_command(c: &Command, h: &mut StateHash) {
         Command::Dock { object, target } => {
             h.u32(19);
             h.u32(*object);
+            h.u32(*target);
+        }
+        Command::Construct { dozer, template, position, angle } => {
+            h.u32(22);
+            h.u32(*dozer);
+            h.text(template);
+            h.float(position[0]);
+            h.float(position[1]);
+            h.float(*angle);
+        }
+        Command::ResumeConstruction { dozer, target } => {
+            h.u32(23);
+            h.u32(*dozer);
             h.u32(*target);
         }
         Command::Research { factory, upgrade } => {
@@ -2902,7 +3054,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x5ba417034bdeee4c, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x1eebff4f0e84cd21, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3138,7 +3290,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xb86f6c9bc6081723, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xf5abc456948df1ec, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3230,7 +3382,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x3717a0b7a6465625, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xacbb55dd3bd50234, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

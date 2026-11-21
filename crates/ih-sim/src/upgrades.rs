@@ -273,7 +273,7 @@ impl Simulation {
     /// `Object::updateUpgradeModules`.
     pub(crate) fn update_upgrade_modules(&mut self, id: u32) {
         let Some(o) = self.objects.get(&id) else { return };
-        if o.status & crate::body::status::DESTROYED != 0 {
+        if o.status & (crate::body::status::DESTROYED | crate::construction::under_construction_bit()) != 0 {
             return;
         }
         for i in 0..o.upgrades.modules.len() {
