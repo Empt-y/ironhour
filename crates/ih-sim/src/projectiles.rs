@@ -385,7 +385,8 @@ impl Simulation {
             .objects
             .values()
             .filter(|o| {
-                o.flight.as_ref().is_some_and(|f| !f.detonated) && o.status & crate::body::status::NO_COLLISIONS == 0
+                (o.flight.as_ref().is_some_and(|f| !f.detonated) || o.missile.as_ref().is_some_and(|m| m.armed))
+                    && o.status & crate::body::status::NO_COLLISIONS == 0
             })
             .filter(|o| o.modules.iter().any(|m| m.kind == crate::simulation::ModuleKind::Physics))
             .map(|o| o.id)
@@ -407,7 +408,12 @@ impl Simulation {
                 .map(|o| o.id)
                 .collect();
             for other in others {
-                if self.projectile_hit(p, other) {
+                let hit = if self.objects.get(&p).is_some_and(|o| o.missile.is_some()) {
+                    self.missile_hit(p, Some(other))
+                } else {
+                    self.projectile_hit(p, other)
+                };
+                if hit {
                     break;
                 }
             }
@@ -433,7 +439,14 @@ impl Simulation {
     }
 
     /// `WeaponTemplate::shouldProjectileCollideWith`.
-    fn should_collide(&self, wt: &WeaponTemplate, launcher: u32, projectile: u32, other: u32, victim: u32) -> bool {
+    pub(crate) fn should_collide(
+        &self,
+        wt: &WeaponTemplate,
+        launcher: u32,
+        projectile: u32,
+        other: u32,
+        victim: u32,
+    ) -> bool {
         if victim == other {
             return true;
         }

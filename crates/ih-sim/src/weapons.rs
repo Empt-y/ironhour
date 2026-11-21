@@ -83,6 +83,8 @@ pub struct WeaponTemplate {
     /// `ProjectileCollidesWith` (`TheWeaponCollideMaskNames` bits).
     pub collides: u32,
     pub damage_at_self: bool,
+    /// `MissileCallsOnDie` (`getDieOnDetonate`).
+    pub die_on_detonate: bool,
     pub affects: u32,
     pub anti: u32,
     pub clip_size: i32,
@@ -121,6 +123,7 @@ impl WeaponTemplate {
             scale_speed: false,
             collides: COLLIDE_STRUCTURES,
             damage_at_self: false,
+            die_on_detonate: false,
             affects: AFFECTS_ALLIES | AFFECTS_ENEMIES | AFFECTS_NEUTRALS,
             anti: ANTI_GROUND,
             clip_size: 0,
@@ -181,6 +184,7 @@ impl WeaponTemplate {
                 self.projectile = Some(first()).filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("None"))
             }
             "DamageDealtAtSelfPosition" => self.damage_at_self = yes(),
+            "MissileCallsOnDie" => self.die_on_detonate = yes(),
             "RadiusDamageAffects" => {
                 self.affects = 0;
                 for n in v {
@@ -784,7 +788,8 @@ impl Simulation {
         // A projectile object flies to its (scattered) destination.
         if wt.projectile.is_some() && !detonation {
             let scattered = wt.scatter_radius > 0.0 || (wt.infantry_inaccuracy > 0.0 && infantry);
-            if self.launch_projectile(id, wt, if scattered { None } else { victim }, dest) {
+            let target = if scattered { None } else { victim };
+            if self.launch_projectile(id, wt, target, dest) || self.launch_missile(id, wt, target, dest) {
                 return;
             }
         }
@@ -836,7 +841,9 @@ impl Simulation {
         let pos = primary.map_or(pos, |v| self.objects[&v].position);
         let radius = wt.primary_radius.max(wt.secondary_radius);
         // A projectile's damage is credited to its launcher.
-        let credit = self.objects.get(&source).and_then(|o| o.flight.as_ref()).map_or(source, |f| f.launcher);
+        let credit = self.objects.get(&source).map_or(source, |o| {
+            o.flight.as_ref().map(|f| f.launcher).or(o.missile.as_ref().map(|m| m.launcher)).unwrap_or(source)
+        });
         let info = |amount: f32| DamageInfo::new(credit, wt.damage_type, wt.death_type, amount);
         let victims: Vec<(u32, f32)> = if radius > 0.0 {
             // iterateObjectsInRange(FROM_BOUNDINGSPHERE_3D), in object order.

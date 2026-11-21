@@ -1,0 +1,22 @@
+# A Missile Defender fires its missiles at an enemy Crusader on Tournament
+# Desert until it dies.
+map = "Tournament Desert"
+seed = 42
+frames = 1800
+require_idle_at_end = true
+
+[[spawn]]
+template = "AmericaInfantryMissileDefender"
+position = [1000.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1200.0, 950.0]
+owner = 2
+
+[[commands]]
+frame = 1
+kind = "attack"
+object = 1
+target = 2

@@ -1035,3 +1035,53 @@ Asset-free fixtures: `a4804c1138cc3e1c` (ground), `0ff7f69f7b2ea864` (bridge),
 `66d284ec19e96e74` (head-on traffic), `1e477c5d7e3dc353` (AI/status orders).
 `tests/projectiles.rs` covers a shell arcing to its victim and detonating once
 (with matching hashes in two runs) and a structure in the way taking the hit.
+
+### Missiles (state hash v21)
+
+From `MissileAIUpdate.cpp` (launch, ignition, the no-turn and attack states,
+lock-on, kill and kill-self, fuel, collisions and detonation) and the `THRUST`
+locomotor (`moveTowardsPositionThrust`, `calcDirectionToApplyThrust`,
+`tryToRotateVector3D`, `tryToOrientInThisDirection3D`, `getForwardSpeed3D`,
+and the template values capped by `setMaxAcceleration`/`setMaxTurnRate`/
+`setMaxSpeed`): `crates/ih-sim/src/missiles.rs`.
+
+- A weapon whose projectile has a `MissileAIUpdate` launches a missile object:
+  an initial push along the launch direction (raised towards higher targets),
+  no thrust until `IgnitionDelay`, then ignition (armed, fuel started), straight
+  flight for `DistanceToTravelBeforeTurning`, then steering with thrust inside
+  `MaxThrustAngle` and the body turning along its velocity (missiles keep a
+  pitch). Within `DistanceToTargetForLock` it cheats straight at the target.
+- It detonates on touching what its weapon collides with or the ground near its
+  goal, or out of fuel with `DetonateOnNoFuel`; a tracked target that is gone
+  makes it destroy itself after `KillSelfDelay`. Detonation fires the weapon
+  from the missile, credited to the launcher (`MissileCallsOnDie` kills the
+  missile too).
+- `m5-missiles` (stock): a Missile Defender kills a Crusader with its missiles.
+- Stand-ins and gaps: missiles start at the top of the launcher's geometry
+  (`GeometryHeight`) facing its way, without launch bones or the launcher's
+  velocity; the flight integrates gravity, aerodynamic friction and motive
+  forces itself; ground contact counts only while descending. Not yet:
+  ignition FX and exhaust, countermeasures and jamming, garrison hits, bridge
+  layers, dive heights, damaged-state locomotor values.
+
+All scenarios pass with v21 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `76d08ba8d1d9e967` | `1bc548d946a441c7` |
+| AI/status orders | `138037e0d9802541` | `d2ec8c4c2738f26a` |
+| Bridges | `186b888868f8965c` | `a25acd32dfa1581b` |
+| Traffic, Tournament Desert | `79a05ff5325dd5a6` | `afeabd9ecc073788` |
+| Traffic, Winding River | `5bd237bf5160b4c4` | `45e0708f84c7da6c` |
+| Long map travel | `d553f605bd14c037` | `65f70eaae5a83053` |
+| Crush enemy / crush ally | `adcb1415763bf381` / `d8ce6fca23ae31f8` | |
+| Comanche out and back | `7b5b5ee12e96839e` | `39a8fdc8cfba7d7f` |
+| Group move (`m4-group`) | `1b644470378e8a37` | |
+| Fight (`m5-fight`) | `ce416d6364f2058e` | |
+| Missiles (`m5-missiles`) | `d2fd2dd4fd008335` | |
+
+Asset-free fixtures: `5d61b43b47c11dcf` (ground), `6ecd8cf53572cdbf` (bridge),
+`39eef15d88b28099` (head-on traffic), `ccbf347b2bfe827c` (AI/status orders).
+`tests/missiles.rs` covers the state sequence of a missile that turns onto a
+target off its launch line and hits it once (matching hashes in two runs), and
+a missile that destroys itself when its target is gone.

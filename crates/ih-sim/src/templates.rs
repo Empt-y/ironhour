@@ -185,6 +185,8 @@ pub struct Locomotor {
     pub lift: f32,
     pub preferred_height: f32,
     pub preferred_height_damping: f32,
+    /// `MaxThrustAngle` (radians).
+    pub max_thrust_angle: f32,
     /// `SpeedLimitZ`, per frame.
     pub speed_limit_z: f32,
     pub behavior_z: BehaviorZ,
@@ -444,6 +446,7 @@ impl Templates {
                     lift: number("Lift", 0.0) / 900.0,
                     preferred_height: number("PreferredHeight", 0.0),
                     preferred_height_damping: number("PreferredHeightDamping", 1.0),
+                    max_thrust_angle: number("MaxThrustAngle", 0.0).to_radians(),
                     speed_limit_z: if fields.contains_key("SpeedLimitZ") {
                         number("SpeedLimitZ", 0.0) / 30.0
                     } else {

@@ -10,6 +10,7 @@ pub mod goals;
 pub mod group;
 pub mod locomotion;
 pub mod map_objects;
+pub mod missiles;
 pub mod navigation;
 pub mod partition;
 pub mod pathfind;

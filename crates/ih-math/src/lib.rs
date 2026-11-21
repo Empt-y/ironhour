@@ -1,6 +1,6 @@
 //! Simulation math boundary. Operations use f32 and software transcendentals,
 //! replacing WWMath/Trig.cpp for self-determinism rather than retail replay parity.
-pub use libm::{atan2f as atan2, cosf as cos, sinf as sin, sqrtf as sqrt};
+pub use libm::{acosf as acos, atan2f as atan2, cosf as cos, sinf as sin, sqrtf as sqrt};
 pub const TAU: f32 = std::f32::consts::TAU;
 pub fn length(v: [f32; 2]) -> f32 {
     sqrt(v[0] * v[0] + v[1] * v[1])
