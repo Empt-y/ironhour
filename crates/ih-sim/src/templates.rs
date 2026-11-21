@@ -25,6 +25,15 @@ impl Template {
     pub fn values(&self, key: &str) -> &[String] {
         self.fields.get(key).map_or(&[], |v| v.as_slice())
     }
+    /// A module's INI block by tag (empty if missing).
+    pub fn modules_block(&self, tag: &str) -> ih_ini::Block {
+        self.modules.iter().find(|m| m.tag == tag).map(|m| m.block.clone()).unwrap_or_else(|| ih_ini::Block {
+            kind: String::new(),
+            rest: String::new(),
+            line: 0,
+            items: Vec::new(),
+        })
+    }
     pub fn has_kind(&self, kind: &str) -> bool {
         self.values("KindOf").iter().any(|s| s == kind)
     }
@@ -290,6 +299,8 @@ pub struct Templates {
     pub effects: BTreeSet<(String, String)>,
     /// `Weapon` definitions by name.
     pub weapons: BTreeMap<String, crate::weapons::WeaponTemplate>,
+    /// `GameData`'s `PartitionCellSize` (the original's default is 0, used as 1).
+    pub partition_cell_size: f32,
 }
 
 /// `GameData`'s damage-state thresholds, with the original defaults.
@@ -361,6 +372,7 @@ impl Templates {
         for kind in ["FXList", "ObjectCreationList", "Weapon"] {
             out.effects.extend(defs.names(kind).map(|n| (kind.to_string(), n.clone())));
         }
+        out.partition_cell_size = global(defs, "GameData", "PartitionCellSize").unwrap_or(0.0);
         for name in defs.names("Weapon") {
             let blocks: Vec<&ih_ini::Block> = defs.all("Weapon", name).iter().collect();
             out.weapons.insert(name.clone(), crate::weapons::WeaponTemplate::parse(name, &blocks));

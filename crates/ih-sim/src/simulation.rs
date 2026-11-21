@@ -107,6 +107,8 @@ pub enum ModuleKind {
     Die,
     /// `SlowDeathBehavior`: a die module that updates while the object dies.
     SlowDeath,
+    /// `DumbProjectileBehavior` (`projectiles`).
+    DumbProjectile,
 }
 #[derive(Clone, Debug)]
 pub struct Module {
@@ -165,6 +167,8 @@ pub struct Object {
     pub status: u64,
     /// `m_weaponSet` (`weapons`).
     pub weapon_set: crate::weapons::WeaponSet,
+    /// A launched dumb projectile's flight (`projectiles`).
+    pub flight: Option<crate::projectiles::Flight>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -370,6 +374,8 @@ impl Simulation {
             let known = ih_ini::schema::MODULES.iter().find(|d| d.name == m.class);
             let kind = if let Some(k) = crate::body::module_kind(m) {
                 k
+            } else if m.class == "DumbProjectileBehavior" {
+                ModuleKind::DumbProjectile
             } else if m.class == "PhysicsBehavior" {
                 ModuleKind::Physics
             } else if known.is_some_and(|d| d.tables.iter().any(|t| t.starts_with("AIUpdateModuleData::"))) {
@@ -386,6 +392,9 @@ impl Simulation {
                     self.frame.max(1),
                     if kind == ModuleKind::Steering { Phase::Initial } else { Phase::Physics },
                 );
+            } else if kind == ModuleKind::DumbProjectile {
+                // Updated every frame from creation.
+                self.scheduler.insert((id, index), self.frame.max(1), Phase::Normal);
             } else if kind == ModuleKind::SlowDeath {
                 // Asleep until the object dies.
                 self.scheduler.insert((id, index), FOREVER, Phase::Normal);
@@ -449,6 +458,7 @@ impl Simulation {
                 dead: false,
                 status: 0,
                 weapon_set: Default::default(),
+                flight: None,
             },
         );
         self.update_weapon_set(id);
@@ -790,6 +800,17 @@ impl Simulation {
         o.blocked_by = None;
         o.traffic.stuck = false;
     }
+    /// A new object (projectiles and other created objects).
+    pub(crate) fn create_object(
+        &mut self,
+        name: &str,
+        position: [f32; 3],
+        angle: f32,
+        layer: u32,
+        owner: u32,
+    ) -> Result<u32, SimError> {
+        self.create(name, position, angle, layer, owner, None)
+    }
     pub fn remove(&mut self, id: u32) -> Result<(), SimError> {
         if self.objects.contains_key(&id) {
             self.forget_cells(id);
@@ -817,7 +838,7 @@ impl Simulation {
             let kind = self.objects[&id].modules[index].kind;
             let exceptions = match kind {
                 ModuleKind::Steering => 1 << (DisabledReason::Held as u32),
-                ModuleKind::Physics | ModuleKind::SlowDeath => u32::MAX,
+                ModuleKind::Physics | ModuleKind::SlowDeath | ModuleKind::DumbProjectile => u32::MAX,
                 ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => 0,
             };
             if !self.objects[&id].disabled.allows_module(exceptions) {
@@ -840,6 +861,7 @@ impl Simulation {
                     self.physics_sleep(id)
                 }
                 ModuleKind::SlowDeath => self.slow_death_update(id, index),
+                ModuleKind::DumbProjectile => self.dumb_projectile_update(id, index),
                 ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => FOREVER,
             };
             self.update_pos(id);
@@ -855,6 +877,7 @@ impl Simulation {
             self.wake_ai(id);
         }
         self.process_collisions();
+        self.projectile_collisions();
         self.wake_forced();
         self.rebuild_partition();
         self.process_destroy_list();
@@ -1828,7 +1851,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(19);
+        h.u32(20);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -1995,6 +2018,26 @@ impl Simulation {
                         h.u32(v);
                     }
                 }
+            }
+            h.u32(u32::from(o.flight.is_some()));
+            if let Some(f) = &o.flight {
+                h.u32(f.launcher);
+                h.u32(f.victim);
+                h.text(&f.weapon);
+                h.u32(f.lifespan_frame);
+                h.u64(f.path.len() as u64);
+                for p in &f.path {
+                    for v in p {
+                        h.float(*v);
+                    }
+                }
+                for v in f.start.into_iter().chain(f.end) {
+                    h.float(v);
+                }
+                h.float(f.speed);
+                h.u32(f.segments as u32);
+                h.u64(f.step as u64);
+                h.u32(u32::from(f.detonated));
             }
             h.u32(u32::from(o.ai.attack.is_some()));
             if let Some(m) = &o.ai.attack {
@@ -2426,7 +2469,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xb09fcd2ac1f31379, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xa4804c1138cc3e1c, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -2662,7 +2705,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x5e5c5299b925f3f7, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x66d284ec19e96e74, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -2754,7 +2797,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x3342568b41d0ffed, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xff7f69f7b2ea864, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

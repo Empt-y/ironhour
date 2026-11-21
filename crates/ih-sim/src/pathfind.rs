@@ -1226,6 +1226,48 @@ fn straight_run(path: &Path, anchor: usize, node: usize) -> bool {
     might
 }
 
+/// `iterateCellsAlongLine`'s Bresenham walk (the pathfinder's and the
+/// partition manager's): every cell, including the extra one on a diagonal
+/// step. Stops when `f` returns false.
+pub fn bresenham(start: (i32, i32), end: (i32, i32), f: &mut dyn FnMut(i32, i32) -> bool) {
+    let (dx, dy) = ((end.0 - start.0).abs(), (end.1 - start.1).abs());
+    let (mut x, mut y) = start;
+    let (mut xinc1, mut xinc2) = if end.0 >= start.0 { (1, 1) } else { (-1, -1) };
+    let (mut yinc1, mut yinc2) = if end.1 >= start.1 { (1, 1) } else { (-1, -1) };
+    let (den, mut num, numadd, pixels);
+    if dx >= dy {
+        xinc1 = 0;
+        yinc2 = 0;
+        den = dx;
+        num = dx / 2;
+        numadd = dy;
+        pixels = dx;
+    } else {
+        xinc2 = 0;
+        yinc1 = 0;
+        den = dy;
+        num = dy / 2;
+        numadd = dx;
+        pixels = dy;
+    }
+    for _ in 0..=pixels {
+        if !f(x, y) {
+            return;
+        }
+        num += numadd;
+        if num >= den {
+            num -= den;
+            x += xinc1;
+            y += yinc1;
+            if !f(x, y) {
+                return;
+            }
+        }
+        x += xinc2;
+        y += yinc2;
+    }
+}
+
 /// `Object::canCrushOrSquish`. Allies (same owner, until players and teams
 /// exist) never crush each other.
 pub fn crush_or_squish(

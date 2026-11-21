@@ -37,6 +37,15 @@ pub const AFFECTS_NEUTRALS: u32 = 0x08;
 pub const KILLS_SELF: u32 = 0x10;
 pub const DOESNT_AFFECT_SIMILAR: u32 = 0x20;
 pub const DOESNT_AFFECT_AIRBORNE: u32 = 0x40;
+pub const COLLIDE_ALLIES: u32 = 0x01;
+pub const COLLIDE_ENEMIES: u32 = 0x02;
+pub const COLLIDE_STRUCTURES: u32 = 0x04;
+pub const COLLIDE_SHRUBBERY: u32 = 0x08;
+pub const COLLIDE_PROJECTILE: u32 = 0x10;
+pub const COLLIDE_WALLS: u32 = 0x20;
+pub const COLLIDE_SMALL_MISSILES: u32 = 0x40;
+pub const COLLIDE_BALLISTIC_MISSILES: u32 = 0x80;
+pub const COLLIDE_CONTROLLED_STRUCTURES: u32 = 0x100;
 /// `PATHFIND_CELL_SIZE_F * 0.25`: `RATIONALIZE_ATTACK_RANGE`'s undersize.
 const UNDERSIZE: f32 = 2.5;
 /// `NO_MAX_SHOTS_LIMIT`.
@@ -68,6 +77,11 @@ pub struct WeaponTemplate {
     /// Per frame (`parseVelocityReal`).
     pub speed: f32,
     pub projectile: Option<String>,
+    /// `MinWeaponSpeed` (per frame) and `ScaleWeaponSpeed`.
+    pub min_speed: f32,
+    pub scale_speed: bool,
+    /// `ProjectileCollidesWith` (`TheWeaponCollideMaskNames` bits).
+    pub collides: u32,
     pub damage_at_self: bool,
     pub affects: u32,
     pub anti: u32,
@@ -103,6 +117,9 @@ impl WeaponTemplate {
             death_type: 0,
             speed: 999_999.0,
             projectile: None,
+            min_speed: 999_999.0,
+            scale_speed: false,
+            collides: COLLIDE_STRUCTURES,
             damage_at_self: false,
             affects: AFFECTS_ALLIES | AFFECTS_ENEMIES | AFFECTS_NEUTRALS,
             anti: ANTI_GROUND,
@@ -150,6 +167,16 @@ impl WeaponTemplate {
             "DamageType" => self.damage_type = crate::body::damage_type(&first()).unwrap_or(0),
             "DeathType" => self.death_type = crate::body::death_type(&first()).unwrap_or(0),
             "WeaponSpeed" => self.speed = real(0) * (1.0 / 30.0),
+            "MinWeaponSpeed" => self.min_speed = real(0) * (1.0 / 30.0),
+            "ScaleWeaponSpeed" => self.scale_speed = yes(),
+            "ProjectileCollidesWith" => {
+                self.collides = 0;
+                for n in v {
+                    if let Some(i) = index_of("TheWeaponCollideMaskNames", n) {
+                        self.collides |= 1 << i;
+                    }
+                }
+            }
             "ProjectileObject" => {
                 self.projectile = Some(first()).filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("None"))
             }
@@ -716,7 +743,7 @@ impl Simulation {
     }
 
     /// `WeaponTemplate::fireWeaponTemplate` (without FX, OCLs or lasers).
-    fn fire_weapon_template(
+    pub(crate) fn fire_weapon_template(
         &mut self,
         id: u32,
         wt: &WeaponTemplate,
@@ -754,14 +781,22 @@ impl Simulation {
             dest[1] += r * ih_math::sin(a);
             dest[2] = self.grid.height_at(&self.map, crate::terrain::Waypoint { position: [dest[0], dest[1]], layer });
         }
+        // A projectile object flies to its (scattered) destination.
+        if wt.projectile.is_some() && !detonation {
+            let scattered = wt.scatter_radius > 0.0 || (wt.infantry_inaccuracy > 0.0 && infantry);
+            if self.launch_projectile(id, wt, if scattered { None } else { victim }, dest) {
+                return;
+            }
+        }
         let delay = {
             let v = [victim_pos[0] - source[0], victim_pos[1] - source[1], victim_pos[2] - source[2]];
             ih_math::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) / wt.speed
         };
         let damage_id = if wt.damage_at_self { 0 } else { victim.unwrap_or(0) };
         let damage_pos = if wt.damage_at_self { source } else { victim_pos };
-        // A projectile (not yet launched as an object) lands after its flight.
-        let damage_pos = if wt.projectile.is_some() { dest } else { damage_pos };
+        // A projectile without a dumb-projectile behaviour (missiles, not ported
+        // yet) lands after its flight.
+        let damage_pos = if wt.projectile.is_some() && !detonation { dest } else { damage_pos };
         if delay < 1.0 {
             self.deal_damage(id, wt, damage_id, damage_pos);
         } else {
@@ -800,7 +835,9 @@ impl Simulation {
         let primary = self.objects.get(&victim).map(|o| o.id);
         let pos = primary.map_or(pos, |v| self.objects[&v].position);
         let radius = wt.primary_radius.max(wt.secondary_radius);
-        let info = |amount: f32| DamageInfo::new(source, wt.damage_type, wt.death_type, amount);
+        // A projectile's damage is credited to its launcher.
+        let credit = self.objects.get(&source).and_then(|o| o.flight.as_ref()).map_or(source, |f| f.launcher);
+        let info = |amount: f32| DamageInfo::new(credit, wt.damage_type, wt.death_type, amount);
         let victims: Vec<(u32, f32)> = if radius > 0.0 {
             // iterateObjectsInRange(FROM_BOUNDINGSPHERE_3D), in object order.
             self.objects

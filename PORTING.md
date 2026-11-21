@@ -986,3 +986,52 @@ Asset-free fixtures: `b09fcd2ac1f31379` (ground), `3342568b41d0ffed` (bridge),
 `tests/weapons.rs` covers firing cadence, clip reloads, closing into range,
 area damage that spares allies, and delayed projectile damage with matching
 hashes in two runs.
+
+### Projectiles (state hash v20)
+
+From `DumbProjectileBehavior.cpp`, `BezierSegment.cpp` and `BezFwdIterator.cpp`,
+the projectile branch of `WeaponTemplate::fireWeaponTemplate`,
+`WeaponStore::handleProjectileDetonation`, `shouldProjectileCollideWith`,
+`PhysicsBehavior::onCollide`'s hand-off to `projectileHandleCollision`, and
+`PartitionManager::estimateTerrainExtremesAlongLine` (partition cells of
+`PartitionCellSize`, each the highest ground sample a grid step apart):
+`crates/ih-sim/src/projectiles.rs`.
+
+- A weapon with a `ProjectileObject` creates that object for the launcher's
+  owner. A dumb projectile flies a Bezier arc whose middle control points sit
+  `FirstHeight`/`SecondHeight` above the highest terrain along the line, at
+  `FirstPercentIndent`/`SecondPercentIndent` of the way, one forward-difference
+  segment per frame at the weapon's speed (scaled by range with
+  `ScaleWeaponSpeed`). It bends towards a moving victim at
+  `FlightPathAdjustDistPerSecond`, faces along its path, and detonates at the
+  end of the arc, at `MaxLifespan`, or when it touches something its weapon's
+  `ProjectileCollidesWith` allows (always the intended victim, never the
+  launcher). The detonation fires a fresh copy of the weapon from the
+  projectile at its position, crediting the launcher, then destroys or kills
+  the projectile.
+- Stock Crusader shells (`GenericTankShell`) now fly as objects.
+- Not yet: launch bones (projectiles start at the launcher's position), the
+  launcher's velocity, bridge layers under a flight, garrison-clearing hits,
+  tumbling (its random rates are drawn), and collisions are tested as bounding
+  spheres. Projectiles without a `DumbProjectileBehavior` (missiles and other
+  behaviours) still land their damage after the flight time.
+
+All scenarios pass with v20 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `783b74a096faa502` | `7bf11f35573fb3e8` |
+| AI/status orders | `454e09a9635fb0f4` | `5f03fe2e895da75d` |
+| Bridges | `d505e5ba8d16b15f` | `4e30134741e84e64` |
+| Traffic, Tournament Desert | `345a0cafd845ee19` | `361b09020a0582d7` |
+| Traffic, Winding River | `dc58499c45f191cb` | `dc69051c5fd90b1f` |
+| Long map travel | `6217fd0e58bee944` | `9d3ed54ec4fd997c` |
+| Crush enemy / crush ally | `2cc44a4fd8e6f56e` / `076f619a4a6a6da5` | |
+| Comanche out and back | `166caea28c23d331` | `380cd86ffd0efca4` |
+| Group move (`m4-group`) | `a8444f5cbda807d0` | |
+| Fight (`m5-fight`) | `f476524da4693a07` | |
+
+Asset-free fixtures: `a4804c1138cc3e1c` (ground), `0ff7f69f7b2ea864` (bridge),
+`66d284ec19e96e74` (head-on traffic), `1e477c5d7e3dc353` (AI/status orders).
+`tests/projectiles.rs` covers a shell arcing to its victim and detonating once
+(with matching hashes in two runs) and a structure in the way taking the hit.

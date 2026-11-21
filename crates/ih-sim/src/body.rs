@@ -359,6 +359,8 @@ impl DieKind {
 pub mod status {
     /// `OBJECT_STATUS_DESTROYED`.
     pub const DESTROYED: u64 = 1 << 1;
+    /// `OBJECT_STATUS_NO_COLLISIONS`.
+    pub const NO_COLLISIONS: u64 = 1 << 5;
 }
 
 impl Simulation {
