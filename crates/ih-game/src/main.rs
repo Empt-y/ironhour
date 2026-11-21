@@ -171,11 +171,26 @@ impl App {
                         _ => None,
                     }
                 }));
+            // Their weapons' projectiles are drawn too.
+            let mut names: Vec<String> = names.collect();
+            for n in names.clone() {
+                if let Some(t) = templates.objects.get(&n) {
+                    for set in &t.weapon_sets {
+                        for w in set.weapons.iter().flatten() {
+                            if let Some(p) = templates.weapons.get(w).and_then(|w| w.projectile.clone())
+                                && !names.contains(&p)
+                            {
+                                names.push(p);
+                            }
+                        }
+                    }
+                }
+            }
             let draw = ih_client::sim_draw::SimDrawables::new(
                 &mut renderer,
                 &mut assets,
                 &templates,
-                names,
+                names.into_iter(),
                 &self.world.condition_flags(),
                 scene.instances.len(),
             );
@@ -532,12 +547,69 @@ impl ApplicationHandler for App {
                             s.camera.surface_at_pixel(&self.world.map, &sim.grid, [s.size.width, s.size.height], cursor)
                     {
                         let target = target.to_array();
-                        let command = if let [object] = s.selected[..] {
-                            ih_sim::Command::Move { object, target }
-                        } else {
-                            ih_sim::Command::GroupMove { objects: s.selected.clone(), target }
+                        let vp = s
+                            .camera
+                            .camera(&self.world.map)
+                            .view_proj(s.size.width as f32 / s.size.height.max(1) as f32);
+                        let size = Vec2::new(s.size.width as f32, s.size.height as f32);
+                        // The object under the cursor, map objects included.
+                        let under = sim
+                            .objects
+                            .values()
+                            .filter(|o| !o.dead && !s.selected.contains(&o.id))
+                            .filter_map(|o| {
+                                let p = vp * glam::Vec3::from(o.position).extend(1.0);
+                                (p.w > 0.0).then(|| {
+                                    let ndc = p.truncate() / p.w;
+                                    let screen = Vec2::new((ndc.x + 1.0) * 0.5 * size.x, (1.0 - ndc.y) * 0.5 * size.y);
+                                    (screen.distance_squared(cursor), o.id)
+                                })
+                            })
+                            .filter(|(d, _)| *d < 24.0 * 24.0)
+                            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                            .map(|(_, id)| id);
+                        let held = |a: KeyCode, b: KeyCode| s.keys.contains(&a) || s.keys.contains(&b);
+                        let force = held(KeyCode::ControlLeft, KeyCode::ControlRight);
+                        let guard = held(KeyCode::AltLeft, KeyCode::AltRight);
+                        let owner = sim.objects.get(&s.selected[0]).map_or(0, |o| o.owner);
+                        let enemy =
+                            under.filter(|u| sim.objects.get(u).is_some_and(|o| o.owner != owner && o.owner != 0));
+                        let armed = |o: &u32| {
+                            sim.objects.get(o).is_some_and(|o| o.weapon_set.weapons.iter().any(Option::is_some))
                         };
-                        sim.enqueue(sim.frame, command).ok();
+                        let commands: Vec<ih_sim::Command> = if guard {
+                            // Alt: guard the point.
+                            s.selected
+                                .iter()
+                                .map(|&object| ih_sim::Command::Guard { object, position: target })
+                                .collect()
+                        } else if let Some(victim) = enemy.or(under.filter(|_| force)) {
+                            // An enemy (or anything, with Ctrl): attack it; the unarmed move there.
+                            s.selected
+                                .iter()
+                                .map(|&object| {
+                                    if armed(&object) {
+                                        ih_sim::Command::Attack { object, target: victim }
+                                    } else {
+                                        ih_sim::Command::Move { object, target }
+                                    }
+                                })
+                                .collect()
+                        } else if force {
+                            // Ctrl on the ground: force-fire there.
+                            s.selected
+                                .iter()
+                                .filter(|o| armed(o))
+                                .map(|&object| ih_sim::Command::AttackPosition { object, target })
+                                .collect()
+                        } else if let [object] = s.selected[..] {
+                            vec![ih_sim::Command::Move { object, target }]
+                        } else {
+                            vec![ih_sim::Command::GroupMove { objects: s.selected.clone(), target }]
+                        };
+                        for command in commands {
+                            sim.enqueue(sim.frame, command).ok();
+                        }
                     }
                     s.pan_drag = state.is_pressed();
                     if !state.is_pressed() {

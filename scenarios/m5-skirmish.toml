@@ -1,0 +1,62 @@
+# A small battle on Tournament Desert to command in the window: your side
+# (owner 1, west) has two Crusaders, three Rangers and a Missile Defender;
+# the enemy (owner 2, east) waits with two Crusaders and three Rangers and
+# fires at whatever comes into range.
+map = "Tournament Desert"
+seed = 42
+frames = 6000
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [950.0, 880.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [950.0, 940.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [900.0, 860.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [900.0, 900.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [900.0, 940.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryMissileDefender"
+position = [900.0, 980.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1500.0, 880.0]
+owner = 2
+
+[[spawn]]
+template = "AmericaTankCrusader"
+position = [1500.0, 940.0]
+owner = 2
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1550.0, 860.0]
+owner = 2
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1550.0, 900.0]
+owner = 2
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1550.0, 940.0]
+owner = 2

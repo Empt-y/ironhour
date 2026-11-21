@@ -202,8 +202,11 @@ impl SimDrawables {
                 entry.stepped = Some(sim.frame);
             }
             let x = entry.xform[0].lerp(entry.xform[1], alpha.clamp(0.0, 1.0));
+            // A missile's pitch tilts its nose (its X axis) up towards Z.
+            let pitch = o.missile.as_ref().map_or(0.0, |m| m.pitch);
             let root = Mat4::from_translation(p)
                 * Mat4::from_rotation_z(o.angle)
+                * Mat4::from_rotation_y(-pitch)
                 * Mat4::from_scale(Vec3::splat(td.scale))
                 * x.matrix();
             for (index, (state, data)) in entry.states.iter_mut().zip(&td.modules).enumerate() {

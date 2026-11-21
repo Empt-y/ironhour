@@ -1143,3 +1143,14 @@ Asset-free fixtures: `83a9ed56e8160497` (ground), `18c270831950fb5a` (bridge),
 range (with matching hashes in two runs), not chasing an auto-acquired target
 that runs, and a guard that returns to its post, hunts an intruder within its
 range and goes back.
+
+### Orders in the window
+
+`ih-game` now gives combat orders to the selection: right-click an enemy to
+attack it (unarmed units move there), Ctrl+right-click to force-fire at any
+object or at the ground, and Alt+right-click to guard the point. Weapons'
+projectiles (shells, missiles) are loaded with the scenario's units and drawn,
+missiles pitched along their flight. `m5-skirmish` sets up a small battle to
+command: try it with
+`cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario scenarios/m5-skirmish.toml`.
+Map objects destroyed in the logic are still drawn by the static scene.
