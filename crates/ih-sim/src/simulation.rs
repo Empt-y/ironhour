@@ -124,6 +124,16 @@ pub enum Command {
         object: u32,
         target: u32,
     },
+    /// `ProductionUpdate::queueUpgrade` (`MSG_QUEUE_UPGRADE`).
+    Research {
+        factory: u32,
+        upgrade: String,
+    },
+    /// `ProductionUpdate::cancelUpgrade` (`MSG_CANCEL_UPGRADE`).
+    CancelResearch {
+        factory: u32,
+        upgrade: String,
+    },
 }
 fn default_damage_type() -> String {
     "EXPLOSION".into()
@@ -222,6 +232,8 @@ pub struct Object {
     pub dock: Option<crate::supply::Dock>,
     /// `SupplyTruckAIUpdate` state (`supply`).
     pub truck: Option<crate::supply::Truck>,
+    /// Upgrades and upgrade modules (`upgrades`).
+    pub upgrades: crate::upgrades::ObjectUpgrades,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -513,6 +525,17 @@ impl Simulation {
             .iter()
             .filter(|m| m.kind == "Behavior")
             .find_map(|m| crate::supply::Truck::from_module(&m.class, &m.block));
+        let upgrade_modules: Vec<crate::upgrades::UpgradeModuleDef> = t
+            .modules
+            .iter()
+            .filter(|m| m.kind == "Behavior")
+            .filter_map(|m| crate::upgrades::UpgradeModuleDef::from_module(&m.class, &m.block))
+            .collect();
+        let upgrades = crate::upgrades::ObjectUpgrades {
+            executed: vec![false; upgrade_modules.len()],
+            modules: upgrade_modules,
+            ..Default::default()
+        };
         let body = traffic::BodyShape::new(t, &modules, &self.templates);
         let thresholds = (self.templates.damage.damaged, self.templates.damage.really_damaged);
         let health = crate::body::body_of(t).map(|(k, m)| crate::body::Health::new(k, &m.block, thresholds));
@@ -557,10 +580,13 @@ impl Simulation {
                 exit,
                 dock,
                 truck,
+                upgrades,
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
         self.idle_enter(id);
+        // Object::initObject: upgrade modules run with the player's upgrades.
+        self.update_upgrade_modules(id);
         self.update_weapon_set(id);
         self.rebuild_partition();
         self.update_pos(id);
@@ -622,6 +648,8 @@ impl Simulation {
             }
             Command::CancelProduction { factory, production } => self.cancel_unit_create(factory, production)?,
             Command::SetRallyPoint { object, position } => self.set_rally_point(object, position)?,
+            Command::Research { factory, upgrade } => self.queue_upgrade(factory, &upgrade)?,
+            Command::CancelResearch { factory, upgrade } => self.cancel_upgrade(factory, &upgrade)?,
             Command::Dock { object, target } => {
                 if !self.objects.contains_key(&object) || !self.objects.contains_key(&target) {
                     return Err(SimError(format!("object {object} or {target} is missing")));
@@ -978,6 +1006,7 @@ impl Simulation {
     pub fn remove(&mut self, id: u32) -> Result<(), SimError> {
         if self.objects.contains_key(&id) {
             self.forget_cells(id);
+            self.upgrades_on_delete(id);
         }
         let o = self.objects.remove(&id).ok_or_else(|| SimError(format!("object {id} is missing")))?;
         for i in 0..o.modules.len() {
@@ -2059,7 +2088,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(24);
+        h.u32(25);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2315,8 +2344,34 @@ impl Simulation {
             for s in &p.sciences {
                 h.text(s);
             }
+            for set in [&p.upgrades.in_progress, &p.upgrades.completed] {
+                h.u64(set.len() as u64);
+                for s in set {
+                    h.text(s);
+                }
+            }
+            h.u64(p.upgrades.cost_changes.len() as u64);
+            for (kinds, percent, refs) in &p.upgrades.cost_changes {
+                h.u64(kinds.len() as u64);
+                for k in kinds {
+                    h.text(k);
+                }
+                h.float(*percent);
+                h.u32(*refs);
+            }
         }
         for o in self.objects.values() {
+            let u = &o.upgrades;
+            h.u64(u.completed.len() as u64);
+            for s in &u.completed {
+                h.text(s);
+            }
+            for e in &u.executed {
+                h.u32(u32::from(*e));
+            }
+            h.u32(u.weapon_set_flags);
+            h.u32(u32::from(u.weapon_bonus));
+            h.text(u.command_set.as_deref().unwrap_or(""));
             h.u32(o.ai.ignore_obstacle.unwrap_or(0));
             h.u32(u32::from(o.production.is_some()));
             if let Some(p) = &o.production {
@@ -2331,6 +2386,7 @@ impl Simulation {
                 for e in &p.queue {
                     h.u32(e.id);
                     h.text(&e.template);
+                    h.u32(u32::from(e.upgrade));
                     h.u32(e.frames as u32);
                     h.float(e.percent);
                     h.u32(e.total);
@@ -2530,6 +2586,16 @@ fn hash_command(c: &Command, h: &mut StateHash) {
             h.u32(19);
             h.u32(*object);
             h.u32(*target);
+        }
+        Command::Research { factory, upgrade } => {
+            h.u32(20);
+            h.u32(*factory);
+            h.text(upgrade);
+        }
+        Command::CancelResearch { factory, upgrade } => {
+            h.u32(21);
+            h.u32(*factory);
+            h.text(upgrade);
         }
     }
 }
@@ -2836,7 +2902,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xde857b77f7dac677, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x5ba417034bdeee4c, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3072,7 +3138,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xfecbe9542aa0a586, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xb86f6c9bc6081723, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3164,7 +3230,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x159641d53719732e, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x3717a0b7a6465625, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

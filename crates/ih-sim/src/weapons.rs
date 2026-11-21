@@ -428,7 +428,7 @@ impl Simulation {
     pub(crate) fn update_weapon_set(&mut self, id: u32) {
         let o = &self.objects[&id];
         let t = &self.templates.objects[&o.template];
-        let Some(set) = best_weapon_set(&t.weapon_sets, 0) else { return };
+        let Some(set) = best_weapon_set(&t.weapon_sets, o.upgrades.weapon_set_flags) else { return };
         if o.weapon_set.set == Some(set) {
             return;
         }

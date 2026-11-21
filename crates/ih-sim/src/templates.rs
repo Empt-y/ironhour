@@ -319,6 +319,10 @@ pub struct Templates {
     pub command_sets: BTreeMap<String, Vec<String>>,
     /// `CommandButton` (command, object) by name.
     pub command_buttons: BTreeMap<String, (String, String)>,
+    /// `Upgrade` definitions by name.
+    pub upgrades: BTreeMap<String, crate::upgrades::UpgradeTemplate>,
+    /// `CommandButton`s' `Upgrade` by button name.
+    pub command_button_upgrades: BTreeMap<String, String>,
     /// `GameData`'s `BaseValuePerSupplyBox` (100).
     pub supply_box_value: u32,
     /// Dock bones of templates with supply docks, from their default models
@@ -443,11 +447,23 @@ impl Templates {
                     match f.name.as_str() {
                         "Command" => command = f.values().first().cloned().unwrap_or_default(),
                         "Object" => object = f.values().first().cloned().unwrap_or_default(),
+                        "Upgrade" => {
+                            if let Some(u) = f.values().first() {
+                                out.command_button_upgrades.insert(name.clone(), u.clone());
+                            }
+                        }
                         _ => {}
                     }
                 }
             }
             out.command_buttons.insert(name.clone(), (command, object));
+        }
+        let default = defs.names("Upgrade").find(|n| *n == "DefaultUpgrade").map(|n| {
+            crate::upgrades::UpgradeTemplate::parse(n, None, &defs.all("Upgrade", n).iter().collect::<Vec<_>>())
+        });
+        for name in defs.names("Upgrade") {
+            let blocks: Vec<&ih_ini::Block> = defs.all("Upgrade", name).iter().collect();
+            out.upgrades.insert(name.clone(), crate::upgrades::UpgradeTemplate::parse(name, default.as_ref(), &blocks));
         }
         for name in defs.names("Weapon") {
             let blocks: Vec<&ih_ini::Block> = defs.all("Weapon", name).iter().collect();

@@ -1286,3 +1286,69 @@ Asset-free fixtures: `de857b77f7dac677` (ground), `159641d53719732e` (bridge),
 `tests/supply.rs` covers a truck ferrying a warehouse's boxes until it is
 deleted, a truck from the supply centre gathering on its own, a stopped truck
 giving its slot back, and matching hashes in two runs.
+
+### Upgrades (state hash v25)
+
+From `Upgrade.cpp` (`UpgradeTemplate`, `UpgradeCenter`), `UpgradeMuxData`
+(`Module.cpp`), `UpgradeModule.cpp` (`UpgradeMux`), `Object::updateUpgradeModules`,
+`giveUpgrade`, `removeUpgrade`, `affectedByUpgrade` and `canProduceUpgrade`,
+`Player::addUpgrade`, `removeUpgrade`, `onUpgradeCompleted` and the kind-of
+cost changes, `ProductionUpdate::queueUpgrade`/`cancelUpgrade` and the research
+half of its update, and the upgrade modules listed below:
+`crates/ih-sim/src/upgrades.rs`.
+
+- `Upgrade` blocks start from `DefaultUpgrade`. Player upgrades apply to all of
+  the player's objects, including ones made later; object upgrades apply to the
+  building that researched them. Research takes `BuildTime` seconds (no power
+  penalty) and costs `BuildCost`. `research` and `cancel_research` commands
+  (factory, upgrade) need an upgrade button in the factory's command set; a
+  player upgrade must be affordable and not already done or under way, and an
+  object upgrade must change something on that building. Cancelling refunds
+  the cost. As in the original, object upgrades also mark the player as
+  researching them, and that mark is never cleared.
+- Upgrade modules run once when their `TriggeredBy` upgrades are present (all
+  of them with `RequiresAllTriggers`) and no `ConflictsWith` one is, removing
+  `RemovesUpgrades` first. Ported effects: `WeaponSetUpgrade` and
+  `ArmorUpgrade` (the `PLAYER_UPGRADE` weapon and armour sets),
+  `MaxHealthUpgrade` (all four change types), `CommandSetUpgrade` (with
+  `CommandSetAlt`/`TriggerAlt`; production and research use the new set),
+  `StatusBitsUpgrade`, `PowerPlantUpgrade` (`EnergyBonus` while the object
+  lives), `CostModifierUpgrade` (unit costs by kind, until the object is
+  deleted) and `GrantScienceUpgrade`. `WeaponBonusUpgrade` is recorded only.
+  The others (locomotor sets, object creation, replacement, sub-objects, model
+  conditions, radar, stealth, special powers, shroud, experience, passengers
+  firing) count as executed with no effect yet; FX lists do not play.
+- `m5-upgrades` (stock): a Barracks researches flash-bang grenades (both
+  Rangers switch weapon sets) and a Power Plant installs advanced control rods
+  (power 5 to 10). `sim-run` prints upgrades, executed modules and weapons.
+- Not yet: veterancy upgrades, capture (`onCapture`), upgrades from scripts or
+  crates, per-name production cost and time changes, upgrade cameos, the
+  `Upgrade_` checks of special powers.
+
+All scenarios pass with v25 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `0a1bcab9671b233d` | `a5ef8ef0ba82f261` |
+| AI/status orders | `df32d896cd36f823` | `f0470420ebd661f2` |
+| Bridges | `1657e64df8c69d30` | `2487381e86a30e08` |
+| Traffic, Tournament Desert | `8e909552d524254c` | `cf1ab902c631fff4` |
+| Traffic, Winding River | `46916719098b2ab8` | `609dd76a96d7e216` |
+| Long map travel | `55ec5725028ec778` | `e424068aaa715de6` |
+| Crush enemy / crush ally | `6ecabd52747f7782` / `c78ee350fb295e62` | |
+| Comanche out and back | `a2c6d110a41f8f26` | `a4891df04e5626a2` |
+| Group move (`m4-group`) | `c85b80244d93a8e1` | |
+| Fight (`m5-fight`) | `4d850c62ad156326` | |
+| Missiles (`m5-missiles`) | `cad4dc46cc959e76` | |
+| Guard (`m5-guard`) | `372faaf9ecc961d0` | |
+| Skirmish (`m5-skirmish`) | `24f8ec688004a919` | |
+| Production (`m5-production`) | `cd5ffc6713821738` | |
+| Supply (`m5-supply`) | `1b717715ca38f821` | |
+| Upgrades (`m5-upgrades`) | `88253e2ebbe98b31` | |
+
+Asset-free fixtures: `5ba417034bdeee4c` (ground), `3717a0b7a6465625` (bridge),
+`b86f6c9bc6081723` (head-on traffic), `e30b1ca86dcb00d7` (AI/status orders).
+`tests/upgrades.rs` covers a player armour upgrade reaching existing and later
+units (and not another player's), a weapon set upgrade, an object upgrade on
+one building with a cancelled one refunded, a cost modifier ending with its
+building, and matching hashes in two runs.

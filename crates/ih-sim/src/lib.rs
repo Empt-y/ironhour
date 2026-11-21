@@ -27,6 +27,7 @@ pub mod targeting;
 pub mod templates;
 pub mod terrain;
 pub mod traffic;
+pub mod upgrades;
 pub mod weapons;
 pub mod zones;
 pub use simulation::{Command, LogicClock, SimError, Simulation};

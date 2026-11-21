@@ -29,6 +29,8 @@ use std::collections::{BTreeSet, VecDeque};
 pub struct Player {
     pub money: u32,
     pub sciences: BTreeSet<String>,
+    /// Upgrades researched and in research (`upgrades`).
+    pub upgrades: crate::upgrades::PlayerUpgrades,
 }
 impl Player {
     /// `Money::withdraw`: no more than the balance; returns what was taken.
@@ -109,7 +111,10 @@ pub struct Door {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub id: u32,
+    /// The unit, or the upgrade when `upgrade` is set.
     pub template: String,
+    /// `PRODUCTION_UPGRADE`.
+    pub upgrade: bool,
     pub frames: i32,
     pub percent: f32,
     pub total: u32,
@@ -246,6 +251,8 @@ impl Simulation {
             } else {
                 production += e;
             }
+            // Player::addPowerBonus from a power plant upgrade.
+            production += self.power_bonus(o);
         }
         (production, consumption)
     }
@@ -256,9 +263,11 @@ impl Simulation {
     }
 
     /// `ThingTemplate::calcCostToBuild`.
-    pub fn cost_to_build(&self, t: &Template) -> u32 {
-        // getBuildCost() * factionModifier * handicap, all 1 here.
-        (t.number("BuildCost", 0.0) as u16 as f32 * 1.0 * 1.0) as i32 as u32
+    pub fn cost_to_build(&self, t: &Template, player: u32) -> u32 {
+        // getBuildCost() * factionModifier * handicap; the faction modifier is the
+        // upgrades' kind-of cost changes (no per-name changes yet), the handicap 1.
+        let faction = (1.0 + 0.0) * self.cost_change(player, t);
+        (t.number("BuildCost", 0.0) as u16 as f32 * faction * 1.0) as i32 as u32
     }
 
     /// `ProductionPrerequisite::getExistingBuildFacilityTemplate` of the first prerequisite.
@@ -327,7 +336,7 @@ impl Simulation {
         if !t.has_kind("STRUCTURE") {
             for o in self.objects.values().filter(|o| o.owner == player) {
                 if let Some(p) = &o.production {
-                    count += p.queue.iter().filter(|e| e.template == t.name).count();
+                    count += p.queue.iter().filter(|e| !e.upgrade && e.template == t.name).count();
                 }
             }
         }
@@ -357,7 +366,7 @@ impl Simulation {
         {
             return CanMake::QueueFull;
         }
-        if self.cost_to_build(t) > self.money(f.owner) {
+        if self.cost_to_build(t, f.owner) > self.money(f.owner) {
             return CanMake::NoMoney;
         }
         CanMake::Ok
@@ -372,14 +381,23 @@ impl Simulation {
         if can != CanMake::Ok {
             return Err(SimError(format!("object {factory} cannot make {unit}: {can:?}")));
         }
-        let cost = self.cost_to_build(&self.templates.objects[unit]);
         let owner = self.objects[&factory].owner;
+        let cost = self.cost_to_build(&self.templates.objects[unit], owner);
         self.player(owner).withdraw(cost);
         let p = self.objects.get_mut(&factory).unwrap().production.as_mut().unwrap();
         let total = p.data.quantity.iter().find(|(n, _)| n == unit).map_or(1, |(_, q)| *q);
         let id = p.next_id;
         p.next_id += 1;
-        p.queue.push_back(Entry { id, template: unit.into(), frames: 0, percent: 0.0, total, produced: 0, door: None });
+        p.queue.push_back(Entry {
+            id,
+            template: unit.into(),
+            upgrade: false,
+            frames: 0,
+            percent: 0.0,
+            total,
+            produced: 0,
+            door: None,
+        });
         Ok(id)
     }
 
@@ -388,9 +406,9 @@ impl Simulation {
         let o = self.objects.get_mut(&factory).ok_or_else(|| SimError(format!("object {factory} is missing")))?;
         let owner = o.owner;
         let Some(p) = o.production.as_mut() else { return Err(SimError(format!("object {factory} cannot produce"))) };
-        let Some(i) = p.queue.iter().position(|e| e.id == production) else { return Ok(()) };
+        let Some(i) = p.queue.iter().position(|e| e.id == production && !e.upgrade) else { return Ok(()) };
         let e = p.queue.remove(i).unwrap();
-        let cost = self.cost_to_build(&self.templates.objects[&e.template]);
+        let cost = self.cost_to_build(&self.templates.objects[&e.template], owner);
         self.player(owner).deposit(cost);
         Ok(())
     }
@@ -445,14 +463,26 @@ impl Simulation {
         if p.complete_frame != 0 && now - p.complete_frame > p.data.complete_duration {
             p.complete_frame = 0;
         }
-        let Some(unit) = p.queue.front().map(|e| e.template.clone()) else { return 1 };
-        let Some(t) = self.templates.objects.get(&unit) else { return 1 };
-        let total = self.time_to_build(t, owner);
+        let Some((unit, upgrade)) = p.queue.front().map(|e| (e.template.clone(), e.upgrade)) else { return 1 };
+        let total = if upgrade {
+            let Some(u) = self.templates.upgrades.get(&unit) else { return 1 };
+            u.time_to_build()
+        } else {
+            let Some(t) = self.templates.objects.get(&unit) else { return 1 };
+            self.time_to_build(t, owner)
+        };
         let p = self.objects.get_mut(&id).unwrap().production.as_mut().unwrap();
         let e = p.queue.front_mut().unwrap();
         e.frames += 1;
         e.percent = e.frames as f32 / total as f32 * 100.0;
         if e.percent < 100.0 {
+            return 1;
+        }
+        if upgrade {
+            self.finish_research(id, &unit);
+            if let Some(p) = self.objects.get_mut(&id).and_then(|o| o.production.as_mut()) {
+                p.queue.pop_front();
+            }
             return 1;
         }
         if self.objects[&id].exit.is_none() {

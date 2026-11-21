@@ -388,7 +388,7 @@ impl Simulation {
     }
 
     /// `ActiveBody::internalChangeHealth` (with `ImmortalBody`'s floor).
-    fn change_health(&mut self, id: u32, mut delta: f32) {
+    pub(crate) fn change_health(&mut self, id: u32, mut delta: f32) {
         let thresholds = self.thresholds();
         let o = self.objects.get_mut(&id).unwrap();
         let Some(h) = o.health.as_mut() else { return };

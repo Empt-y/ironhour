@@ -151,6 +151,31 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     println!("crushed (frame, victim, crusher): {:?}; move-asides: {}", a.crushed, a.move_asides);
     let money: Vec<(u32, u32)> = a.players.iter().map(|(id, p)| (*id, p.money)).collect();
     println!("money (player, amount): {money:?}");
+    for (id, p) in &a.players {
+        if !p.upgrades.completed.is_empty() || !p.upgrades.in_progress.is_empty() {
+            println!(
+                "  player {id} upgrades {:?}, in research {:?}, power {:?}",
+                p.upgrades.completed,
+                p.upgrades.in_progress,
+                a.energy(*id)
+            );
+        }
+    }
+    for o in a.objects.values().filter(|o| !o.upgrades.completed.is_empty()) {
+        println!("  object {} {} upgrades {:?}", o.id, o.template, o.upgrades.completed);
+    }
+    for o in a.objects.values().filter(|o| o.upgrades.executed.iter().any(|e| *e)) {
+        let ran: Vec<&str> = o
+            .upgrades
+            .modules
+            .iter()
+            .zip(&o.upgrades.executed)
+            .filter(|(_, e)| **e)
+            .map(|(m, _)| m.class.as_str())
+            .collect();
+        let weapons: Vec<&str> = o.weapon_set.weapons.iter().flatten().map(|w| w.template.as_str()).collect();
+        println!("  object {} {} ran {ran:?}; weapons {weapons:?}", o.id, o.template);
+    }
     for o in a.objects.values() {
         if let Some(t) = &o.truck {
             println!("  truck {} {:?}: {} boxes, AI {:?}", o.id, t.state, t.boxes, o.ai.state);
