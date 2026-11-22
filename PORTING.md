@@ -2224,3 +2224,37 @@ Review list for the in-game check (when the GPU is free), using
    fire out and leave. Passengers no longer reveal shroud from inside
    transports.
 5. Fog is logic-only so far, so nothing draws it yet. Expect no visual change.
+
+## M6. Interface and audio (in progress)
+
+### Window layout scripts
+
+From `GameWindowManagerScript.cpp` (`winCreateFromScript`, `parseWindow`,
+`parseChildWindows`, `parseScreenRect`, the layout block and the field table)
+and the status and style bit names in `GameWindowGlobal.cpp`:
+`crates/ih-formats/src/wnd.rs`.
+
+- A layout is `KEY = value;` statements plus structure words (`WINDOW`,
+  `CHILD`, `END`, `ENDALLCHILDREN`, the layout block). Each window keeps its
+  type, `SCREENRECT` (absolute pixels at its creation resolution) and every
+  field as labelled value lists. There are typed accessors for name, status
+  and style bits, the four callbacks, font, text and tooltip labels, text
+  colours and draw data (image, colour, border per entry). The gadget data
+  (`LISTBOXDATA`, `COMBOBOXDATA`, `SLIDERDATA` and others) stays as labelled
+  lists for the window system to read.
+- Two original tolerances are kept. An unknown word skips to the next
+  semicolon, and because Contra's main menu has a stray `(China)` after a
+  tooltip, that swallows the next statement, as in the game. `SCREENRECT`
+  tokens split on spaces, commas, colons and `=`, so the stock LAN lobby's
+  missing commas parse.
+- `ih-tools wnd` describes one layout as a tree, or scans every layout and
+  lists window types, fields and the callback names the game would look up.
+  The callback names are the table the window system must provide.
+
+| Profile | Layouts | Windows | Errors |
+|---|---|---|---|
+| Stock | 80 | 1,670 | 0 |
+| Contra X Beta 2 | 80 | 1,689 | 0 |
+
+Callbacks named across stock layouts: 55 system, 46 input, 20 draw,
+1 tooltip, 39 layout init, 30 update and 32 shutdown.

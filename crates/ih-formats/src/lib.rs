@@ -6,3 +6,4 @@ pub mod map;
 pub mod strings;
 pub mod texture;
 pub mod w3d;
+pub mod wnd;

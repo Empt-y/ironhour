@@ -100,6 +100,11 @@ enum Cmd {
         /// Model file name (e.g. AVCrusader or Art\W3D\AVCrusader.w3d). Omit to scan all.
         name: Option<String>,
     },
+    /// Parse window layouts (.wnd): describe one, or check every layout the game can load.
+    Wnd {
+        /// Layout file (e.g. Menus\MainMenu.wnd or Window\Menus\MainMenu.wnd). Omit to scan all.
+        name: Option<String>,
+    },
     /// Read map files: describe one (name or path) or scan every map.
     Maps {
         /// Map name (e.g. "Tournament Desert") or path. Omit to scan all.
@@ -477,6 +482,7 @@ fn main() -> Result<()> {
             println!("wrote {}", out.display());
         }
         Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
+        Cmd::Wnd { name } => wnd(&mount(&cli)?, name.as_deref())?,
         Cmd::Sheet { names, out, cell, columns, yaw, pitch, hide } => {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
@@ -780,6 +786,95 @@ fn maps(vfs: &Vfs, name: Option<&str>, near: Option<&[f32]>, uses: &[String]) ->
         println!("  {v:5} {k}");
     }
     println!("{} maps: {ok} read, {failed} failed, {warned} with warnings, {objects} objects", files.len());
+    Ok(())
+}
+
+fn wnd(vfs: &Vfs, name: Option<&str>) -> Result<()> {
+    use ih_formats::wnd;
+    use std::collections::BTreeMap;
+    if let Some(name) = name {
+        let path = if name.to_ascii_lowercase().starts_with("window\\") {
+            name.to_string()
+        } else {
+            format!("Window\\{name}")
+        };
+        let bytes = vfs.read(&path)?.with_context(|| format!("{path}: not found"))?;
+        let l = wnd::parse(&bytes)?;
+        println!("version {}, init {:?}, update {:?}, shutdown {:?}", l.version, l.init, l.update, l.shutdown);
+        fn show(w: &wnd::Window, depth: usize) {
+            let r = w.rect;
+            println!(
+                "{:indent$}{} {:?} [{} {}]-[{} {}] @{}x{} system {:?} input {:?} draw {:?} text {:?}",
+                "",
+                w.kind,
+                w.name().unwrap_or(""),
+                r.upper_left[0],
+                r.upper_left[1],
+                r.bottom_right[0],
+                r.bottom_right[1],
+                r.creation_resolution[0],
+                r.creation_resolution[1],
+                w.callback("SYSTEMCALLBACK"),
+                w.callback("INPUTCALLBACK"),
+                w.callback("DRAWCALLBACK"),
+                w.text(),
+                indent = depth * 2
+            );
+            for c in &w.children {
+                show(c, depth + 1);
+            }
+        }
+        for w in &l.windows {
+            show(w, 0);
+        }
+        return Ok(());
+    }
+    let files = vfs.list("Window", "*.wnd", true);
+    let (mut windows, mut errors) = (0usize, 0usize);
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    let mut keys: BTreeMap<String, usize> = BTreeMap::new();
+    let mut callbacks: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for p in &files {
+        let Some(bytes) = vfs.read(p)? else { continue };
+        match wnd::parse(&bytes) {
+            Ok(l) => {
+                for (k, v) in [("LAYOUTINIT", &l.init), ("LAYOUTUPDATE", &l.update), ("LAYOUTSHUTDOWN", &l.shutdown)] {
+                    if let Some(v) = v {
+                        *callbacks.entry((k.to_string(), v.clone())).or_default() += 1;
+                    }
+                }
+                for w in l.windows.iter().flat_map(|w| w.walk()) {
+                    windows += 1;
+                    *kinds.entry(w.kind.clone()).or_default() += 1;
+                    for f in &w.fields {
+                        *keys.entry(f.key.clone()).or_default() += 1;
+                    }
+                    for k in ["SYSTEMCALLBACK", "INPUTCALLBACK", "TOOLTIPCALLBACK", "DRAWCALLBACK"] {
+                        if let Some(c) = w.callback(k) {
+                            *callbacks.entry((k.to_string(), c)).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                errors += 1;
+                println!("{p}: {e}");
+            }
+        }
+    }
+    println!("{} layouts, {windows} windows, {errors} errors", files.len());
+    println!("window types: {kinds:?}");
+    println!("fields: {keys:?}");
+    let mut by_kind: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (k, name) in callbacks.keys() {
+        by_kind.entry(k.as_str()).or_default().push(name.as_str());
+    }
+    for (k, names) in by_kind {
+        println!("{k} ({}): {}", names.len(), names.join(" "));
+    }
+    if errors > 0 {
+        anyhow::bail!("{errors} layouts failed to parse");
+    }
     Ok(())
 }
 
