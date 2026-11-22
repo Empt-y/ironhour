@@ -499,6 +499,9 @@ impl Simulation {
         let fail = |why: String| Err(SimError(format!("object {dozer} cannot build {what}: {why}")));
         let can = self.can_make_unit(dozer, what);
         if can != crate::production::CanMake::Ok {
+            if can == crate::production::CanMake::NoMoney {
+                self.notices.push(crate::notices::Notice::InsufficientFunds { player: self.objects[&dozer].owner });
+            }
             return fail(format!("{can:?}"));
         }
         let legal = self.location_legal_to_build(what, p, angle, Some(dozer));

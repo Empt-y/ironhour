@@ -182,3 +182,18 @@ fn production_is_deterministic() {
     assert_eq!(a, run().0);
     assert_eq!(n, 6);
 }
+
+#[test]
+fn presentation_notices_report_missing_funds_without_changing_hashes() {
+    let mut s = sim();
+    let b = s.spawn("Barracks", [300.0, 300.0], 1).unwrap();
+    s.enqueue(0, Command::Produce { factory: b, template: "Soldier".into() }).unwrap();
+    s.step();
+    assert_eq!(s.notices, [ih_sim::notices::Notice::InsufficientFunds { player: 1 }]);
+    let hash = s.state_hash();
+    s.notices.clear();
+    assert_eq!(s.state_hash(), hash);
+    s.notices.push(ih_sim::notices::Notice::UpgradeComplete { player: 1 });
+    s.step();
+    assert!(s.notices.is_empty());
+}

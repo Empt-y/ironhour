@@ -216,3 +216,25 @@ fn higher_priority_steals_and_interrupt_replaces_the_oldest_matching_voice() {
     assert!(a.play_ui(&vfs, "Important").unwrap());
     assert_eq!(a.active.len(), 1);
 }
+
+#[test]
+fn microphone_moves_towards_camera_and_zoom_gain_matches_settings() {
+    let c = Catalog::load(&definitions(""), "English");
+    let far = c.camera_listener([0.0; 3], [0.0, -300.0, 400.0], [1.0, 0.0]);
+    assert_eq!(far.position, [0.0, -37.5, 50.0]);
+    assert!((far.world_gain - 0.8).abs() < 0.00001);
+    let near = c.camera_listener([0.0; 3], [0.0, -30.0, 40.0], [1.0, 0.0]);
+    assert!(near.position[2] < 14.0 && near.world_gain == 1.0);
+}
+
+#[test]
+fn map_registry_reload_releases_voices_and_does_not_reuse_old_samples() {
+    let (_temp, vfs) = files(false);
+    let manager = AudioManager::<MockBackend>::new(AudioManagerSettings::default()).unwrap();
+    let mut audio = Audio::with_manager(Catalog::load(&definitions(""), "English"), manager);
+    audio.play_ui(&vfs, "Click").unwrap();
+    assert!(!audio.cache.is_empty());
+    audio.reload_catalog(Catalog::load(&definitions(""), "English"), preferences::Preferences::default()).unwrap();
+    assert!(audio.active.is_empty() && audio.cache.is_empty());
+    assert!(audio.play_ui(&vfs, "Click").unwrap());
+}

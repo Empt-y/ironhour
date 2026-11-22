@@ -472,6 +472,9 @@ impl App {
         st.ui = None;
         st.feedback = audio::Feedback::default();
         if let Some(audio) = &mut st.audio {
+            audio.reload_catalog(ih_audio::Catalog::load(&self.defs.data, &self.language), st.preferences)?;
+        }
+        if let Some(audio) = &mut st.audio {
             audio.set_time_of_day(match self.world.map.lighting.as_ref().map(|l| l.time_of_day) {
                 Some(1) => "morning",
                 Some(3) => "evening",
@@ -513,7 +516,7 @@ impl State {
         let dt = elapsed.as_secs_f32().min(0.1);
         self.last_frame = now;
         if let Some(audio) = &mut self.audio {
-            audio.update_listener(audio::listener(&self.camera, &world.map));
+            audio.update_listener(audio::listener(&self.camera, &world.map, &audio.catalog));
             for error in audio.update_media(vfs, self.started.elapsed()) {
                 eprintln!("audio: {error}");
             }

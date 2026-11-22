@@ -22,8 +22,8 @@ M5 now has deterministic combat and economy logic slices (with gameplay and
 visual gaps recorded in PORTING.md). M6 is in progress: the original WND menus
 can start a skirmish, including map previews and chosen start positions. UI
 clicks, positional combat sounds, unit responses, initial EVA alerts and streaming
-shell/faction music use the game's mounted assets. The control bar and remaining
-M6 gaps are recorded in PORTING.md. Skirmish AI is M7.
+shell/faction music use the game's mounted assets. Ambient/movement loops, streaming dialogue and saved volume sliders are implemented.
+The remaining M6 interface work and M7 script/AI dependencies are recorded in PORTING.md. Skirmish AI is M7.
 
 ## You need the game
 

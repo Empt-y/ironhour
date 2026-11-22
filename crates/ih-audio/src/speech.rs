@@ -47,6 +47,7 @@ struct Request {
     name: String,
     priority: u32,
     expires: Duration,
+    logic_expiry: Option<Duration>,
 }
 
 pub(super) enum Narration {
@@ -79,6 +80,7 @@ pub(crate) struct Speech {
     queue: Vec<Request>,
     pub(super) current: Option<(String, u32, Narration)>,
     cooldown: BTreeMap<String, Duration>,
+    logic_time: Option<Duration>,
 }
 
 impl Catalog {
@@ -99,7 +101,9 @@ impl<B: Backend> Audio<B> {
     /// Bounded FIFO within priority; duplicates and expired messages are discarded.
     /// A new unit response replaces an older unit response, never an EVA announcement.
     pub fn queue_speech(&mut self, name: &str, priority: u32, now: Duration, lifetime: Duration) -> bool {
-        self.speech.queue.retain(|r| r.expires > now);
+        self.speech.queue.retain(|r| {
+            r.expires > now && r.logic_expiry.zip(self.speech.logic_time).is_none_or(|(expiry, clock)| expiry > clock)
+        });
         if priority == 0
             || lifetime.is_zero()
             || self.speech.queue.len() >= 32
@@ -117,17 +121,23 @@ impl<B: Backend> Audio<B> {
             handle.stop(kira::Tween::default());
             self.speech.queue.retain(|r| r.priority != 1);
         }
-        self.speech.queue.push(Request { name: name.into(), priority, expires: now.saturating_add(lifetime) });
+        self.speech.queue.push(Request {
+            name: name.into(),
+            priority,
+            expires: now.saturating_add(lifetime),
+            logic_expiry: None,
+        });
         true
     }
 
     pub fn queue_eva(&mut self, event: &str, side: &str, now: Duration) -> bool {
+        let eva_now = self.speech.logic_time.unwrap_or(now);
         let key = event.to_ascii_lowercase();
         let Some(info) = self.catalog.eva.get(&key).cloned() else { return false };
         if info.priority == 0 {
             return false;
         }
-        if self.speech.cooldown.get(&key).is_some_and(|until| now < *until) {
+        if self.speech.cooldown.get(&key).is_some_and(|until| eva_now < *until) {
             return false;
         }
         let Some(sounds) = info.sides.get(&side.to_ascii_lowercase()).filter(|s| !s.is_empty()) else { return false };
@@ -135,8 +145,18 @@ impl<B: Backend> Audio<B> {
         if !self.queue_speech(&sounds[index], info.priority.saturating_add(1).max(2), now, info.expiry) {
             return false;
         }
-        self.speech.cooldown.insert(key, now.saturating_add(info.interval));
+        if let Some(logic_now) = self.speech.logic_time
+            && let Some(request) = self.speech.queue.last_mut()
+        {
+            request.expires = Duration::MAX;
+            request.logic_expiry = Some(logic_now.saturating_add(info.expiry));
+        }
+        self.speech.cooldown.insert(key, eva_now.saturating_add(info.interval));
         true
+    }
+
+    pub fn set_logic_time(&mut self, now: Duration) {
+        self.speech.logic_time = Some(now);
     }
 
     /// Script/campaign hook: explicit interruption never displaces a higher-priority speaker.
@@ -175,7 +195,9 @@ impl<B: Backend> Audio<B> {
             return Ok(());
         }
         self.speech.current = None;
-        self.speech.queue.retain(|r| r.expires > now);
+        self.speech.queue.retain(|r| {
+            r.expires > now && r.logic_expiry.zip(self.speech.logic_time).is_none_or(|(expiry, clock)| expiry > clock)
+        });
         // Reverse priority, stable queue position for ties.
         let Some(index) = self
             .speech
@@ -214,6 +236,24 @@ mod tests {
     use super::*;
     use crate::tests::{definitions, files};
     use kira::backend::mock::MockBackend;
+    #[test]
+    fn eva_cooldown_and_expiry_follow_logic_time_while_client_time_advances() {
+        let (_temp, vfs) = files(false);
+        let d = definitions(
+            "EvaEvent LowPower\n Priority = 2\n TimeBetweenChecksMS = 1000\n ExpirationTimeMS = 500\n SideSounds\n Side = America\n Sounds = Click\n End\nEnd\n",
+        );
+        let manager = AudioManager::<MockBackend>::new(AudioManagerSettings::default()).unwrap();
+        let mut a = Audio::with_manager(Catalog::load(&d, "English"), manager);
+        a.set_logic_time(Duration::from_secs(2));
+        assert!(a.queue_eva("LowPower", "America", Duration::ZERO));
+        a.update_speech(&vfs, Duration::from_secs(1000)).unwrap();
+        assert!(a.speech.current.is_some(), "client elapsed time cannot expire a paused logical alert");
+        a.stop_speech();
+        assert!(!a.queue_eva("LowPower", "America", Duration::from_secs(2000)));
+        a.set_logic_time(Duration::from_millis(3100));
+        assert!(a.queue_eva("LowPower", "America", Duration::from_secs(2000)));
+    }
+
     #[test]
     fn announcements_take_priority_and_keep_fifo_order_without_unit_interruptions() {
         let (_temp, vfs) = files(false);

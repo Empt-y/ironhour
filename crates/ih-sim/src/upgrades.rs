@@ -491,6 +491,7 @@ impl Simulation {
         let Some(p) = f.production.as_ref() else { return fail("no production") };
         let owner = f.owner;
         if !u.object && self.money(owner) < u.cost_to_build() {
+            self.notices.push(crate::notices::Notice::InsufficientFunds { player: owner });
             return fail("NoMoney");
         }
         if u.object && (f.upgrades.completed.contains(name) || !self.affected_by_upgrade(factory, name)) {
@@ -556,5 +557,6 @@ impl Simulation {
         } else {
             self.complete_player_upgrade(owner, name);
         }
+        self.notices.push(crate::notices::Notice::UpgradeComplete { player: owner });
     }
 }

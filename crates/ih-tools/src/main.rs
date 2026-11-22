@@ -53,6 +53,16 @@ enum Cmd {
         #[arg(long, conflicts_with = "fx")]
         eva_side: Option<String>,
     },
+    /// Open the native output device and submit one short GUI click.
+    AudioDeviceCheck,
+    /// Render a sound, dialogue or music event to WAV through the real mixer.
+    AudioRender {
+        name: String,
+        #[arg(long, default_value = "out/audio-review.wav")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        seconds: u32,
+    },
     /// Probe VFS music streams without an output device. Defaults to Shell.
     MusicCheck { names: Vec<String> },
     /// Print the INI files the game loads at startup, in order, with where each comes from.
@@ -311,6 +321,46 @@ fn main() -> Result<()> {
                 println!("{f}");
             }
             eprintln!("{} files", files.len());
+        }
+        Cmd::AudioDeviceCheck => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
+            let mut audio = ih_audio::Audio::new(ih_audio::Catalog::load(&defs, &language))?;
+            anyhow::ensure!(audio.play_ui(&vfs, "GUIClick")?, "GUI click was culled");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            println!("native output opened; GUIClick submitted successfully");
+        }
+        Cmd::AudioRender { name, out, seconds } => {
+            anyhow::ensure!((1..=60).contains(seconds), "duration must be 1..60 seconds");
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
+            let catalog = ih_audio::Catalog::load(&defs, &language);
+            let mut audio = ih_audio::Audio::offline(catalog);
+            let streaming = if audio.catalog.music.contains_key(name) {
+                audio.request_music(&vfs, name, false, false)?;
+                true
+            } else if audio.catalog.dialog.contains_key(name) {
+                audio.request_dialog(name, 5, false, std::time::Duration::ZERO, std::time::Duration::from_secs(60));
+                true
+            } else {
+                audio.play_world(&vfs, name, [0.0; 3])?;
+                false
+            };
+            let mut samples = vec![];
+            for i in 0..(*seconds as usize * 48000).div_ceil(128) {
+                // Give streaming decode workers time to fill their bounded buffers.
+                if streaming {
+                    std::thread::sleep(std::time::Duration::from_millis(3));
+                }
+                samples
+                    .extend(audio.render_buffer(&vfs, std::time::Duration::from_secs_f64(i as f64 * 128.0 / 48000.0))?);
+            }
+            let peak = samples.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+            anyhow::ensure!(peak > 0.00001, "audio render was silent");
+            ih_audio::offline::write_wav(out, &samples)?;
+            println!("{name}: {} stereo frames, peak {peak:.4}, {}", samples.len() / 2, out.display());
         }
         Cmd::MusicCheck { names } => {
             let vfs = mount(&cli)?;

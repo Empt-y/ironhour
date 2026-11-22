@@ -574,10 +574,14 @@ impl Simulation {
                 let amount = upgrades.iter().find(|(s, _)| has(self, s)).map_or(amount, |(_, a)| *a);
                 let victim_owner = self.objects.get(&victim).map_or(0, |o| o.owner);
                 let cash = self.player(victim_owner).withdraw(amount);
+                if cash > 0 {
+                    self.notices.push(crate::notices::Notice::CashStolen { player: victim_owner });
+                }
                 self.player(owner).deposit(cash);
             }
             PowerKind::CashBounty { .. } | PowerKind::Other => self.start_power_recharge(id, i),
         }
+        self.notices.push(crate::notices::Notice::PowerUsed { player: owner, power: power.into() });
         Ok(())
     }
 

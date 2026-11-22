@@ -11,7 +11,27 @@ pub struct Feedback {
     previous: BTreeMap<u32, (f32, bool)>,
     rank: Option<i32>,
     side: Option<String>,
-    emitters: BTreeMap<u32, (String, u32)>,
+    emitters: BTreeMap<u64, (String, u32)>,
+    seen: BTreeMap<u32, u32>,
+    moving: std::collections::BTreeSet<u32>,
+    powers: BTreeMap<(u32, String), bool>,
+}
+
+fn superweapon(name: &str) -> Option<&'static str> {
+    let name = name.to_ascii_lowercase();
+    if name.contains("particle") {
+        Some("ParticleCannon")
+    } else if name.contains("nuclearmissile") || name.contains("neutronmissile") || name.contains("nukemissile") {
+        Some("Nuke")
+    } else if name.contains("scudstorm") {
+        Some("ScudStorm")
+    } else if name.contains("gpsscrambler") {
+        Some("GPS_Scrambler")
+    } else if name.contains("sneakattack") {
+        Some("Sneak_Attack")
+    } else {
+        None
+    }
 }
 
 fn side(sim: &Simulation, player: u32) -> Option<&str> {
@@ -94,9 +114,27 @@ pub fn feedback(
         })
         .collect();
     let mut live_emitters = std::collections::BTreeSet::new();
+    let mut moving_now = std::collections::BTreeSet::new();
+    let mut desired = vec![];
     for o in sim.objects.values() {
         let template = &sim.templates.objects[&o.template];
         let state = o.health.as_ref().map(|h| h.state);
+        let key = u64::from(o.id) << 1;
+        if !o.dead && o.speed.abs() > 0.01 {
+            moving_now.insert(o.id);
+            let damaged = state == Some(ih_sim::body::DamageState::ReallyDamaged);
+            let start = template.values(if damaged { "SoundMoveStartDamaged" } else { "SoundMoveStart" }).first();
+            let repeat = template.values(if damaged { "SoundMoveLoopDamaged" } else { "SoundMoveLoop" }).first();
+            let first_move = !previous.moving.contains(&o.id);
+            if let Some(name) = start.filter(|n| !n.eq_ignore_ascii_case("None") && !n.eq_ignore_ascii_case("NoSound"))
+            {
+                if first_move || audio.has_emitter(key + 1) {
+                    desired.push((key + 1, name, o.position));
+                }
+            } else if let Some(name) = repeat {
+                desired.push((key + 1, name, o.position));
+            }
+        }
         let field = if o.dead {
             "SoundAmbientRubble"
         } else {
@@ -106,22 +144,28 @@ pub fn feedback(
                 _ => "SoundAmbient",
             }
         };
-        let name = template
+        if let Some(name) = template
             .values(field)
             .first()
-            .or_else(|| if !o.dead { template.values("SoundAmbient").first() } else { None });
-        let Some(name) = name.filter(|n| !n.eq_ignore_ascii_case("None") && !n.eq_ignore_ascii_case("NoSound")) else {
+            .or_else(|| if !o.dead { template.values("SoundAmbient").first() } else { None })
+        {
+            desired.push((key, name, o.position));
+        }
+    }
+    previous.moving = moving_now;
+    for (id, name, position) in desired {
+        if name.eq_ignore_ascii_case("None") || name.eq_ignore_ascii_case("NoSound") {
             continue;
-        };
-        live_emitters.insert(o.id);
-        let entry = previous.emitters.entry(o.id).or_insert((name.clone(), 0));
+        }
+        live_emitters.insert(id);
+        let entry = previous.emitters.entry(id).or_insert((name.clone(), 0));
         if entry.0 != *name {
             entry.0 = name.clone();
             entry.1 = 0;
         }
-        if sim.frame >= entry.1 || audio.has_emitter(o.id) {
-            if let Err(e) = audio.emitter(vfs, o.id, name, o.position) {
-                eprintln!("ambient: {e:#}");
+        if sim.frame >= entry.1 || audio.has_emitter(id) {
+            if let Err(e) = audio.emitter(vfs, id, name, position) {
+                eprintln!("emitter: {e:#}");
             }
             entry.1 = sim.frame.saturating_add(30);
         }
@@ -131,6 +175,72 @@ pub fn feedback(
             eprintln!("ambient stop: {e:#}");
         }
         previous.emitters.remove(&id);
+    }
+    audio.set_logic_time(Duration::from_secs_f64(sim.frame as f64 / 30.0));
+    if sim.frame >= 2 {
+        for notice in &sim.notices {
+            use ih_sim::notices::Notice;
+            let message = match notice {
+                Notice::InsufficientFunds { player: owner } if *owner == player => {
+                    Some("InsufficientFunds".to_string())
+                }
+                Notice::UpgradeComplete { player: owner } if *owner == player => Some("UpgradeComplete".to_string()),
+                Notice::CashStolen { player: owner } if *owner == player => Some("CashStolen".to_string()),
+                Notice::PowerUsed { player: owner, power } => superweapon(power).map(|kind| {
+                    format!("SuperweaponLaunched_{}_{kind}", if *owner == player { "Own" } else { "Enemy" })
+                }),
+                _ => None,
+            };
+            if let Some(message) = message {
+                audio.queue_eva(&message, side, now);
+            }
+        }
+        for o in sim.objects.values().filter(|o| !o.dead) {
+            let visible = o.owner == player
+                || (sim.shrouded_status(o.id, player) == ih_sim::shroud::Visibility::Clear
+                    && !sim.stealthed_and_undetected(o.id));
+            if !visible {
+                continue;
+            }
+            let template = &sim.templates.objects[&o.template];
+            if let Some(old) = previous.seen.insert(o.id, o.owner) {
+                if old == player && o.owner != player {
+                    audio.queue_eva(
+                        if template.has_kind("STRUCTURE") { "BuildingStolen" } else { "VehicleStolen" },
+                        side,
+                        now,
+                    );
+                }
+            } else {
+                let relation = if o.owner == player { "Own" } else { "Enemy" };
+                if template.has_kind("STRUCTURE")
+                    && let Some(kind) = superweapon(&o.template)
+                {
+                    audio.queue_eva(&format!("SuperweaponDetected_{relation}_{kind}"), side, now);
+                }
+                for (needle, hero) in
+                    [("blacklotus", "BlackLotus"), ("jarmenkell", "JarmenKell"), ("colonelburton", "ColonelBurton")]
+                {
+                    if o.template.to_ascii_lowercase().contains(needle) {
+                        audio.queue_eva(&format!("{relation}{hero}Detected"), side, now);
+                    }
+                }
+            }
+            for power in &o.powers {
+                let ready = power.available_on <= sim.frame && power.paused_count == 0 && !o.disabled.any();
+                let old = previous.powers.insert((o.id, power.template.clone()), ready);
+                if ready
+                    && old != Some(true)
+                    && let Some(kind) = superweapon(&power.template)
+                {
+                    audio.queue_eva(
+                        &format!("SuperweaponReady_{}_{kind}", if o.owner == player { "Own" } else { "Enemy" }),
+                        side,
+                        now,
+                    );
+                }
+            }
+        }
     }
     if sim.frame >= 2 {
         let (supply, demand) = sim.energy(player);
@@ -154,12 +264,10 @@ pub fn feedback(
     previous.previous = current;
 }
 
-pub fn listener(camera: &TacticalCamera, map: &Map) -> Listener {
+pub fn listener(camera: &TacticalCamera, map: &Map, catalog: &ih_audio::Catalog) -> Listener {
     let (s, c) = camera.yaw.sin_cos();
-    Listener {
-        position: [camera.center.x, camera.center.y, map.ground_height(camera.center.x, camera.center.y) + 50.0],
-        right: [c, s],
-    }
+    let view = camera.camera(map);
+    catalog.camera_listener(view.target.to_array(), view.eye.to_array(), [c, s])
 }
 
 fn permitted(event: &FxEvent, local_player: Option<u32>) -> bool {

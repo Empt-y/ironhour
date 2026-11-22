@@ -2571,3 +2571,42 @@ movement, stops and voice replacement without requiring an output device.
 - Fixed unloaded window names remaining discoverable: reopening Options now
   targets its live controls. Tests exercise actual slider input, reopening,
   cancel, accept, preferences replacement and streaming dialogue playback.
+
+### Audio implementation closure and milestone boundary
+
+The remaining M6 audio infrastructure is implemented for the current engine:
+
+- Ambient and movement emitters have independent channels, move with objects,
+  choose damage/time-of-day variants, and run attack/body/decay lifecycles.
+  Script hooks can disable individual emitters or pause/resume ambient audio.
+- Listener placement and zoom volume now follow AudioManager::update using the
+  configured microphone height/percentage and zoom gain, rather than a fixed
+  50-unit vertical listener. Output remains stereo through the open backend.
+- EVA notifications now include failed purchases, research completion, stolen
+  cash, visible heroes/superweapons, ownership changes and power readiness/use.
+  Ephemeral notices are cleared each tick and excluded from deterministic hashes.
+  EVA expiry and cooldown use logic time, so pauses do not consume them.
+- Every Eva.ini event and side mapping is supported by the notification API.
+  Beacons, team/ally relationships, sabotage and other absent gameplay modules
+  must produce their notifications when those modules are ported; audio does
+  not invent gameplay state for systems the simulation still lists as stubs.
+- Script-requested music replacement supports fade-out, fade-in and Silence.
+  The original's music changes are ScriptActions::doMusicTrackChange; their
+  campaign/skirmish decisions belong to M7's scripts, not a filename-based
+  combat-music guess. Streaming dialogue priority/interrupt/stop APIs are ready
+  for the same script layer. These are integration dependencies, not missing
+  decoder, mixer, streaming or notification implementations.
+- New maps replace the audio registry from map overrides and clear old voices,
+  narration state and cached samples while preserving user volume preferences.
+- Offline mixer tests assert actual channel output and live mute, alongside
+  emitter, priority, streaming, settings, clock and notification tests.
+  `audio-render` writes review WAVs without a device. Stock EVA and Contra music
+  produced non-silent PCM; `audio-device-check` opened the native device and
+  submitted a GUI click. A human listening review remains a review task.
+
+Next in the plan: finish M6's interface (the in-game control bar and command
+buttons for build/production/upgrades/powers, CommandMap hotkeys and cursors,
+loading/score screens and remaining options/menu integration), then review a
+menu-started sandbox with full UI and sound. M7 follows: SCB script execution,
+skirmish build lists and teams, AI and victory conditions. Its first-playable
+check is complete matches against every AI general at each difficulty.

@@ -17,6 +17,7 @@ pub mod locomotion;
 pub mod map_objects;
 pub mod missiles;
 pub mod navigation;
+pub mod notices;
 pub mod ocl;
 pub mod partition;
 pub mod pathfind;

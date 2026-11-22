@@ -384,6 +384,7 @@ pub struct Simulation {
     pub shroud: crate::shroud::Shroud,
     /// FX lists played this frame, for the client (`fx`; not hashed).
     pub fx_events: Vec<crate::fx::FxEvent>,
+    pub notices: Vec<crate::notices::Notice>,
 }
 impl Simulation {
     pub fn new(map: Arc<Map>, templates: Arc<Templates>, seed: u32) -> Self {
@@ -507,6 +508,7 @@ impl Simulation {
             sell_list: Vec::new(),
             shroud,
             fx_events: Vec::new(),
+            notices: Vec::new(),
         }
     }
     pub fn spawn(&mut self, name: &str, p: [f32; 2], owner: u32) -> Result<u32, SimError> {
@@ -1307,6 +1309,7 @@ impl Simulation {
     }
     pub fn step(&mut self) {
         self.fx_events.clear();
+        self.notices.clear();
         for o in self.objects.values_mut() {
             o.previous_position = o.position;
             o.previous_angle = o.angle;

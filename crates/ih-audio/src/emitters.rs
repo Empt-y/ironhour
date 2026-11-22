@@ -1,7 +1,27 @@
 use super::*;
 
 impl<B: Backend> Audio<B> {
-    pub fn has_emitter(&self, id: u32) -> bool {
+    pub fn pause_ambient(&mut self, paused: bool) {
+        self.ambient_paused = paused;
+        for voice in self.active.iter_mut().filter(|v| v.emitter.is_some()) {
+            if paused {
+                voice.handle.pause(kira::Tween::default());
+            } else {
+                voice.handle.resume(kira::Tween::default());
+            }
+        }
+    }
+    pub fn enable_emitter(&mut self, vfs: &Vfs, id: u64, enabled: bool) -> Result<()> {
+        if enabled {
+            self.disabled_emitters.remove(&id);
+        } else {
+            self.disabled_emitters.insert(id);
+            self.stop_emitter(vfs, id, true)?;
+        }
+        Ok(())
+    }
+
+    pub fn has_emitter(&self, id: u64) -> bool {
         self.active.iter().any(|v| v.emitter == Some(id))
     }
 
@@ -23,7 +43,8 @@ impl<B: Backend> Audio<B> {
                 event.sounds = sounds.clone();
             }
             let next = match voice.phase {
-                Phase::Attack => Some(Phase::Body),
+                Phase::Attack if !event.sounds.is_empty() => Some(Phase::Body),
+                Phase::Attack if !event.decay.is_empty() => Some(Phase::Decay),
                 Phase::Body if event.all && voice.body_index + 1 < event.sounds.len() => {
                     voice.body_index += 1;
                     Some(Phase::Body)
@@ -69,7 +90,10 @@ impl<B: Backend> Audio<B> {
 
     /// Synchronize a drawable's moving emitter. Range-culling releases the voice;
     /// returning into range can restart it. Changing damage state changes its event.
-    pub fn emitter(&mut self, vfs: &Vfs, id: u32, name: &str, position: [f32; 3]) -> Result<()> {
+    pub fn emitter(&mut self, vfs: &Vfs, id: u64, name: &str, position: [f32; 3]) -> Result<()> {
+        if self.ambient_paused || self.disabled_emitters.contains(&id) {
+            return Ok(());
+        }
         let event = self.catalog.events.get(name).with_context(|| format!("unknown ambient sound: {name}"))?;
         let range = if event.global { self.catalog.global_range } else { event.range };
         if self.listener.spatial(position, range).0 <= 0.0 {
@@ -91,7 +115,7 @@ impl<B: Backend> Audio<B> {
         Ok(())
     }
 
-    pub fn stop_emitter(&mut self, vfs: &Vfs, id: u32, decay: bool) -> Result<()> {
+    pub fn stop_emitter(&mut self, vfs: &Vfs, id: u64, decay: bool) -> Result<()> {
         let voices = std::mem::take(&mut self.active);
         let mut error = None;
         for mut voice in voices {

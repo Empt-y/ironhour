@@ -395,6 +395,9 @@ impl Simulation {
         }
         let can = self.can_make_unit(factory, unit);
         if can != CanMake::Ok {
+            if can == CanMake::NoMoney {
+                self.notices.push(crate::notices::Notice::InsufficientFunds { player: self.objects[&factory].owner });
+            }
             return Err(SimError(format!("object {factory} cannot make {unit}: {can:?}")));
         }
         let owner = self.objects[&factory].owner;

@@ -36,6 +36,39 @@ impl<B: Backend> Audio<B> {
         Ok(())
     }
 
+    /// ScriptActions::doMusicTrackChange: named tracks, explicit fades and silence.
+    /// Map/skirmish scripts choose when and which track; the audio layer does not
+    /// guess a combat playlist from filenames.
+    pub fn request_music(&mut self, vfs: &Vfs, name: &str, fade_out: bool, fade_in: bool) -> Result<()> {
+        let fade = kira::Tween { duration: self.catalog.fade_time, ..Default::default() };
+        if name.eq_ignore_ascii_case("Silence") {
+            self.music.playlist.clear();
+            if let Some((_, mut handle)) = self.music.current.take() {
+                handle.stop(if fade_out {
+                    fade
+                } else {
+                    kira::Tween { duration: Duration::ZERO, ..Default::default() }
+                });
+            }
+            return Ok(());
+        }
+        let mut data = self.catalog.music_data(vfs, name)?;
+        let target = decibels(self.catalog.music[name].volume * self.catalog.music_volume);
+        if fade_in {
+            data = data.volume(Decibels::SILENCE);
+        }
+        let mut handle = self.manager.play(data).map_err(|e| anyhow::anyhow!("music {name}: {e:?}"))?;
+        if fade_in {
+            handle.set_volume(target, fade);
+        }
+        self.music.playlist.clear();
+        if let Some((_, mut old)) = self.music.current.take() {
+            old.stop(if fade_out { fade } else { kira::Tween { duration: Duration::ZERO, ..Default::default() } });
+        }
+        self.music.current = Some((name.into(), handle));
+        Ok(())
+    }
+
     pub fn play_playlist(&mut self, vfs: &Vfs, tracks: Vec<String>) -> Result<()> {
         ensure!(!tracks.is_empty(), "empty music playlist");
         let data = self.catalog.music_data(vfs, &tracks[0])?;
@@ -134,6 +167,10 @@ mod tests {
         assert_eq!(audio.music.playlist, ["Shell"]);
         assert!(audio.play_music(&vfs, "Missing").is_err());
         assert_eq!(audio.music.current.as_ref().unwrap().0, "Shell", "failed replacement preserves playback");
+        audio.request_music(&vfs, "Shell", true, true).unwrap();
+        assert!(audio.music.playlist.is_empty(), "script requests take control from the automatic playlist");
+        audio.request_music(&vfs, "Silence", true, false).unwrap();
+        assert!(audio.music.current.is_none());
         audio.stop_music();
         assert!(audio.music.current.is_none());
         assert!(audio.music.playlist.is_empty());

@@ -7,6 +7,7 @@
 //! Original looping attack/body/decay and full ambient emitters remain pending.
 mod emitters;
 pub mod music;
+pub mod offline;
 pub mod preferences;
 pub mod speech;
 #[cfg(test)]
@@ -163,6 +164,8 @@ pub struct Catalog {
     relative_world: f32,
     global_range: [f32; 2],
     pub fx_sounds: BTreeMap<String, Vec<String>>,
+    pub fade_time: Duration,
+    microphone: [f32; 5],
 }
 
 impl Catalog {
@@ -188,6 +191,8 @@ impl Catalog {
             relative_world: 1.0,
             global_range: [5000.0, 500000.0],
             fx_sounds: BTreeMap::new(),
+            fade_time: Duration::from_secs(2),
+            microphone: [50.0, 0.333, 130.0, 425.0, 0.2],
         };
         for block in defs.ordered("AudioSettings") {
             for f in block.fields() {
@@ -195,6 +200,16 @@ impl Catalog {
                 let Some(v) = values.first() else { continue };
                 match f.name.to_ascii_lowercase().as_str() {
                     "audioroot" => c.root = v.clone(),
+                    "microphonedesiredheightaboveterrain" => c.microphone[0] = v.parse().unwrap_or(c.microphone[0]),
+                    "microphonemaxpercentagebetweengroundandcamera" => {
+                        c.microphone[1] = percent(v).unwrap_or(c.microphone[1]).clamp(0.0, 1.0)
+                    }
+                    "zoommindistance" => c.microphone[2] = v.parse().unwrap_or(c.microphone[2]),
+                    "zoommaxdistance" => c.microphone[3] = v.parse().unwrap_or(c.microphone[3]),
+                    "zoomsoundvolumepercentageamount" => {
+                        c.microphone[4] = percent(v).unwrap_or(c.microphone[4]).clamp(0.0, 1.0)
+                    }
+                    "timetofadeaudio" => c.fade_time = Duration::from_millis(v.parse().unwrap_or(2000)),
                     "soundsfolder" => c.folder = v.clone(),
                     "streamingfolder" => c.speech_folder = v.clone(),
                     "musicfolder" => c.music_folder = v.clone(),
@@ -262,6 +277,27 @@ impl Catalog {
         c
     }
 
+    /// AudioManager::update's terrain-target microphone and camera zoom gain.
+    pub fn camera_listener(&self, ground: [f32; 3], eye: [f32; 3], right: [f32; 2]) -> Listener {
+        let d = [eye[0] - ground[0], eye[1] - ground[1], eye[2] - ground[2]];
+        let scale = if eye[2] <= self.microphone[0] || d[2] <= 0.0 {
+            self.microphone[1]
+        } else {
+            self.microphone[1].min(self.microphone[0] / d[2])
+        };
+        let position = [ground[0] + d[0] * scale, ground[1] + d[1] * scale, ground[2] + d[2] * scale];
+        let distance =
+            ((eye[0] - position[0]).powi(2) + (eye[1] - position[1]).powi(2) + (eye[2] - position[2]).powi(2)).sqrt();
+        let fraction = if distance <= self.microphone[2] {
+            0.0
+        } else if self.microphone[3] > self.microphone[2] {
+            ((distance - self.microphone[2]) / (self.microphone[3] - self.microphone[2])).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        Listener { position, right, world_gain: 1.0 - fraction * self.microphone[4] }
+    }
+
     pub fn ui_events(&self) -> impl Iterator<Item = (&str, &Event)> {
         self.events
             .iter()
@@ -297,10 +333,11 @@ pub fn decode(vfs: &Vfs, path: &str) -> Result<StaticSoundData> {
 pub struct Listener {
     pub position: [f32; 3],
     pub right: [f32; 2],
+    pub world_gain: f32,
 }
 impl Default for Listener {
     fn default() -> Self {
-        Self { position: [0.0; 3], right: [1.0, 0.0] }
+        Self { position: [0.0; 3], right: [1.0, 0.0], world_gain: 1.0 }
     }
 }
 impl Listener {
@@ -318,7 +355,7 @@ impl Listener {
         };
         let horizontal = d[0].hypot(d[1]);
         let pan = if horizontal > 0.001 { (d[0] * self.right[0] + d[1] * self.right[1]) / horizontal } else { 0.0 };
-        (gain, ((pan.clamp(-1.0, 1.0) + 1.0) * 0.5))
+        (gain * self.world_gain, ((pan.clamp(-1.0, 1.0) + 1.0) * 0.5))
     }
 }
 fn decibels(volume: f32) -> Decibels {
@@ -338,7 +375,7 @@ struct Voice {
     phase: Phase,
     remaining: u32,
     body_index: usize,
-    emitter: Option<u32>,
+    emitter: Option<u64>,
     priority: u8,
 }
 
@@ -354,6 +391,8 @@ pub struct Audio<B: Backend = DefaultBackend> {
     sequence: BTreeMap<String, usize>,
     rng: u32,
     time_of_day: String,
+    ambient_paused: bool,
+    disabled_emitters: std::collections::BTreeSet<u64>,
 }
 
 impl Audio {
@@ -373,6 +412,8 @@ impl<B: Backend> Audio<B> {
             sequence: BTreeMap::new(),
             rng: 0x91ab_3d57,
             time_of_day: String::new(),
+            ambient_paused: false,
+            disabled_emitters: Default::default(),
             listener: Listener::default(),
             speech: speech::Speech::default(),
             music: music::Music::default(),
@@ -384,6 +425,22 @@ impl<B: Backend> Audio<B> {
         self.rng ^= self.rng >> 17;
         self.rng ^= self.rng << 5;
         self.rng as f64 / u32::MAX as f64
+    }
+
+    /// Map overrides replace the registry; old map voices and cached samples cannot survive.
+    pub fn reload_catalog(&mut self, catalog: Catalog, preferences: preferences::Preferences) -> Result<()> {
+        for mut voice in self.active.drain(..) {
+            voice.handle.stop(kira::Tween { duration: Duration::ZERO, ..Default::default() });
+        }
+        self.stop_music();
+        self.stop_speech();
+        self.speech = speech::Speech::default();
+        self.cache.clear();
+        self.sequence.clear();
+        self.disabled_emitters.clear();
+        self.ambient_paused = false;
+        self.catalog = catalog;
+        self.set_preferences(preferences)
     }
 
     pub fn update_listener(&mut self, listener: Listener) {
@@ -428,7 +485,9 @@ impl<B: Backend> Audio<B> {
         if let Some(sounds) = event.variants.get(&format!("sounds{}", self.time_of_day)).filter(|s| !s.is_empty()) {
             event.sounds = sounds.clone();
         }
-        ensure!(!event.sounds.is_empty(), "{name}: no sounds");
+        if event.sounds.is_empty() && event.attack.is_empty() && event.decay.is_empty() {
+            return Ok(false);
+        }
         let spatial = if event.ui {
             None
         } else {
@@ -460,8 +519,16 @@ impl<B: Backend> Audio<B> {
         {
             return Ok(false);
         }
-        let phase = if event.attack.is_empty() { Phase::Body } else { Phase::Attack };
-        let clips = if phase == Phase::Attack {
+        let phase = if !event.attack.is_empty() {
+            Phase::Attack
+        } else if !event.sounds.is_empty() {
+            Phase::Body
+        } else {
+            Phase::Decay
+        };
+        let clips = if phase == Phase::Decay {
+            &event.decay[..]
+        } else if phase == Phase::Attack {
             &event.attack[..]
         } else if event.all {
             &event.sounds[..1]
