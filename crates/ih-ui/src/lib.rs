@@ -13,6 +13,8 @@
 //! callback table come in later slices.
 use ih_formats::wnd;
 
+pub mod draw;
+
 pub mod status {
     //! `WIN_STATUS_*` bits, in `wnd::STATUS_NAMES` order.
     pub const ACTIVE: u32 = 1 << 0;

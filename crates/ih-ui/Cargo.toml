@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 ih-formats.workspace = true
+ih-ini.workspace = true

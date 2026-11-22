@@ -12,6 +12,7 @@ pub mod model;
 pub mod pose;
 pub mod roads;
 pub mod terrain;
+pub mod ui;
 pub mod water;
 
 use glam::{Mat4, Vec3};

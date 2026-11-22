@@ -100,6 +100,17 @@ enum Cmd {
         /// Model file name (e.g. AVCrusader or Art\W3D\AVCrusader.w3d). Omit to scan all.
         name: Option<String>,
     },
+    /// Draw a window layout offscreen to a PNG (images and colours; no text yet).
+    UiRender {
+        /// Layout file, e.g. Menus\MainMenu.wnd.
+        name: String,
+        #[arg(long, default_value = "out/ui.png")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 800)]
+        width: u32,
+        #[arg(long, default_value_t = 600)]
+        height: u32,
+    },
     /// Parse window layouts (.wnd): describe one, or check every layout the game can load.
     Wnd {
         /// Layout file (e.g. Menus\MainMenu.wnd or Window\Menus\MainMenu.wnd). Omit to scan all.
@@ -483,6 +494,54 @@ fn main() -> Result<()> {
         }
         Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
         Cmd::Wnd { name } => wnd(&mount(&cli)?, name.as_deref())?,
+        Cmd::UiRender { name, out, width, height } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
+            let images = ih_ui::draw::mapped_images(&defs);
+            let path = if name.to_ascii_lowercase().starts_with("window\\") {
+                name.clone()
+            } else {
+                format!("Window\\{name}")
+            };
+            let bytes = vfs.read(&path)?.with_context(|| format!("{path}: not found"))?;
+            let layout = ih_formats::wnd::parse(&bytes)?;
+            let mut ui = ih_ui::WindowManager::new([*width as i32, *height as i32]);
+            ui.load(&layout);
+            let list = ui.draw_list(&images);
+            let quads: Vec<ih_render::ui::UiQuad> = list
+                .iter()
+                .map(|c| match c {
+                    ih_ui::draw::DrawCmd::Image { texture, uv, rect } => ih_render::ui::UiQuad {
+                        texture: Some(texture.clone()),
+                        rect: rect.map(|v| v as f32),
+                        uv: *uv,
+                        color: [1.0; 4],
+                    },
+                    ih_ui::draw::DrawCmd::Fill { rect, color } => ih_render::ui::UiQuad {
+                        texture: None,
+                        rect: rect.map(|v| v as f32),
+                        uv: [[0.0; 2]; 4],
+                        color: color.map(|c| f32::from(c) / 255.0),
+                    },
+                })
+                .collect();
+            let mut assets = ih_render::Assets::new(&vfs, &language);
+            let mut r = ih_render::Renderer::new()?;
+            let rgba = r.render_ui(&mut assets, &quads, (*width, *height));
+            write_png(out, *width, *height, &rgba)?;
+            let images_drawn = list.iter().filter(|c| matches!(c, ih_ui::draw::DrawCmd::Image { .. })).count();
+            println!(
+                "{} windows, {} quads ({images_drawn} images), {} mapped images known; wrote {}",
+                ui.windows.len(),
+                quads.len(),
+                images.len(),
+                out.display()
+            );
+            for w in assets.warnings.iter().take(10) {
+                println!("  warning: {w}");
+            }
+        }
         Cmd::Sheet { names, out, cell, columns, yaw, pitch, hide } => {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;

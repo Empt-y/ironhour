@@ -844,6 +844,7 @@ name = "ih-ui"
 version = "0.1.0"
 dependencies = [
  "ih-formats",
+ "ih-ini",
 ]
 
 [[package]]

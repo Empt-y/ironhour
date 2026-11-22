@@ -482,7 +482,12 @@ impl Renderer {
             .clone()
     }
 
-    fn named_texture(&mut self, assets: &mut Assets, name: &str) -> Arc<wgpu::TextureView> {
+    /// The 1x1 white texture (flat colours).
+    pub(crate) fn white_texture(&self) -> Arc<wgpu::TextureView> {
+        self.white.clone()
+    }
+
+    pub(crate) fn named_texture(&mut self, assets: &mut Assets, name: &str) -> Arc<wgpu::TextureView> {
         let key = name.to_ascii_lowercase();
         if let Some(t) = self.textures.get(&key) {
             return t.clone();
@@ -1045,6 +1050,15 @@ impl Renderer {
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.draw(&mut enc, scene, camera, lights, &targets, &resolve_view, clear, time_ms);
 
+        self.read_back(enc, &resolve, size)
+    }
+
+    /// Submits `enc` after copying `tex` (single-sampled, `size`) out; returns
+    /// tightly packed RGBA8 rows.
+    pub(crate) fn read_back(&self, mut enc: wgpu::CommandEncoder, tex: &wgpu::Texture, size: (u32, u32)) -> Vec<u8> {
+        let (w, h) = size;
+        let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let resolve = tex;
         // Read back (rows padded to 256 bytes).
         let padded = (w * 4).div_ceil(256) * 256;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {

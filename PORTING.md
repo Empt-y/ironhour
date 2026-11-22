@@ -2280,3 +2280,29 @@ the new `crates/ih-ui` crate.
   input callbacks, gadget behaviour (buttons, check boxes, radio groups,
   sliders, list and combo boxes, text entry, tab controls), the callback
   table, mapped images, fonts and drawing.
+
+### Drawing layouts (images and colours)
+
+From `W3DGameWinDefaultDraw` (`W3DGameWindow.cpp`), `Image.cpp`
+(`parseImageCoords`, `parseImageStatus`) and `W3DDisplay::drawImage` and
+`drawFillRect`: `crates/ih-ui/src/draw.rs` and `crates/ih-render/src/ui.rs`.
+
+- `MappedImage` definitions are read as texture, declared texture size, pixel
+  coordinates and rotation. UVs are the coordinates over the declared size, and
+  `ROTATED_90_CLOCKWISE` turns the corners.
+- The window system makes a back-to-front draw list. A window with the `IMAGE`
+  status stretches its state's first image (disabled or enabled) over itself
+  plus `IMAGEOFFSET`. Other windows draw a one-pixel border and a filled inside
+  in their state's colours. White with zero alpha is `WIN_COLOR_UNDEFINED` and
+  is skipped, and `W3DNoDraw` windows draw nothing.
+- `ih-render` has a 2D pass: alpha-blended textured or flat quads in screen
+  pixels, batched by texture in draw order, sharing the model renderer's
+  texture cache. `render_ui` draws offscreen.
+- `ih-tools ui-render <layout> --out <png>` draws a layout. The stock main menu
+  (63 windows, 80 quads, 30 of them images, 1,324 mapped images known) shows
+  the grid frame, the logo and the button column in place, with no missing
+  textures. Its backdrop is black because the parent is `W3DNoDraw`; the game
+  shows the 3D shell map there.
+- Not yet: text and fonts, the gadgets' own drawing (push button end caps,
+  check boxes, sliders, list and combo boxes), menu draw callbacks such as
+  `W3DMainMenuDraw`, the highlight state, input and the in-game window.
