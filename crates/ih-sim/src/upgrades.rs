@@ -204,6 +204,11 @@ pub struct PlayerUpgrades {
     pub cost_changes: Vec<(Vec<String>, f32, u32)>,
 }
 
+/// A `WeaponSetFlags` bit by name.
+pub fn weapon_set_flag(name: &str) -> u32 {
+    flag("WeaponSetFlags::s_bitNameList", name)
+}
+
 fn flag(list: &str, name: &str) -> u32 {
     ih_ini::schema::schema()
         .name_list(list)

@@ -420,7 +420,7 @@ impl Simulation {
         }
     }
 
-    fn weapon_template(&self, name: &str) -> Option<&WeaponTemplate> {
+    pub(crate) fn weapon_template(&self, name: &str) -> Option<&WeaponTemplate> {
         self.templates.weapons.get(name)
     }
 
@@ -849,6 +849,8 @@ impl Simulation {
             // iterateObjectsInRange(FROM_BOUNDINGSPHERE_3D), in object order.
             self.objects
                 .values()
+                // Passengers are out of the partition.
+                .filter(|o| o.contained_by.is_none())
                 .filter_map(|o| {
                     let (_, sphere, dz) = Self::bounding(&self.templates.objects[&o.template]);
                     let d = [o.position[0] - pos[0], o.position[1] - pos[1], o.position[2] + dz - pos[2]];

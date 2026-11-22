@@ -378,9 +378,39 @@ pub fn dock_bones(
     }
     out
 }
-/// The `Model` of a draw module's `DefaultConditionState`.
+/// Every bone of the default model, by lower-case name, for templates with a
+/// container (`getSingleLogicalBonePosition` for exits).
+pub fn logical_bones(
+    templates: &crate::templates::Templates,
+    vfs: &Vfs,
+    language: &str,
+) -> BTreeMap<String, BTreeMap<String, [f32; 3]>> {
+    let mut files = Files { vfs, language, files: BTreeMap::new() };
+    let mut out = BTreeMap::new();
+    for (name, t) in &templates.objects {
+        if !t.modules.iter().any(|m| m.class == "TransportContain") {
+            continue;
+        }
+        let scale = t.number("Scale", 1.0);
+        let mut bones = BTreeMap::new();
+        for model in t.modules.iter().filter(|m| m.kind == "Draw").filter_map(|m| default_model(&m.block)) {
+            let Some(h) = files.hierarchy(&model) else { continue };
+            for (i, p) in h.pivots.iter().enumerate().skip(1) {
+                if let Ok(v) = posed_point(&h, i, [0.0; 3]) {
+                    bones.entry(p.name.to_ascii_lowercase()).or_insert([v[0] * scale, v[1] * scale, v[2] * scale]);
+                }
+            }
+        }
+        out.insert(name.clone(), bones);
+    }
+    out
+}
+/// The `Model` of a draw module's default condition state.
 fn default_model(b: &ih_ini::Block) -> Option<String> {
-    let state = b.blocks().find(|s| s.kind == "DefaultConditionState")?;
+    // `DefaultConditionState`, or the state for no conditions (`ConditionState = NONE`).
+    let none =
+        |s: &&ih_ini::Block| s.kind == "ConditionState" && s.args().iter().all(|a| a.eq_ignore_ascii_case("NONE"));
+    let state = b.blocks().find(|s| s.kind == "DefaultConditionState").or_else(|| b.blocks().find(none))?;
     let model = state.fields().find(|f| f.name.eq_ignore_ascii_case("Model"))?.values().first()?.clone();
     (!model.eq_ignore_ascii_case("NONE")).then_some(model)
 }

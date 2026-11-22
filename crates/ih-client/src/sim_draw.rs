@@ -169,7 +169,8 @@ impl SimDrawables {
         self.objects.retain(|id, _| sim.objects.contains_key(id));
         // The map's own objects are still drawn by the static scene (they cannot
         // change until M5), so only objects created by commands or scenarios draw here.
-        for o in sim.objects.values().filter(|o| o.map_index.is_none()) {
+        // Passengers are hidden inside their transport (`setDrawableHidden`).
+        for o in sim.objects.values().filter(|o| o.map_index.is_none() && o.contained_by.is_none()) {
             let Some(td) = self.templates.get(&o.template) else { continue };
             let flags = self.flags_for(o);
             let entry = self.objects.entry(o.id).or_insert_with(|| ObjectDraw {

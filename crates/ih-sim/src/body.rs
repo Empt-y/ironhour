@@ -573,12 +573,25 @@ impl Simulation {
     /// `Object::onDie`: each die module in order.
     pub(crate) fn on_die(&mut self, id: u32, info: DamageInfo) {
         let Some(o) = self.objects.get(&id) else { return };
-        let dies: Vec<(usize, DieKind)> =
-            o.modules.iter().enumerate().filter_map(|(i, m)| m.die.clone().map(|d| (i, d))).collect();
+        let dies: Vec<(usize, Option<DieKind>)> = o
+            .modules
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| match (&m.die, m.kind) {
+                (Some(d), _) => Some((i, Some(d.clone()))),
+                // OpenContain is a die module too.
+                (None, ModuleKind::Contain) => Some((i, None)),
+                _ => None,
+            })
+            .collect();
         self.stop_dead(id);
         for (i, d) in dies {
             let Some(o) = self.objects.get(&id) else { return };
             let status = o.status;
+            let Some(d) = d else {
+                self.contain_on_die(id);
+                continue;
+            };
             match d {
                 DieKind::Destroy(mux) if mux.applies(info.death_type, status) => self.destroy_object(id),
                 DieKind::Destroy(_) => {}

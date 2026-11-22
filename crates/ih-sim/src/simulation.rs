@@ -146,6 +146,19 @@ pub enum Command {
     Sell {
         object: u32,
     },
+    /// `aiEnter` (`MSG_ENTER`): get into a transport.
+    Enter {
+        object: u32,
+        target: u32,
+    },
+    /// `aiExit` (`MSG_EXIT`): a passenger gets out.
+    Exit {
+        object: u32,
+    },
+    /// `aiEvacuate` (`MSG_EVACUATE`): a transport lets everyone out.
+    Evacuate {
+        object: u32,
+    },
     /// `ProductionUpdate::queueUpgrade` (`MSG_QUEUE_UPGRADE`).
     Research {
         factory: u32,
@@ -172,6 +185,8 @@ pub enum ModuleKind {
     ProductionExit,
     /// A supply dock (`supply::Dock`).
     Dock,
+    /// A container (`contain::Contain`).
+    Contain,
     Steering,
     Physics,
     /// The body module (`body`): not updated.
@@ -264,6 +279,10 @@ pub struct Object {
     pub builder: Option<u32>,
     /// `m_soleHealingBenefactorID` and its expiry frame.
     pub sole_healer: Option<(u32, u32)>,
+    /// A container module (`contain`).
+    pub contain: Option<crate::contain::Contain>,
+    /// `getContainedBy`.
+    pub contained_by: Option<u32>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -513,6 +532,8 @@ impl Simulation {
                 ModuleKind::Production
             } else if crate::supply::Dock::from_module(&m.class, &m.block).is_some() {
                 ModuleKind::Dock
+            } else if crate::contain::ContainData::from_module(&m.class, &m.block).is_some() {
+                ModuleKind::Contain
             } else if crate::production::Exit::from_module(&m.class, &m.block).is_some() {
                 ModuleKind::ProductionExit
             } else if known.is_some_and(|d| d.tables.iter().any(|t| t.starts_with("AIUpdateModuleData::"))) {
@@ -537,6 +558,7 @@ impl Simulation {
                 self.scheduler.insert((id, index), self.frame.max(1), Phase::Normal);
             } else if kind == ModuleKind::Production
                 || kind == ModuleKind::Dock
+                || kind == ModuleKind::Contain
                 || kind == ModuleKind::ProductionExit && m.class == "QueueProductionExitUpdate"
             {
                 // Updated every frame (UPDATE_SLEEP_NONE); the other exits sleep forever.
@@ -591,6 +613,12 @@ impl Simulation {
             .iter()
             .filter(|m| m.kind == "Behavior")
             .find_map(|m| crate::construction::Dozer::from_module(&m.class, &m.block));
+        let contain = t
+            .modules
+            .iter()
+            .filter(|m| m.kind == "Behavior")
+            .find_map(|m| crate::contain::ContainData::from_module(&m.class, &m.block))
+            .map(crate::contain::Contain::new);
         let upgrade_modules: Vec<crate::upgrades::UpgradeModuleDef> = t
             .modules
             .iter()
@@ -651,6 +679,8 @@ impl Simulation {
                 construction: None,
                 builder: None,
                 sole_healer: None,
+                contain,
+                contained_by: None,
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
@@ -696,7 +726,9 @@ impl Simulation {
             | Command::Attack { object, .. }
             | Command::AttackPosition { object, .. }
             | Command::Guard { object, .. }
-            | Command::Dock { object, .. } => vec![*object],
+            | Command::Dock { object, .. }
+            | Command::Enter { object, .. }
+            | Command::Exit { object } => vec![*object],
             Command::GroupMove { objects, .. } => objects.clone(),
             _ => vec![],
         };
@@ -732,6 +764,9 @@ impl Simulation {
             }
             Command::ResumeConstruction { dozer, target } => self.resume_construction(dozer, target)?,
             Command::Repair { dozer, target } => self.repair(dozer, target, true)?,
+            Command::Enter { object, target } => self.begin_enter(object, target, false)?,
+            Command::Exit { object } => self.begin_exit(object, false)?,
+            Command::Evacuate { object } => self.evacuate(object, false)?,
             Command::Sell { object } => self.sell(object)?,
             Command::CancelResearch { factory, upgrade } => self.cancel_upgrade(factory, &upgrade)?,
             Command::Dock { object, target } => {
@@ -1122,6 +1157,7 @@ impl Simulation {
     }
     pub fn remove(&mut self, id: u32) -> Result<(), SimError> {
         if self.objects.contains_key(&id) {
+            self.contain_on_delete(id);
             self.forget_cells(id);
             self.upgrades_on_delete(id);
             self.remove_from_pathfind_map(id);
@@ -1159,7 +1195,8 @@ impl Simulation {
                 | ModuleKind::Body
                 | ModuleKind::Die
                 | ModuleKind::ProductionExit
-                | ModuleKind::Dock => 0,
+                | ModuleKind::Dock
+                | ModuleKind::Contain => 0,
             };
             if !self.objects[&id].disabled.allows_module(exceptions) {
                 self.scheduler.reschedule((id, index), self.frame.saturating_add(1));
@@ -1190,6 +1227,7 @@ impl Simulation {
                 ModuleKind::Production => self.production_update(id),
                 ModuleKind::ProductionExit => self.exit_update(id),
                 ModuleKind::Dock => self.dock_update(id),
+                ModuleKind::Contain => self.contain_update(id),
                 ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => FOREVER,
             };
             self.update_pos(id);
@@ -1289,6 +1327,10 @@ impl Simulation {
         if o.ai.dead {
             return self.update_dead(id);
         }
+        // A passenger is held, but its exit state still runs.
+        if o.ai.state == AiState::Exit && o.disabled.names() == [DisabledReason::Held] {
+            return self.update_exit(id);
+        }
         if o.disabled.any() {
             return if o.ai.active() { 1 } else { FOREVER };
         }
@@ -1312,6 +1354,8 @@ impl Simulation {
             }
             AiState::Guard => return self.update_guard(id),
             AiState::Dock => return self.update_dock(id),
+            AiState::Enter => return self.update_enter(id),
+            AiState::Exit => return self.update_exit(id),
             AiState::Dead => return self.update_dead(id),
             AiState::AttackObject | AiState::AttackPosition => return self.update_attack(id),
             AiState::MoveTo | AiState::FollowPath => {
@@ -1460,8 +1504,12 @@ impl Simulation {
         }
     }
 
+    pub(crate) fn rebuild_partition_now(&mut self) {
+        self.rebuild_partition();
+    }
     fn rebuild_partition(&mut self) {
-        let entries = self.objects.values().map(|o| crate::partition::Entry {
+        // Passengers are out of the partition (`addOrRemoveObjFromWorld`).
+        let entries = self.objects.values().filter(|o| o.contained_by.is_none()).map(|o| crate::partition::Entry {
             id: o.id,
             position: o.position,
             radius: o.body.radius,
@@ -1663,7 +1711,11 @@ impl Simulation {
     /// pair, in object-ID order, calls `onCollide` both ways.
     fn process_collisions(&mut self) {
         let mut pairs = Vec::new();
+        let mut enters = Vec::new();
         for a in self.objects.keys().copied() {
+            if self.objects[&a].contained_by.is_some() {
+                continue;
+            }
             let ca = self.collider(a);
             if !ca.enabled || ca.immobile {
                 continue;
@@ -1672,6 +1724,14 @@ impl Simulation {
             for cb in self.nearby(a, traffic::CONTACT_RANGE) {
                 if (cb.id <= a && !cb.immobile) || !ca.interacts(cb) {
                     continue;
+                }
+                // OpenContain::onCollide: a unit entering touches its container.
+                let entering = |x: u32, y: u32| {
+                    let o = &self.objects[&x];
+                    o.ai.state == AiState::Enter && o.ai.enter == Some(y)
+                };
+                if (entering(a, cb.id) || entering(cb.id, a)) && traffic::contact(ca, cb) {
+                    enters.push(if entering(a, cb.id) { (cb.id, a) } else { (a, cb.id) });
                 }
                 let ignored = |x: u32, y: u32| self.objects[&x].ai.ignore_obstacle == Some(y);
                 if ignored(a, cb.id) || ignored(cb.id, a) {
@@ -1684,6 +1744,13 @@ impl Simulation {
             }
         }
         pairs.sort_unstable();
+        enters.sort_unstable();
+        enters.dedup();
+        for (container, rider) in enters {
+            if self.objects.contains_key(&container) && self.objects.contains_key(&rider) {
+                self.contain_collide(container, rider);
+            }
+        }
         let mut squished = Vec::new();
         for (a, b) in pairs {
             for (x, y) in [(a, b), (b, a)] {
@@ -2206,13 +2273,29 @@ impl Simulation {
     /// Live colliding object pairs, for headless invariants and diagnostics.
     pub fn overlaps(&self) -> Vec<(u32, u32)> {
         let mut pairs = Vec::new();
+        // Passengers are out of the world; units just out of a transport or
+        // into one ignore collisions (`setIgnoreCollisionTime`, `ignoreObstacle`).
+        let excused = |x: u32, y: u32| {
+            let o = &self.objects[&x];
+            o.traffic.ignore_until > self.frame || o.ai.ignore_obstacle == Some(y)
+        };
         for id in self.objects.keys().copied() {
+            if self.objects[&id].contained_by.is_some() {
+                continue;
+            }
             let a = self.collider(id);
             if a.immobile {
                 continue;
             }
             for b in self.nearby(id, 0.0) {
-                if id < b.id && !a.immobile && !b.immobile && traffic::overlaps(a, b) && !self.crush_pair(id, b.id) {
+                if id < b.id
+                    && !a.immobile
+                    && !b.immobile
+                    && !excused(id, b.id)
+                    && !excused(b.id, id)
+                    && traffic::overlaps(a, b)
+                    && !self.crush_pair(id, b.id)
+                {
                     pairs.push((id, b.id));
                 }
             }
@@ -2221,7 +2304,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(27);
+        h.u32(28);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2499,6 +2582,22 @@ impl Simulation {
             h.u32(*f);
         }
         for o in self.objects.values() {
+            h.u32(o.contained_by.unwrap_or(0));
+            h.u32(o.ai.enter.unwrap_or(0));
+            h.u32(u32::from(o.contain.is_some()));
+            if let Some(c) = &o.contain {
+                h.u64(c.riders.len() as u64);
+                for r in &c.riders {
+                    h.u32(*r);
+                }
+                for v in [c.extra_slots as u32, c.exit_not_busy, c.door_countdown, c.which_exit as u32] {
+                    h.u32(v);
+                }
+                h.u32(u32::from(c.payload_created));
+                for v in c.rally.unwrap_or_default() {
+                    h.float(v);
+                }
+            }
             let (healer, until) = o.sole_healer.unwrap_or_default();
             h.u32(healer);
             h.u32(until);
@@ -2775,6 +2874,19 @@ fn hash_command(c: &Command, h: &mut StateHash) {
             h.u32(25);
             h.u32(*object);
         }
+        Command::Enter { object, target } => {
+            h.u32(26);
+            h.u32(*object);
+            h.u32(*target);
+        }
+        Command::Exit { object } => {
+            h.u32(27);
+            h.u32(*object);
+        }
+        Command::Evacuate { object } => {
+            h.u32(28);
+            h.u32(*object);
+        }
         Command::Research { factory, upgrade } => {
             h.u32(20);
             h.u32(*factory);
@@ -3026,7 +3138,7 @@ fn minor_radius(t: &crate::templates::Template) -> f32 {
     minor * t.number("Scale", 1.0)
 }
 
-fn view_key(t: &crate::templates::Template, l: &Locomotor) -> u8 {
+pub(crate) fn view_key(t: &crate::templates::Template, l: &Locomotor) -> u8 {
     let crusher = if t.number("CrusherLevel", 0.0) > 0.0 { crate::footprint::surface::CRUSHER } else { 0 };
     l.surface_mask() | crusher
 }
@@ -3090,7 +3202,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xc69457b93633602e, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x1167296da13d34e1, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3326,7 +3438,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xa3df58a256ff5f59, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xebcef21670040b2a, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3418,7 +3530,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x99b00e16d024b43b, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x38c394d1f1d637d0, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

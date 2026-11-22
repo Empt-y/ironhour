@@ -19,10 +19,14 @@ pub enum AiState {
     Dead = 13,
     /// `AI_DOCK`.
     Dock = 14,
+    /// `AI_ENTER`.
+    Enter = 15,
     /// `AI_GUARD`.
     Guard = 16,
     FaceObject = 33,
     FacePosition = 34,
+    /// `AI_EXIT`.
+    Exit = 37,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +71,8 @@ pub struct AiMachine {
     pub dock: Option<crate::supply::DockMachine>,
     /// A dock machine left by a new order or the end of one, still to be halted.
     pub halted_dock: Option<crate::supply::DockMachine>,
+    /// The container being entered (`AI_ENTER`) or left (`AI_EXIT`).
+    pub enter: Option<u32>,
 }
 impl AiMachine {
     pub fn begin(&mut self, state: AiState, frame: u32) {
@@ -82,6 +88,7 @@ impl AiMachine {
         self.attack = None;
         self.guard = None;
         self.ignore_obstacle = None;
+        self.enter = None;
         if let Some(d) = self.dock.take() {
             self.halted_dock = Some(d);
         }

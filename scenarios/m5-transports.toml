@@ -1,0 +1,65 @@
+# Transports on Tournament Desert (owner 1): three Rangers (2-4) get into a
+# Humvee (1), which drives east and lets them out; a China Troop Crawler (5)
+# starts with its payload of Red Guards and unloads them.
+map = "Tournament Desert"
+seed = 23
+frames = 1500
+
+[[spawn]]
+template = "AmericaVehicleHumvee"
+position = [1000.0, 1000.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [950.0, 960.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [950.0, 1000.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [950.0, 1040.0]
+owner = 1
+
+[[spawn]]
+template = "ChinaVehicleTroopCrawler"
+position = [900.0, 1200.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 2
+target = 1
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 3
+target = 1
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 4
+target = 1
+
+[[commands]]
+frame = 300
+kind = "move"
+object = 1
+target = [1250.0, 1000.0]
+
+[[commands]]
+frame = 700
+kind = "evacuate"
+object = 1
+
+[[commands]]
+frame = 700
+kind = "evacuate"
+object = 5

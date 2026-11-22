@@ -108,6 +108,8 @@ impl Simulation {
             || o.disabled.has(crate::disabled::DisabledReason::Subdued)
             || self.under_construction(id)
             || o.status & sold != 0
+            // Passengers do not fire (PassengersAllowedToFire is not ported).
+            || o.contained_by.is_some()
         {
             return false;
         }
@@ -181,7 +183,7 @@ impl Simulation {
         for other in candidates {
             let o = &self.objects[&other];
             // LiveMapEnemies
-            if o.dead || self.relationship(id, other) != Relationship::Enemies {
+            if o.dead || o.contained_by.is_some() || self.relationship(id, other) != Relationship::Enemies {
                 continue;
             }
             let d2 = self.attack_distance_sqr(id, None, Some(other), o.position);

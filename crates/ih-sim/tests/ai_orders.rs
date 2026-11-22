@@ -207,5 +207,5 @@ fn status_and_order_log_replays_match_each_tick() {
     assert!(a.objects[&1].is_idle());
     assert_eq!(a.objects[&1].ai.completed_orders, 2);
     assert!(a.events.is_empty());
-    assert_eq!(a.state_hash(), 0xea117984d660041d, "portable AI/disabled fixture changed");
+    assert_eq!(a.state_hash(), 0xb54c831f25310f9a, "portable AI/disabled fixture changed");
 }

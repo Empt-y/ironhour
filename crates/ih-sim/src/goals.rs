@@ -138,7 +138,8 @@ impl Simulation {
     /// Mobile AI objects take part (`KINDOF_IMMOBILE` and objects without AI do not).
     fn tracked(&self, id: u32) -> bool {
         let o = &self.objects[&id];
-        !self.templates.objects[&o.template].has_kind("IMMOBILE")
+        o.contained_by.is_none()
+            && !self.templates.objects[&o.template].has_kind("IMMOBILE")
             && o.modules.iter().any(|m| m.kind == ModuleKind::Steering)
     }
     /// `isDoingGroundMovement`.

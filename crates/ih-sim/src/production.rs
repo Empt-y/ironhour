@@ -421,6 +421,10 @@ impl Simulation {
     /// `setRallyPoint` on the exit module.
     pub(crate) fn set_rally_point(&mut self, object: u32, position: [f32; 2]) -> Result<(), SimError> {
         let o = self.objects.get_mut(&object).ok_or_else(|| SimError(format!("object {object} is missing")))?;
+        if let Some(c) = o.contain.as_mut() {
+            c.rally = Some(position);
+            return Ok(());
+        }
         let e = o.exit.as_mut().ok_or_else(|| SimError(format!("object {object} has no exit")))?;
         e.rally = Some(position);
         Ok(())

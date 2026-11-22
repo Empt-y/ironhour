@@ -4,6 +4,7 @@ pub mod attack;
 pub mod body;
 pub mod bridges;
 pub mod construction;
+pub mod contain;
 pub mod death;
 pub mod disabled;
 pub mod footprint;

@@ -1493,3 +1493,74 @@ Asset-free fixtures: `c69457b93633602e` (ground), `99b00e16d024b43b` (bridge),
 `tests/construction.rs` adds an ordered repair at 2% a second, a bored dozer
 repairing a nearby building but not a distant one, and a sale's timing and
 half refund.
+
+### Transports (state hash v28)
+
+From `OpenContain.cpp` (`addToContain`, `removeFromContainViaIterator`,
+`addOrRemoveObjFromWorld`, `onCollide`, `isValidContainerFor`,
+`exitObjectViaDoor`, `scatterToNearbyPosition`, `orderAllPassengersToExit`,
+`processDamageToContained`, `onDie`, `onDelete`), `TransportContain.cpp`,
+`AIEnterState`, `AIExitState`, `privateEnter`/`privateExit`/`privateEvacuate`,
+`ActionManager::canEnterObject` and `Object::onContainedBy`/`onRemovedFrom`:
+`crates/ih-sim/src/contain.rs`.
+
+- `enter` command (unit, transport): the unit walks to the transport, ignoring
+  it as an obstacle, and gets in when it touches it (`onCollide`) or reaches
+  its centre. It must be of an `AllowInsideKindOf` kind (infantry by default)
+  and not a `ForbidInsideKindOf` one, belong to the transport's owner, have a
+  `TransportSlotCount`, and fit in the `Slots` left. A transport taken by an
+  enemy first is attacked instead.
+- Passengers leave the world: they are out of the partition, collisions, goal
+  cells, targeting and area damage, are held, cannot fire, and are not drawn.
+- `exit` (passenger) and `evacuate` (transport): passengers wait out
+  `ExitDelay` between each other, then appear at `ExitStart` and walk to
+  `ExitEnd`, cycling through `NumberOfExitPaths` exits (`ExitStartNN`), and on
+  to the rally point; they ignore collisions for a second. A ground transport
+  on terrain its riders cannot stand on keeps them in. Exit bones come from
+  the default model (now also `ConditionState = NONE`, not only
+  `DefaultConditionState`, which dock bones use too).
+- `InitialPayload` fills the transport on its first update (the Troop
+  Crawler's Red Guards); `HealthRegen%PerSec` heals passengers;
+  `ArmedRidersUpgradeMyWeaponSet` switches the weapon set while armed infantry
+  ride.
+- A dying transport deals `DamagePercentToUnits` of each passenger's maximum
+  health (burned or normal death), kills those that could not get out, and
+  scatters the rest around it; one that is removed takes its passengers.
+- The overlap invariant excuses units that ignore collisions or the object
+  they overlap.
+- `m5-transports` (stock): three Rangers ride a Humvee east and get out of its
+  three exits; a Troop Crawler unloads its eight Red Guards.
+- Not yet: passengers firing from inside (Humvee, Battle Bus), garrisons,
+  tunnels, Overlord/Helix containers, parachutes, heal containers, stealth
+  garrisons, instant exits, `KeepContainerVelocityOnExit`, entering a moving
+  transport (the goal is where it was), aircraft and airfield entry.
+
+All scenarios pass with v28 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `d3d22c82301bce6f` | `9cfa1ee0ef47c62d` |
+| AI/status orders | `cd3a80e41b965209` | `99c3c72bdb8459ee` |
+| Bridges | `2e54d179280b2931` | `af4a83818dc174cb` |
+| Traffic, Tournament Desert | `5f4cb098730952e1` | `5e57ffb228a688e7` |
+| Traffic, Winding River | `c4e374aeee8986fd` | `d19068638159e786` |
+| Long map travel | `2e31dfc4758f4a29` | `8bfdd511efb46fbd` |
+| Crush enemy / crush ally | `8c0fcc7efe0c831b` / `a89b836cd6b88088` | |
+| Comanche out and back | `b01e0f4f9ee55977` | `287bdf18f129e577` |
+| Group move (`m4-group`) | `852e658f587668ee` | |
+| Fight (`m5-fight`) | `3136f21425599074` | |
+| Missiles (`m5-missiles`) | `4200830d5a89e764` | |
+| Guard (`m5-guard`) | `058611e128ea9e7f` | |
+| Skirmish (`m5-skirmish`) | `2f7fc74191c8029d` | |
+| Production (`m5-production`) | `b4688f57d39e1446` | |
+| Supply (`m5-supply`) | `7aac42f2027a0739` | |
+| Upgrades (`m5-upgrades`) | `23d53ce1ae9c53bb` | |
+| Construction (`m5-construction`) | `f8852af33bc722f9` | |
+| Repair and selling (`m5-repair-sell`) | `33fbd64bf6f494c9` | |
+| Transports (`m5-transports`) | `700d16b88cb1a634` | |
+
+Asset-free fixtures: `1167296da13d34e1` (ground), `38c394d1f1d637d0` (bridge),
+`ebcef21670040b2a` (head-on traffic), `b54c831f25310f9a` (AI/status orders).
+`tests/transports.rs` covers getting in, riding and evacuating with the exit
+delay; slots, kinds and owners; a dying transport's damage to passengers; an
+initial payload; and matching hashes in two runs.
