@@ -15,13 +15,17 @@
 //!   then their text centred in the state's text colours.
 //! - Static text: colours or image, then text, vertically centred and either
 //!   centred (`CENTERED`) or 7 pixels in, wrapped 10 pixels short of the width.
-//! - Other gadgets draw as default windows with their text for now.
+//! - Check boxes and radio buttons: background, box (checked or not), text.
+//!   Sliders: track and thumb at the value. List and combo boxes: their rows
+//!   (combo boxes the chosen one, and the drop-down when open). Entry fields:
+//!   the typed text.
 //!
 //! The state is disabled, highlighted or enabled, taken from the
 //! `DISABLED`/`HILITE`/`ENABLEDDRAWDATA` lists.
 //!
-//! Not yet: check box, radio button, slider, list and combo box, text entry,
-//! progress bar and tab control drawing, menu draw callbacks such as
+//! Not yet: the exact layouts of the list, combo, slider and entry draws (scroll
+//! bars, column widths, cursor, the original's row heights from the font),
+//! progress bars and tab controls, menu draw callbacks such as
 //! `W3DMainMenuDraw`, button overlays and clocks, video buffers and greyed images.
 use crate::text::{FontSpec, Fonts};
 use crate::{WindowManager, state, status};
@@ -206,7 +210,23 @@ impl WindowManager {
         margin: i32,
         wrap: i32,
     ) {
-        let text = self.display_text(id, res);
+        self.text_str(out, res, id, rect, centered, margin, wrap, None);
+    }
+
+    /// `text` with explicit text (`None`: the window's own).
+    #[allow(clippy::too_many_arguments)]
+    fn text_str(
+        &self,
+        out: &mut Vec<DrawCmd>,
+        res: &mut Resources,
+        id: usize,
+        rect: [i32; 4],
+        centered: bool,
+        margin: i32,
+        wrap: i32,
+        text: Option<&str>,
+    ) {
+        let text = text.map_or_else(|| self.display_text(id, res), str::to_string);
         if text.is_empty() {
             return;
         }
@@ -336,6 +356,73 @@ impl WindowManager {
         }
     }
 
+    /// Check boxes and radio buttons: background (image 0), the box (1 unchecked,
+    /// 2 checked) as a square at the left, then the text after it.
+    fn check_box(&self, out: &mut Vec<DrawCmd>, res: &mut Resources, id: usize, rect: [i32; 4]) {
+        self.default_window(out, res, id, rect);
+        let w = &self.windows[id];
+        let (key, _) = state_key(w.status, w.state);
+        let data = w.script.draw_data(key);
+        let checked = w.state & state::SELECTED != 0;
+        let h = rect[3] - rect[1];
+        let boxr = [rect[0], rect[1], rect[0] + h, rect[3]];
+        if let Some(d) = data.get(if checked { 2 } else { 1 }) {
+            match (w.status & status::IMAGE != 0, self.draw_image_named(res, d.image.as_ref())) {
+                (true, Some(img)) => image(out, &img, boxr, None),
+                _ => Self::colors(out, boxr, d),
+            }
+        }
+        self.text(out, res, id, rect, false, h + 4, 0);
+    }
+
+    /// Sliders: the track, then a thumb (`SLIDERTHUMB...DRAWDATA`) at the value.
+    fn slider(&self, out: &mut Vec<DrawCmd>, res: &mut Resources, id: usize, rect: [i32; 4]) {
+        self.default_window(out, res, id, rect);
+        let w = &self.windows[id];
+        let g = &w.gadget;
+        let key =
+            if w.status & status::ENABLED == 0 { "SLIDERTHUMBDISABLEDDRAWDATA" } else { "SLIDERTHUMBENABLEDDRAWDATA" };
+        let Some(d) = w.script.draw_data(key).into_iter().next() else { return };
+        let span = (g.max - g.min).max(1);
+        let f = (g.value - g.min) as f32 / span as f32;
+        let thumb = if w.kind == "VERTSLIDER" {
+            let side = rect[2] - rect[0];
+            let y = rect[3] - side - ((rect[3] - rect[1] - side) as f32 * f) as i32;
+            [rect[0], y, rect[2], y + side]
+        } else {
+            let side = rect[3] - rect[1];
+            let x = rect[0] + ((rect[2] - rect[0] - side) as f32 * f) as i32;
+            [x, rect[1], x + side, rect[3]]
+        };
+        match (w.status & status::IMAGE != 0, self.draw_image_named(res, d.image.as_ref())) {
+            (true, Some(img)) => image(out, &img, thumb, None),
+            _ => Self::colors(out, thumb, &d),
+        }
+    }
+
+    /// List rows, `ROW_HEIGHT` apart; the selected one framed.
+    fn rows(&self, out: &mut Vec<DrawCmd>, res: &mut Resources, id: usize, rect: [i32; 4]) {
+        let rh = crate::input::ROW_HEIGHT;
+        let rows = self.windows[id].gadget.rows.clone();
+        let selected = self.windows[id].gadget.selected;
+        for (i, row) in rows.iter().enumerate() {
+            let y = rect[1] + rh * i as i32;
+            if y + rh > rect[3] {
+                break;
+            }
+            let r = [rect[0], y, rect[2], y + rh];
+            if selected == Some(i) {
+                Self::colors(
+                    out,
+                    r,
+                    &ih_formats::wnd::DrawData { image: None, color: [255, 255, 255, 0], border: [255, 255, 0, 255] },
+                );
+            }
+            let text = row.join("  ");
+            self.text_str(out, res, id, r, false, 4, 0, Some(&text));
+        }
+    }
+
     /// The draw list for every visible window, back to front.
     pub fn draw_list(&self, res: &mut Resources) -> Vec<DrawCmd> {
         let mut out = vec![];
@@ -349,9 +436,30 @@ impl WindowManager {
             match w.kind.as_str() {
                 "PUSHBUTTON" => self.push_button(&mut out, res, id, rect),
                 "STATICTEXT" => self.static_text(&mut out, res, id, rect),
-                "CHECKBOX" | "RADIOBUTTON" | "ENTRYFIELD" => {
+                "CHECKBOX" | "RADIOBUTTON" => self.check_box(&mut out, res, id, rect),
+                "ENTRYFIELD" => {
                     self.default_window(&mut out, res, id, rect);
-                    self.text(&mut out, res, id, rect, false, 7, 0);
+                    let t = self.windows[id].gadget.entry.clone();
+                    self.text_str(&mut out, res, id, rect, false, 4, 0, Some(&t));
+                }
+                "HORZSLIDER" | "VERTSLIDER" => self.slider(&mut out, res, id, rect),
+                "SCROLLLISTBOX" => {
+                    self.default_window(&mut out, res, id, rect);
+                    self.rows(&mut out, res, id, [rect[0], rect[1], rect[2], rect[3]]);
+                }
+                "COMBOBOX" => {
+                    self.default_window(&mut out, res, id, rect);
+                    let g = &self.windows[id].gadget;
+                    let shown = g.selected.and_then(|i| g.rows.get(i)).and_then(|r| r.first()).cloned();
+                    if let Some(t) = shown {
+                        self.text_str(&mut out, res, id, rect, false, 4, 0, Some(&t));
+                    }
+                    if g.open {
+                        let h = crate::input::ROW_HEIGHT * g.rows.len() as i32;
+                        let list = [rect[0], rect[3], rect[2], rect[3] + h];
+                        out.push(DrawCmd::Fill { rect: list, color: [0, 0, 0, 230] });
+                        self.rows(&mut out, res, id, list);
+                    }
                 }
                 _ => self.default_window(&mut out, res, id, rect),
             }

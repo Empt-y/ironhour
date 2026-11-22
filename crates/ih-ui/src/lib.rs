@@ -14,6 +14,7 @@
 use ih_formats::wnd;
 
 pub mod draw;
+pub mod input;
 pub mod text;
 
 pub mod state {
@@ -30,6 +31,8 @@ pub mod status {
     pub const IMAGE: u32 = 1 << 7;
     pub const NO_INPUT: u32 = 1 << 9;
     pub const NO_FOCUS: u32 = 1 << 10;
+    pub const CHECK_LIKE: u32 = 1 << 19;
+    pub const ON_MOUSE_DOWN: u32 = 1 << 25;
 }
 
 /// A window's index in the manager.
@@ -50,6 +53,8 @@ pub struct Window {
     pub state: u32,
     /// Text set at run time (`GadgetStaticTextSetText`), over the script's label.
     pub text: Option<String>,
+    /// Gadget state (sliders, lists, entries, radio groups).
+    pub gadget: input::Gadget,
     pub style: u32,
     /// `m_region.lo`: relative to the parent (to the screen for top-level windows).
     pub position: [i32; 2],
@@ -66,6 +71,8 @@ pub struct WindowManager {
     pub top: Vec<WindowId>,
     /// The display size layouts are scaled to.
     pub display: [i32; 2],
+    /// Capture, hover and keyboard focus (`input`).
+    pub input_state: input::InputState,
 }
 
 impl WindowManager {
@@ -100,6 +107,7 @@ impl WindowManager {
             status: w.status(),
             state: 0,
             text: None,
+            gadget: Default::default(),
             style: w.style(),
             position: [lo[0] - origin[0], lo[1] - origin[1]],
             size: [hi[0] - lo[0], hi[1] - lo[1]],

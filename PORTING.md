@@ -2335,3 +2335,30 @@ From `render2dsentence.cpp` (`Render2DSentenceClass::Initialize_GDI_Font`),
 - The main menu's button column renders with its labels in the right place.
   The faction and load-game sub-buttons also show, because the original hides
   them in `MainMenuInit` (still to come).
+
+### Input and the controls
+
+From `GameWindowManager::winProcessMouseEvent`, the gadget input functions in
+`GameClient/GUI/Gadget/` and the W3D gadget draws: `crates/ih-ui/src/input.rs`
+and `draw.rs`.
+
+- Mouse moves highlight the enabled control under the cursor and tell its owner
+  (entering and leaving). A pressed control captures the mouse until release.
+  `NOINPUT` windows (button labels) hand clicks to their parent.
+- Push buttons select on release over the button, or on press with
+  `ON_MOUSE_DOWN` or `CHECK_LIKE` (which toggles). Leaving lets go of a press.
+- Check boxes toggle. Radio buttons clear the others of their `GROUP` under
+  the same parent. Sliders set and drag their value between `MINVALUE` and
+  `MAXVALUE`. List boxes select a row. Combo boxes open their drop-down and
+  pick a row. Entry fields take keyboard focus, characters up to `MAXLEN`,
+  backspace and Enter.
+- Each control reports to its owner (its parent) as a message. The handler is
+  found by walking up past `PassSelectedButtonsToParentSystem` and
+  `PassMessagesToParentSystem` windows. Clicks also produce interface sound
+  events (`GUIClick`, `GUICheckboxClick`, `GUIComboBoxClick`) for the audio
+  system.
+- Drawing covers check boxes and radio buttons (background, checked or
+  unchecked box, text), slider thumbs at the value, list rows with the
+  selection framed, combo boxes (the chosen row and the open drop-down) and
+  typed text. Their exact original layouts (scroll bars, column widths, cursor,
+  font-based row heights) are still approximate.
