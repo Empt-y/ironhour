@@ -549,8 +549,7 @@ impl ApplicationHandler for App {
         if id != s.window.id() {
             return;
         }
-        if s.ui.is_some() {
-            let ui = s.ui.as_mut().unwrap();
+        if let Some(ui) = &mut s.ui {
             let p = |v: Vec2| [v.x as i32, v.y as i32];
             let input = match &event {
                 WindowEvent::CursorMoved { position, .. } => {
