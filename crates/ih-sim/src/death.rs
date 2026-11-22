@@ -247,13 +247,15 @@ impl Simulation {
         self.slow_death_phase(id, &d, 0);
     }
 
-    /// `doPhaseStuff`: one random FX (not drawn yet), OCL and weapon of the phase.
+    /// `doPhaseStuff`: one random FX, OCL and weapon of the phase.
     fn slow_death_phase(&mut self, id: u32, d: &SlowDeathData, phase: usize) {
         if !d.any_effect {
             return;
         }
         if !d.fx[phase].is_empty() {
-            let _ = self.rng.integer(0, d.fx[phase].len() as i32 - 1);
+            let i = self.rng.integer(0, d.fx[phase].len() as i32 - 1) as usize;
+            let pos = self.objects[&id].position;
+            self.play_fx(&d.fx[phase][i].clone(), pos, Some(id), None);
         }
         if !d.ocl[phase].is_empty() {
             let i = self.rng.integer(0, d.ocl[phase].len() as i32 - 1) as usize;

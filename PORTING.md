@@ -2100,3 +2100,63 @@ Asset-free fixtures: `440fe03debd2780f` (ground), `9baf5630b40e979e` (bridge),
 `tests/crates.rs` covers a kill dropping a neutral money crate (and not the
 conditional ones) that pays the unit that drives over it, heal and unit
 crates, radar from an upgrade lost with its building, and determinism.
+
+### FX lists as logic events (state hash v37)
+
+`crates/ih-sim/src/fx.rs`. The original calls `FXList::doFXPos`/`doFXObj` from
+logic code, but everything an FX list does (sounds, particles, tracers,
+scorch marks, camera shake) is client-side and uses only the client's random
+numbers. So the simulation records `fx_events` each frame: which list played,
+where, for which object, pointing where, and whether only one side may see it.
+Events are cleared at the start of every frame and are not hashed. sim-run
+checks that both replays produce the same events and counts them per list.
+
+- Weapons (`fireWeaponTemplate`): `FireFX`/`ProjectileDetonationFX` and their
+  `Veterancy*` variants for the shooter's level, not before the weapon's
+  `SuspendFXDelay` has passed. A contact weapon plays at the target, others at
+  the shooter. A stealthed, undetected shooter's FX are marked for its own
+  side only, unless the weapon has `PlayFXWhenStealthed` or the shooter is a
+  mine.
+- `FXListDie` (now a die module, with its die filters): `DeathFX`, pointed at
+  the damage dealer with `OrientToObject`, gated by `InitiallyActive` (default
+  yes, as patched in 1.02), `TriggeredBy` and `ConflictsWith`.
+- `SlowDeathBehavior` phases play the FX they already drew.
+- The hash version moves because `FXListDie` modules are no longer stubs
+  (module kinds are hashed); no state changed.
+- Not yet: body `DamageFX`, transition damage FX, missile ignition and exhaust,
+  crate, special power and construction FX, muzzle flashes at barrel bones
+  (`handleWeaponFireFX`), and playing the lists (client).
+
+All scenarios pass with v37 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `0fd95dd0a45df9e6` | `67bd4b8cce463d28` |
+| AI/status orders | `efbb1ed1fa522deb` | `94323a4e64c8c4ba` |
+| Bridges | `536e09060e8444a8` | `8bc38c39e499efcb` |
+| Traffic, Tournament Desert | `f146e78962ffe752` | `e062a8b07774b66d` |
+| Traffic, Winding River | `76684c841471d522` | `d10f20c516aab491` |
+| Long map travel | `7b3bf16420dfda28` | `c077e77911b6a5ea` |
+| Crush enemy / crush ally | `672b3b3b0c8086aa` / `476e3a9017e4c395` | |
+| Comanche out and back | `b666e8860e910f5c` | `3aead5adac4f1dfa` |
+| Group move (`m4-group`) | `a10aebf3c6dbea8e` |  |
+| `m5-construction` | `91703b09d3935d24` | |
+| `m5-fight` | `032a1fb835d6e078` | |
+| `m5-garrison` | `ad8a8d8c3f787b0b` | |
+| `m5-guard` | `412ba6fe70a8d69c` | |
+| `m5-missiles` | `37da71522f1ca8a3` | |
+| `m5-production` | `2f9f699455aa30c6` | |
+| `m5-repair-sell` | `00c9f92715530ff5` | |
+| `m5-skirmish` | `d1b593b337167556` | |
+| `m5-stealth` | `1e56265eace8676d` | |
+| `m5-supply` | `8dd8a79eda259501` | |
+| `m5-transports` | `4a2b8b93717d8352` | |
+| `m5-tunnels` | `d39c745e2d41615d` | |
+| `m5-upgrades` | `ff1df36e8c2acb15` | |
+
+Asset-free fixtures: `955d59d4b2390e9c` (ground), `c1dc68eca8a9c275` (bridge),
+`164334d065abb4ac` (head-on traffic), `c89763192dc27e57` (AI/status orders).
+`tests/fx.rs` covers fire FX after the suspend delay, the hero variant, and
+death FX pointed at the killer while an inactive one stays silent. In stock
+`m5-fight`: 69 machine-gun and 15 tank-gun fire FX, 15 shell detonations,
+and the tank and Ranger deaths.

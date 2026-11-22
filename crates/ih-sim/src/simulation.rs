@@ -382,6 +382,8 @@ pub struct Simulation {
     pub players: BTreeMap<u32, crate::production::Player>,
     /// Every player's shroud (`shroud`).
     pub shroud: crate::shroud::Shroud,
+    /// FX lists played this frame, for the client (`fx`; not hashed).
+    pub fx_events: Vec<crate::fx::FxEvent>,
 }
 impl Simulation {
     pub fn new(map: Arc<Map>, templates: Arc<Templates>, seed: u32) -> Self {
@@ -504,6 +506,7 @@ impl Simulation {
             players: BTreeMap::new(),
             sell_list: Vec::new(),
             shroud,
+            fx_events: Vec::new(),
         }
     }
     pub fn spawn(&mut self, name: &str, p: [f32; 2], owner: u32) -> Result<u32, SimError> {
@@ -1303,6 +1306,7 @@ impl Simulation {
         Ok(())
     }
     pub fn step(&mut self) {
+        self.fx_events.clear();
         for o in self.objects.values_mut() {
             o.previous_position = o.position;
             o.previous_angle = o.angle;
@@ -2479,7 +2483,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(36);
+        h.u32(37);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -3461,7 +3465,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x440fe03debd2780f, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x955d59d4b2390e9c, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3697,7 +3701,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xc2c7d62797b37145, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x164334d065abb4ac, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3789,7 +3793,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x9baf5630b40e979e, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xc1dc68eca8a9c275, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

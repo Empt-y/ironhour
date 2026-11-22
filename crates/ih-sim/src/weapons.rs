@@ -99,6 +99,10 @@ pub struct WeaponTemplate {
     pub pre_attack_type: u8,
     /// `FireOCL` and `ProjectileDetonationOCL` per veterancy level.
     pub fire_ocl: [Option<String>; 4],
+    /// `FireFX` / `ProjectileDetonationFX` per veterancy level (`fx`).
+    pub fire_fx: [Option<String>; 4],
+    pub detonation_fx: [Option<String>; 4],
+    pub play_fx_when_stealthed: bool,
     pub detonation_ocl: [Option<String>; 4],
     /// `WeaponBonus` lines of this weapon (`getExtraBonus`).
     pub extra_bonus: crate::veterancy::BonusSet,
@@ -141,6 +145,9 @@ impl WeaponTemplate {
             pre_attack_type: 0,
             extra_bonus: Default::default(),
             fire_ocl: Default::default(),
+            fire_fx: Default::default(),
+            detonation_fx: Default::default(),
+            play_fx_when_stealthed: false,
             detonation_ocl: Default::default(),
             radius_damage_angle: std::f32::consts::PI,
             continue_range: 0.0,
@@ -236,6 +243,20 @@ impl WeaponTemplate {
             "PreAttackDelay" => self.pre_attack_delay = duration(real(0)),
             "WeaponBonus" => self.extra_bonus.add_line(v),
             "FireOCL" => self.fire_ocl = std::array::from_fn(|_| v.first().cloned()),
+            "FireFX" | "ProjectileDetonationFX" => {
+                let fx = v.first().filter(|n| !n.eq_ignore_ascii_case("None")).cloned();
+                let list = if key == "FireFX" { &mut self.fire_fx } else { &mut self.detonation_fx };
+                *list = std::array::from_fn(|_| fx.clone());
+            }
+            "VeterancyFireFX" | "VeterancyProjectileDetonationFX" => {
+                if let Some(l) =
+                    v.first().and_then(|l| crate::veterancy::LEVELS.iter().position(|n| n.eq_ignore_ascii_case(l)))
+                {
+                    let list = if key == "VeterancyFireFX" { &mut self.fire_fx } else { &mut self.detonation_fx };
+                    list[l] = v.get(1).filter(|n| !n.eq_ignore_ascii_case("None")).cloned();
+                }
+            }
+            "PlayFXWhenStealthed" => self.play_fx_when_stealthed = first().eq_ignore_ascii_case("yes"),
             "ProjectileDetonationOCL" => self.detonation_ocl = std::array::from_fn(|_| v.first().cloned()),
             "VeterancyFireOCL" | "VeterancyProjectileDetonationOCL" => {
                 if let Some(l) =
@@ -368,6 +389,8 @@ pub struct Weapon {
     pub barrel: i32,
     pub shots_for_barrel: i32,
     pub last_fire_frame: u32,
+    /// `m_suspendFXFrame`: no fire FX before this frame.
+    pub suspend_fx_frame: u32,
 }
 impl Weapon {
     fn new(t: &WeaponTemplate, slot: u8) -> Self {
@@ -383,6 +406,7 @@ impl Weapon {
             barrel: 0,
             shots_for_barrel: t.shots_per_barrel,
             last_fire_frame: 0,
+            suspend_fx_frame: 0,
         }
     }
     /// `getStatus` (which also refreshes the stored status).
@@ -483,6 +507,7 @@ impl Simulation {
                 w.status = Status::ReloadingClip;
                 w.last_reload_started = frame;
                 w.fire_again_frame = frame;
+                w.suspend_fx_frame = frame + wt.suspend_fx_delay;
                 ws.weapons[i] = Some(w);
             }
         }
@@ -814,6 +839,10 @@ impl Simulation {
         if d2 < wt.minimum_range().powi(2) && !detonation {
             return;
         }
+        // FireFX / ProjectileDetonationFX (`fx`).
+        let fx_target = victim.map_or(pos, |v| self.objects[&v].position);
+        let slot = (!detonation).then(|| self.objects[&id].weapon_set.current as usize);
+        self.weapon_fx(id, wt, slot, fx_target, detonation);
         // FireOCL / ProjectileDetonationOCL for the shooter's veterancy.
         let level = self.objects[&id].experience.level as usize;
         let ocl = if detonation { wt.detonation_ocl[level].clone() } else { wt.fire_ocl[level].clone() };

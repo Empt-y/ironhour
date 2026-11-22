@@ -9,6 +9,7 @@ pub mod crates;
 pub mod death;
 pub mod disabled;
 pub mod footprint;
+pub mod fx;
 pub mod goals;
 pub mod group;
 pub mod guard;

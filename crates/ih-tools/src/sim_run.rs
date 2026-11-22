@@ -51,6 +51,7 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     }
     let mut entered = BTreeMap::new();
     let mut traversals = 0u32;
+    let mut fx_counts: BTreeMap<String, usize> = BTreeMap::new();
     for frame in 0..=scenario.frames {
         scenario.verify_frame(&a)?;
         if scenario.require_no_overlaps {
@@ -93,6 +94,12 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
             let previous: BTreeMap<_, _> = a.objects.values().map(|o| (o.id, o.layer)).collect();
             a.step();
             b.step();
+            if a.fx_events != b.fx_events {
+                bail!("FX events differ at frame {frame}");
+            }
+            for e in &a.fx_events {
+                *fx_counts.entry(e.fx.clone()).or_default() += 1;
+            }
             for o in a.objects.values() {
                 let old = previous.get(&o.id).copied().unwrap_or(o.layer);
                 if old == 0 && o.layer != 0 {
@@ -243,6 +250,7 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
         }
     }
     println!("completed bridge traversals: {traversals}");
+    println!("FX lists played: {fx_counts:?}");
     let repaths: u32 = a.objects.values().map(|o| o.traffic_repaths).sum();
     if !a.events.is_empty() {
         bail!("{} commands were rejected", a.events.len());

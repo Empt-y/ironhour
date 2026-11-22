@@ -347,6 +347,8 @@ pub enum DieKind {
     CreateObject { mux: DieMux, ocl: String, transfer_health: bool },
     /// `CreateCrateDie`: `CrateData` names, tried in order (`crates`).
     CreateCrate { mux: DieMux, crates: Vec<String> },
+    /// `FXListDie` (`fx`).
+    Fx { mux: DieMux, fx: crate::fx::FxDie },
 }
 impl DieKind {
     pub fn from_module(class: &str, block: &ih_ini::Block, templates: &crate::templates::Templates) -> Option<Self> {
@@ -361,6 +363,7 @@ impl DieKind {
                         .is_some_and(|v| v.first().is_some_and(|s| s.eq_ignore_ascii_case("yes"))),
                 })
             }
+            "FXListDie" => Some(DieKind::Fx { mux: DieMux::parse(block), fx: crate::fx::FxDie::parse(block) }),
             "CreateCrateDie" => Some(DieKind::CreateCrate {
                 mux: DieMux::parse(block),
                 crates: block
@@ -644,6 +647,8 @@ impl Simulation {
                     self.create_crate_die(id, &crates, info.source);
                 }
                 DieKind::CreateCrate { .. } => {}
+                DieKind::Fx { mux, fx } if mux.applies(info.death_type, status) => self.fx_die(id, &fx, info.source),
+                DieKind::Fx { .. } => {}
             }
         }
     }
@@ -685,7 +690,7 @@ pub fn module_kind(m: &crate::templates::ModuleDef) -> Option<ModuleKind> {
         return Some(ModuleKind::Body);
     }
     match m.class.as_str() {
-        "DestroyDie" | "CreateObjectDie" | "CreateCrateDie" => Some(ModuleKind::Die),
+        "DestroyDie" | "CreateObjectDie" | "CreateCrateDie" | "FXListDie" => Some(ModuleKind::Die),
         "SlowDeathBehavior" => Some(ModuleKind::SlowDeath),
         _ => None,
     }
