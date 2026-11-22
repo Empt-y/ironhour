@@ -1,0 +1,39 @@
+# Repair and selling on Tournament Desert (owner 1): a Barracks (2) takes 600
+# damage and the dozer (1) repairs it; the Power Plant (3) is sold for a
+# refund.
+map = "Tournament Desert"
+seed = 19
+frames = 2400
+
+[[spawn]]
+template = "AmericaVehicleDozer"
+position = [1000.0, 1000.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaBarracks"
+position = [850.0, 950.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaPowerPlant"
+position = [1150.0, 1000.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "damage"
+object = 2
+amount = 600.0
+damage_type = "EXPLOSION"
+
+[[commands]]
+frame = 2
+kind = "repair"
+dozer = 1
+target = 2
+
+[[commands]]
+frame = 2
+kind = "sell"
+object = 3

@@ -4,7 +4,7 @@ use ih_ini::definitions::Definitions;
 use ih_sim::{Command, Simulation, footprint::CellType, templates::Templates};
 use std::sync::Arc;
 
-const INI: &[u8] = b"GameData\nMinLowEnergyProductionSpeed = 1.0\nMaxLowEnergyProductionSpeed = 1.0\nEnd\n\
+const INI: &[u8] = b"GameData\nSellPercentage = 50%\nMinLowEnergyProductionSpeed = 1.0\nMaxLowEnergyProductionSpeed = 1.0\nEnd\n\
 CommandButton Command_Barracks\nCommand = DOZER_CONSTRUCT\nObject = Barracks\nEnd\n\
 CommandButton Command_Plant\nCommand = DOZER_CONSTRUCT\nObject = PowerPlant\nEnd\n\
 CommandSet DozerSet\n1 = Command_Barracks\n2 = Command_Plant\nEnd\n\
@@ -198,4 +198,84 @@ fn a_worker_gathers_and_builds() {
     s.enqueue(f, Command::Dock { object: w, target: pile }).unwrap();
     run(&mut s, 1200);
     assert!(s.money(1) > money, "{} {}", s.money(1), money);
+}
+
+fn damage(s: &mut Simulation, id: u32, amount: f32) {
+    let f = s.frame;
+    s.enqueue(
+        f,
+        Command::Damage { object: id, amount, damage_type: "EXPLOSION".into(), death_type: "NORMAL".into(), source: 0 },
+    )
+    .unwrap();
+    s.step();
+}
+fn health(s: &Simulation, id: u32) -> f32 {
+    s.objects[&id].health.as_ref().unwrap().current
+}
+
+#[test]
+fn a_dozer_repairs_a_building_two_percent_a_second() {
+    let mut s = sim();
+    let d = s.spawn("Dozer", [200.0, 200.0], 1).unwrap();
+    let b = s.spawn("Barracks", [400.0, 400.0], 1).unwrap();
+    damage(&mut s, b, 500.0);
+    assert_eq!(health(&s, b), 500.0);
+    let f = s.frame;
+    s.enqueue(f, Command::Repair { dozer: d, target: b }).unwrap();
+    let mut started = None;
+    for _ in 0..2400 {
+        s.step();
+        if started.is_none() && health(&s, b) > 500.0 {
+            started = Some(s.frame);
+        }
+        if health(&s, b) == 1000.0 {
+            break;
+        }
+    }
+    let started = started.expect("repairs began");
+    assert_eq!(health(&s, b), 1000.0);
+    // 20 health a second: 25 seconds for 500.
+    let took = s.frame - started;
+    assert!((745..=755).contains(&took), "{took} frames");
+    // The dozer notices the building is whole on its next update.
+    run(&mut s, 1);
+    assert!(s.objects[&d].dozer.as_ref().unwrap().tasks.iter().all(|t| t.target.is_none()));
+}
+
+#[test]
+fn a_bored_dozer_repairs_nearby_buildings_by_itself() {
+    let mut s = sim();
+    s.spawn("Dozer", [330.0, 400.0], 1).unwrap();
+    let b = s.spawn("Barracks", [400.0, 400.0], 1).unwrap();
+    let far = s.spawn("PowerPlant", [700.0, 700.0], 1).unwrap();
+    damage(&mut s, b, 100.0);
+    damage(&mut s, far, 100.0);
+    // Bored after five seconds.
+    run(&mut s, 140);
+    assert_eq!(health(&s, b), 900.0);
+    run(&mut s, 600);
+    assert_eq!(health(&s, b), 1000.0);
+    assert_eq!(health(&s, far), 700.0, "out of the bored range");
+}
+
+#[test]
+fn selling_takes_four_and_a_half_seconds_and_refunds_half() {
+    let mut s = sim();
+    let b = s.spawn("Barracks", [400.0, 400.0], 1).unwrap();
+    s.enqueue(1, Command::Sell { object: b }).unwrap();
+    s.step();
+    let sold = s.frame;
+    let mut gone = None;
+    for _ in 0..400 {
+        s.step();
+        if !s.objects.contains_key(&b) {
+            gone = Some(s.frame);
+            break;
+        }
+    }
+    // 1.5 s of scaffold, then 99.9% down to -50% at 100% per 3 s.
+    let took = gone.expect("sold") - sold;
+    assert!((178..=182).contains(&took), "{took} frames");
+    assert_eq!(s.money(1), 250);
+    assert_eq!(s.grid.ground_kind(40, 40), Some(CellType::Clear), "its cells are free again");
 }

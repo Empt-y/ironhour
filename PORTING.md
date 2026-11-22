@@ -1435,3 +1435,61 @@ blocked cells, build time, full health, backing off), sites refused for
 overlap, the map edge and money, power counting only once built, stopping and
 resuming construction, a worker that gathers, builds and gathers again, and
 matching hashes in two runs.
+
+### Repair and selling (state hash v27)
+
+From `DozerAIUpdate.cpp` (`privateRepair`, `canAcceptNewRepair`, the repair
+half of the action machine, `isRepairMostImportant`, the bored idle state and
+`findObjectToRepair`), `ActionManager::canRepairObject`,
+`Object::getSoleHealingBenefactor`/`attemptHealingFromSoleBenefactor`,
+`BuildAssistant::sellObject` and `BuildAssistant::update`, and
+`ProductionUpdate::cancelAndRefundAllProduction`: `crates/ih-sim/src/construction.rs`.
+
+- `repair` command (dozer, building): a dozer (or worker) repairs your or a
+  neutral building that is damaged, finished and not a bridge. It heals
+  `RepairHealthPercentPerSecond` of the maximum health each second, as the
+  building's only healer (another dozer cannot join in), and stops when the
+  building is whole or can no longer be repaired.
+- A dozer left idle for `BoredTime` with no task repairs the closest damaged
+  building of its own within `BoredRange`.
+- `sell` command (building): production is cancelled and refunded, then after
+  1.5 seconds the building comes down over three seconds and pays
+  `RefundValue`, or its cost times `SellPercentage`. A building being sold
+  builds nothing, fires at nothing and takes no supplies; its cells are freed
+  when it is destroyed.
+- `m5-repair-sell` (stock): a dozer repairs a Barracks from 400 to 1,000
+  health while a Power Plant sells for 400. `sim-run` prints damaged buildings
+  and the sell list.
+- Not yet: mine clearing by bored dozers, bridge repair and scaffolding,
+  fortifying, selling containers (`onSelling`), killing parked aircraft and
+  the building's own mines when sold, the engineer and hacker repair
+  variants.
+
+All scenarios pass with v27 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `c7c4fb9fba67b363` | `8fa20c3791dc8053` |
+| AI/status orders | `04dbc2ddb74c188d` | `39d250f28b29df18` |
+| Bridges | `b9db8329057bc7ee` | `32559fa0a3ccbdf6` |
+| Traffic, Tournament Desert | `1d7655948d043c9e` | `1dde07e1e3225fb6` |
+| Traffic, Winding River | `29cc8b65a32787aa` | `e40f60ff8e23bec4` |
+| Long map travel | `0e9f5dffdd9c280e` | `c91fc9017b5c2174` |
+| Crush enemy / crush ally | `05b7db4777554ea8` / `8d17b24671c5fa8c` | |
+| Comanche out and back | `6fd991f041c1b544` | `bf2617d3cff0f4e0` |
+| Group move (`m4-group`) | `f4e02d26d5b8a3df` | |
+| Fight (`m5-fight`) | `689a8a78054a5258` | |
+| Missiles (`m5-missiles`) | `6539ec254c8dba2c` | |
+| Guard (`m5-guard`) | `ba78296ecf4ee2b2` | |
+| Skirmish (`m5-skirmish`) | `8d7473f4ac0d850b` | |
+| Production (`m5-production`) | `1e1127e9d7a8e452` | |
+| Supply (`m5-supply`) | `805a26f437fc2a5e` | |
+| Upgrades (`m5-upgrades`) | `bf587bd1481209fb` | |
+| Construction (`m5-construction`) | `969da62d440b0807` | |
+| Repair and selling (`m5-repair-sell`) | `c6da8f8225014a31` | |
+
+Asset-free fixtures: `c69457b93633602e` (ground), `99b00e16d024b43b` (bridge),
+`a3df58a256ff5f59` (head-on traffic), `ea117984d660041d` (AI/status orders).
+`tests/construction.rs` adds an ordered repair at 2% a second, a bored dozer
+repairing a nearby building but not a distant one, and a sale's timing and
+half refund.

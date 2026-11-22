@@ -461,12 +461,17 @@ impl Simulation {
     pub(crate) fn production_update(&mut self, id: u32) -> u32 {
         let now = self.frame;
         let owner = self.objects[&id].owner;
+        let sold = self.objects[&id].status & crate::construction::status_bits(&["SOLD"]) != 0;
         let Some(p) = self.objects.get_mut(&id).and_then(|o| o.production.as_mut()) else { return 1 };
         if p.data.num_doors > 0 {
             Self::update_doors(p, now);
         }
         if p.complete_frame != 0 && now - p.complete_frame > p.data.complete_duration {
             p.complete_frame = 0;
+        }
+        // A factory being sold builds nothing.
+        if sold {
+            return 1;
         }
         let Some((unit, upgrade)) = p.queue.front().map(|e| (e.template.clone(), e.upgrade)) else { return 1 };
         let total = if upgrade {

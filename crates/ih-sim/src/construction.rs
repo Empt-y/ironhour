@@ -26,6 +26,7 @@ use crate::{
 
 /// `DozerTask` (build, repair, fortify).
 pub const TASK_BUILD: usize = 0;
+pub const TASK_REPAIR: usize = 1;
 pub const TASKS: usize = 3;
 /// `MIN_ACTION_TOLERANCE`.
 const MIN_ACTION_TOLERANCE: f32 = 70.0;
@@ -130,6 +131,12 @@ enum Ret {
     Continue,
     Success,
     Failure,
+}
+
+/// `ObjectStatusMaskType` bits by name.
+pub fn status_bits(names: &[&str]) -> u64 {
+    let list = ih_ini::schema::schema().name_list("ObjectStatusMaskType::s_bitNameList").unwrap_or(&[]);
+    names.iter().filter_map(|n| list.iter().position(|l| l.eq_ignore_ascii_case(n))).fold(0, |m, i| m | (1 << i))
 }
 
 /// `OBJECT_STATUS_UNDER_CONSTRUCTION`.
@@ -566,7 +573,9 @@ impl Simulation {
             t.preferred = None;
         }
         let position = self.good_build_position(dozer, target);
-        self.objects.get_mut(&target).unwrap().builder = Some(dozer);
+        if task == TASK_BUILD {
+            self.objects.get_mut(&target).unwrap().builder = Some(dozer);
+        }
         let tp = self.objects[&target].position;
         let mut off = [position[0] - tp[0], position[1] - tp[1]];
         let len = ih_math::length(off);
@@ -611,6 +620,173 @@ impl Simulation {
     pub(crate) fn dozer_after_player_order(&mut self, id: u32) {
         if self.objects.get(&id).is_some_and(|o| o.dozer.is_some()) {
             self.reset_dozer_machine(id);
+        }
+    }
+
+    // --- repair ---
+
+    /// `getSoleHealingBenefactor`.
+    pub fn sole_healer(&self, id: u32) -> Option<u32> {
+        self.objects.get(&id)?.sole_healer.filter(|(_, until)| self.frame <= *until).map(|(h, _)| h)
+    }
+    /// `attemptHealingFromSoleBenefactor`.
+    fn heal_from_sole_benefactor(&mut self, id: u32, amount: f32, source: u32, duration: u32) -> bool {
+        let frame = self.frame;
+        let Some(o) = self.objects.get_mut(&id) else { return false };
+        let free = o.sole_healer.is_none_or(|(h, until)| frame > until || h == source);
+        if !free {
+            return false;
+        }
+        o.sole_healer = Some((source, frame + duration));
+        self.attempt_healing(id, amount, source);
+        true
+    }
+    /// `ActionManager::canRepairObject` (no shroud or containers yet).
+    pub fn can_repair_object(&self, dozer: u32, target: u32) -> bool {
+        let (Some(d), Some(t)) = (self.objects.get(&dozer), self.objects.get(&target)) else { return false };
+        let tt = &self.templates.objects[&t.template];
+        let dt = &self.templates.objects[&d.template];
+        let Some(h) = t.health.as_ref() else { return false };
+        self.relationship(dozer, target) != crate::weapons::Relationship::Enemies
+            && !t.dead
+            && !tt.has_kind("BRIDGE")
+            && !tt.has_kind("BRIDGE_TOWER")
+            && !self.under_construction(dozer)
+            && !self.under_construction(target)
+            && !tt.has_kind("REBUILD_HOLE")
+            && dt.has_kind("DOZER")
+            && tt.has_kind("STRUCTURE")
+            && h.current != h.max
+    }
+    /// `DozerAIUpdate::aiDoCommand(AICMD_REPAIR)` and `privateRepair`.
+    pub(crate) fn repair(&mut self, dozer: u32, target: u32, from_player: bool) -> Result<(), SimError> {
+        let fail = || Err(SimError(format!("object {dozer} cannot repair {target}")));
+        if self.objects.get(&dozer).and_then(|o| o.dozer.as_ref()).is_none() || !self.objects.contains_key(&target) {
+            return fail();
+        }
+        if self.dozer(dozer).current.is_none() {
+            self.ai_idle(dozer);
+        }
+        if !from_player {
+            self.objects.get_mut(&dozer).unwrap().ai.cmd_from_ai = true;
+        }
+        // canAcceptNewRepair (bridge towers are not ported).
+        let d = self.dozer(dozer);
+        if d.current == Some(TASK_REPAIR) && d.tasks[TASK_REPAIR].target == Some(target) {
+            return fail();
+        }
+        if !self.can_repair_object(dozer, target) {
+            return fail();
+        }
+        if self.sole_healer(target).is_some_and(|h| h != dozer) {
+            return fail();
+        }
+        self.new_task(dozer, TASK_REPAIR, target);
+        Ok(())
+    }
+    /// `findObjectToRepair`: the closest of the player's damaged structures in range.
+    fn find_object_to_repair(&self, dozer: u32) -> Option<u32> {
+        let d = &self.objects[&dozer];
+        let range = self.dozer(dozer).bored_range;
+        let mut best: Option<(u32, f32)> = None;
+        for o in self.objects.values().filter(|o| o.owner == d.owner) {
+            if !self.templates.objects[&o.template].has_kind("STRUCTURE") {
+                continue;
+            }
+            let dist = (o.position[0] - d.position[0]).powi(2) + (o.position[1] - d.position[1]).powi(2);
+            if dist > range * range || !self.can_repair_object(dozer, o.id) {
+                continue;
+            }
+            if best.is_none_or(|(_, b)| dist < b) {
+                best = Some((o.id, dist));
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+    /// The repair half of `DozerActionDoActionState::update`.
+    fn do_repair(&mut self, id: u32) -> Ret {
+        let Some(goal) = self.dozer(id).goal.filter(|g| self.objects.contains_key(g)) else { return Ret::Failure };
+        let Some(h) = self.objects[&goal].health.as_ref() else { return Ret::Failure };
+        if h.current == h.max {
+            self.internal_task_complete(id, TASK_REPAIR);
+            self.dozer_mut(id).goal = None;
+            return Ret::Success;
+        }
+        let amount = h.max * self.dozer(id).repair_per_second / 30.0;
+        // "this frame and the next"
+        if !self.heal_from_sole_benefactor(goal, amount, id, 2) {
+            self.internal_task_complete(id, TASK_REPAIR);
+            self.dozer_mut(id).goal = None;
+            return Ret::Failure;
+        }
+        Ret::Continue
+    }
+
+    // --- selling ---
+
+    /// `BuildAssistant::sellObject` (`MSG_SELL`).
+    pub(crate) fn sell(&mut self, id: u32) -> Result<(), SimError> {
+        let Some(o) = self.objects.get(&id) else { return Err(SimError(format!("object {id} is missing"))) };
+        if !self.templates.objects[&o.template].has_kind("STRUCTURE") || self.sell_list.iter().any(|(s, _)| *s == id) {
+            return Ok(());
+        }
+        let frame = self.frame;
+        let bits = status_bits(&["SOLD", "UNSELECTABLE"]);
+        let o = self.objects.get_mut(&id).unwrap();
+        o.construction = Some(99.9);
+        o.status |= bits;
+        self.sell_list.insert(0, (id, frame));
+        self.cancel_and_refund_all(id);
+        if self.has_ai(id) {
+            self.ai_idle(id);
+        }
+        Ok(())
+    }
+    /// `ProductionUpdate::cancelAndRefundAllProduction`.
+    pub(crate) fn cancel_and_refund_all(&mut self, id: u32) {
+        for _ in 0..100 {
+            let Some(e) =
+                self.objects.get(&id).and_then(|o| o.production.as_ref()).and_then(|p| p.queue.front().cloned())
+            else {
+                return;
+            };
+            if e.upgrade {
+                let _ = self.cancel_upgrade(id, &e.template);
+            } else {
+                let _ = self.cancel_unit_create(id, e.id);
+            }
+        }
+    }
+    /// `BuildAssistant::update`: sold buildings come down over three seconds, then pay out.
+    pub(crate) fn sell_update(&mut self) {
+        let mut i = 0;
+        while i < self.sell_list.len() {
+            let (id, frame) = self.sell_list[i];
+            if !self.objects.contains_key(&id) {
+                self.sell_list.remove(i);
+                continue;
+            }
+            // FRAMES_TO_ALLOW_SCAFFOLD and TOTAL_FRAMES_TO_SELL_OBJECT.
+            if (self.frame - frame) as f32 >= 30.0 * 1.5 {
+                let o = self.objects.get_mut(&id).unwrap();
+                o.construction = Some(o.construction.unwrap_or(100.0) - 100.0 / (30.0 * 3.0));
+            }
+            if self.objects[&id].construction.is_some_and(|p| p <= -50.0) {
+                let owner = self.objects[&id].owner;
+                let t = &self.templates.objects[&self.objects[&id].template];
+                let refund = t.number("RefundValue", 0.0) as u16 as u32;
+                let value = if refund != 0 {
+                    refund
+                } else {
+                    (self.cost_to_build(t, owner) as f32 * self.templates.sell_percentage) as u32
+                };
+                self.player(owner).deposit(value);
+                self.cancel_and_refund_all(id);
+                self.destroy_object(id);
+                self.sell_list.remove(i);
+                continue;
+            }
+            i += 1;
         }
     }
 
@@ -671,6 +847,13 @@ impl Simulation {
         if self.objects[&id].dead {
             return;
         }
+        // A repair that is no longer allowed is cancelled.
+        if self.dozer(id).current == Some(TASK_REPAIR) {
+            let target = self.dozer(id).tasks[TASK_REPAIR].target;
+            if !target.is_some_and(|t| self.can_repair_object(id, t)) {
+                self.cancel_task(id, TASK_REPAIR);
+            }
+        }
         let p = self.dozer(id).primary;
         let r = self.primary_update(id, p);
         self.primary_after(id, p, r);
@@ -682,12 +865,12 @@ impl Simulation {
                     if state != Primary::Idle {
                         return;
                     }
-                    let d = self.dozer(id);
-                    // isBuildMostImportant (repair and fortify are not ported).
-                    if !self.objects[&id].ai.active() && d.most_recent() == Some(TASK_BUILD) {
-                        Primary::Build
-                    } else {
-                        return;
+                    // isBuildMostImportant, isRepairMostImportant (fortify is not ported).
+                    let busy = self.objects[&id].ai.active();
+                    match self.dozer(id).most_recent() {
+                        Some(TASK_BUILD) if !busy => Primary::Build,
+                        Some(TASK_REPAIR) if !busy => Primary::Repair,
+                        _ => return,
                     }
                 }
                 Ret::Success | Ret::Failure => Primary::Idle,
@@ -722,14 +905,25 @@ impl Simulation {
     fn primary_update(&mut self, id: u32, state: Primary) -> Ret {
         match state {
             Primary::Idle => {
-                // Bored dozers (repair, mine clearing) are not ported; the timer is kept.
                 if self.objects[&id].ai.active() {
                     let frame = self.frame;
                     self.dozer_mut(id).idle_since = frame;
                 }
+                // A bored dozer repairs the closest damaged building of its own
+                // (mine clearing is not ported).
+                let d = self.dozer(id);
+                let bored = (self.frame - d.idle_since) as f32 > d.bored_frames;
+                if bored && d.tasks.iter().all(|t| t.target.is_none()) {
+                    let frame = self.frame;
+                    self.dozer_mut(id).idle_since = frame;
+                    if let Some(target) = self.find_object_to_repair(id) {
+                        let _ = self.repair(id, target, false);
+                    }
+                }
                 Ret::Continue
             }
             Primary::Build => self.action_update(id, TASK_BUILD),
+            Primary::Repair => self.action_update(id, TASK_REPAIR),
             _ => Ret::Failure,
         }
     }
@@ -786,6 +980,13 @@ impl Simulation {
                 let Some(goal) = self.dozer(id).goal.filter(|g| self.objects.contains_key(g)) else {
                     return Ret::Failure;
                 };
+                // "oops I guess someone beat me to it!"
+                let healer = self.sole_healer(goal);
+                if task == TASK_REPAIR && healer.is_some_and(|h| h != id) {
+                    self.internal_task_complete(id, task);
+                    self.dozer_mut(id).goal = None;
+                    return Ret::Failure;
+                }
                 if task == TASK_BUILD && self.objects[&goal].builder != Some(id) {
                     self.internal_task_complete(id, task);
                     self.dozer_mut(id).goal = None;
@@ -802,6 +1003,7 @@ impl Simulation {
                 }
                 Ret::Continue
             }
+            Action::DoAction if task == TASK_REPAIR => self.do_repair(id),
             Action::DoAction => self.do_build(id, task),
         }
     }

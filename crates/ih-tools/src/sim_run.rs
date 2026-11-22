@@ -151,6 +151,14 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     println!("crushed (frame, victim, crusher): {:?}; move-asides: {}", a.crushed, a.move_asides);
     let money: Vec<(u32, u32)> = a.players.iter().map(|(id, p)| (*id, p.money)).collect();
     println!("money (player, amount): {money:?}");
+    for o in a.objects.values().filter(|o| o.owner != 0) {
+        if let Some(h) = o.health.as_ref().filter(|h| h.current < h.max || o.sole_healer.is_some()) {
+            println!("  {} {} health {:.1} of {:.1}", o.id, o.template, h.current, h.max);
+        }
+    }
+    if !a.sell_list.is_empty() {
+        println!("  being sold: {:?}", a.sell_list);
+    }
     for o in a.objects.values().filter(|o| o.builder.is_some()) {
         match o.construction {
             Some(p) => println!("  {} {} under construction, {p:.1}% (builder {:?})", o.id, o.template, o.builder),

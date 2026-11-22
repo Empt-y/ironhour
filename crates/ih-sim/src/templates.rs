@@ -325,6 +325,8 @@ pub struct Templates {
     pub command_button_upgrades: BTreeMap<String, String>,
     /// `GameData` building placement values.
     pub build: BuildSettings,
+    /// `GameData`'s `SellPercentage` (100%).
+    pub sell_percentage: f32,
     /// `GameData`'s `BaseValuePerSupplyBox` (100).
     pub supply_box_value: u32,
     /// Dock bones of templates with supply docks, from their default models
@@ -440,6 +442,16 @@ impl Templates {
             height_variation: global(defs, "GameData", "AllowedHeightVariationForBuilding").unwrap_or(0.0),
             min_edge_distance: global(defs, "GameData", "MinDistFromEdgeOfMapForBuild").unwrap_or(0.0),
         };
+        // INI::parsePercentToReal
+        out.sell_percentage = defs
+            .all("GameData", "")
+            .iter()
+            .rev()
+            .find_map(|b| {
+                b.fields().filter(|f| f.name.eq_ignore_ascii_case("SellPercentage")).last().map(|f| f.values())
+            })
+            .and_then(|v| v.first().and_then(|s| ih_ini::values::scan_real(s.trim_end_matches('%').as_bytes()).ok()))
+            .map_or(1.0, |p| p / 100.0);
         out.supply_box_value = global(defs, "GameData", "BaseValuePerSupplyBox").map_or(100, |v| v as u32);
         for name in defs.names("CommandSet") {
             // Slots 1..=MAX_COMMANDS_PER_SET; later definitions replace slots.

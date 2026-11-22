@@ -103,7 +103,12 @@ impl Simulation {
     pub fn able_to_attack(&self, id: u32) -> bool {
         let o = &self.objects[&id];
         // Nothing under construction can fire.
-        if o.dead || o.disabled.has(crate::disabled::DisabledReason::Subdued) || self.under_construction(id) {
+        let sold = crate::construction::status_bits(&["SOLD"]);
+        if o.dead
+            || o.disabled.has(crate::disabled::DisabledReason::Subdued)
+            || self.under_construction(id)
+            || o.status & sold != 0
+        {
             return false;
         }
         let t = &self.templates.objects[&o.template];

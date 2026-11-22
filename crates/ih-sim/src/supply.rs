@@ -557,7 +557,8 @@ impl Simulation {
     fn can_transfer(&self, truck: u32, dest: u32) -> bool {
         let Some(o) = self.objects.get(&dest) else { return false };
         let Some(d) = o.dock.as_ref() else { return false };
-        if o.dead || self.under_construction(dest) || self.under_construction(truck) {
+        let sold = crate::construction::status_bits(&["SOLD"]);
+        if o.dead || self.under_construction(dest) || self.under_construction(truck) || o.status & sold != 0 {
             return false;
         }
         let Some(t) = self.objects[&truck].truck.as_ref() else { return false };

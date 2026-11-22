@@ -137,6 +137,15 @@ pub enum Command {
         dozer: u32,
         target: u32,
     },
+    /// `aiRepair` (`MSG_DOZER_REPAIR`): a dozer repairs a building.
+    Repair {
+        dozer: u32,
+        target: u32,
+    },
+    /// `BuildAssistant::sellObject` (`MSG_SELL`).
+    Sell {
+        object: u32,
+    },
     /// `ProductionUpdate::queueUpgrade` (`MSG_QUEUE_UPGRADE`).
     Research {
         factory: u32,
@@ -253,6 +262,8 @@ pub struct Object {
     pub construction: Option<f32>,
     /// `getBuilderID`.
     pub builder: Option<u32>,
+    /// `m_soleHealingBenefactorID` and its expiry frame.
+    pub sole_healer: Option<(u32, u32)>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -291,6 +302,8 @@ pub struct Simulation {
     pub(crate) destroy_list: Vec<u32>,
     /// The weapon store's delayed damage.
     pub(crate) delayed_damage: Vec<crate::weapons::DelayedDamage>,
+    /// `BuildAssistant::m_sellList`: (object, frame sold), newest first.
+    pub sell_list: Vec<(u32, u32)>,
     /// Players by index (`production::Player`), created on first use.
     pub players: BTreeMap<u32, crate::production::Player>,
 }
@@ -409,6 +422,7 @@ impl Simulation {
             destroy_list: Vec::new(),
             delayed_damage: Vec::new(),
             players: BTreeMap::new(),
+            sell_list: Vec::new(),
         }
     }
     pub fn spawn(&mut self, name: &str, p: [f32; 2], owner: u32) -> Result<u32, SimError> {
@@ -636,6 +650,7 @@ impl Simulation {
                 dozer,
                 construction: None,
                 builder: None,
+                sole_healer: None,
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
@@ -716,6 +731,8 @@ impl Simulation {
                 self.build_object_now(dozer, &template, position, angle)?;
             }
             Command::ResumeConstruction { dozer, target } => self.resume_construction(dozer, target)?,
+            Command::Repair { dozer, target } => self.repair(dozer, target, true)?,
+            Command::Sell { object } => self.sell(object)?,
             Command::CancelResearch { factory, upgrade } => self.cancel_upgrade(factory, &upgrade)?,
             Command::Dock { object, target } => {
                 if !self.objects.contains_key(&object) || !self.objects.contains_key(&target) {
@@ -1187,6 +1204,8 @@ impl Simulation {
         for id in awakened {
             self.wake_ai(id);
         }
+        // TheBuildAssistant->UPDATE(), before the partition's update.
+        self.sell_update();
         self.process_collisions();
         self.projectile_collisions();
         self.wake_forced();
@@ -2202,7 +2221,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(26);
+        h.u32(27);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2474,7 +2493,15 @@ impl Simulation {
                 h.u32(*refs);
             }
         }
+        h.u64(self.sell_list.len() as u64);
+        for (id, f) in &self.sell_list {
+            h.u32(*id);
+            h.u32(*f);
+        }
         for o in self.objects.values() {
+            let (healer, until) = o.sole_healer.unwrap_or_default();
+            h.u32(healer);
+            h.u32(until);
             h.u32(o.construction.map_or(u32::MAX, f32::to_bits));
             h.u32(o.builder.unwrap_or(0));
             h.u32(u32::from(o.dozer.is_some()));
@@ -2738,6 +2765,15 @@ fn hash_command(c: &Command, h: &mut StateHash) {
             h.u32(23);
             h.u32(*dozer);
             h.u32(*target);
+        }
+        Command::Repair { dozer, target } => {
+            h.u32(24);
+            h.u32(*dozer);
+            h.u32(*target);
+        }
+        Command::Sell { object } => {
+            h.u32(25);
+            h.u32(*object);
         }
         Command::Research { factory, upgrade } => {
             h.u32(20);
@@ -3054,7 +3090,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x1eebff4f0e84cd21, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xc69457b93633602e, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3290,7 +3326,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xf5abc456948df1ec, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xa3df58a256ff5f59, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3382,7 +3418,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xacbb55dd3bd50234, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x99b00e16d024b43b, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {
