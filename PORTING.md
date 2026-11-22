@@ -2424,3 +2424,17 @@ the options and credits back buttons), `GUIUtil.cpp` and the map cache:
 - Not yet: interface sounds (the audio system is next), the load and score
   screens, the in-game control bar, returning to the menus, resizing the menus
   with the window, and human players choosing start positions.
+
+### Map previews and chosen start positions
+
+- Skirmish setup draws the map's TGA preview from its full VFS path, fitted to
+  the cached map extent. The game window and headless shell renderer use the
+  same texture loader, including mod overrides.
+- Start markers come from the cached `Player_N_Start` waypoints. Clicking cycles
+  a position through the active players, then releases it. Changing maps clears
+  choices; opening or closing a slot releases its choice.
+- Game start reserves chosen positions before assigning the remaining players
+  free starts. Duplicate, invalid or insufficient starts are rejected rather
+  than dropping players or overlapping their bases.
+- Asset-free tests cover cache coordinates, marker cycling, explicit and
+  unassigned starts, inactive slots and invalid assignments.

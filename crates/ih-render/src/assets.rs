@@ -100,6 +100,29 @@ impl<'v> Assets<'v> {
         if let Some(t) = self.textures.get(&key) {
             return t.clone();
         }
+        // Map previews live beside the map, outside Art/Textures. Keep their
+        // full VFS path as the cache key, so changing maps cannot reuse a stale preview.
+        if key.contains(['\\', '/']) {
+            let image = match self.vfs.read(name) {
+                Ok(Some(bytes)) => match texture::decode(&bytes) {
+                    Ok(image) => Some(Arc::new(image)),
+                    Err(e) => {
+                        self.warnings.push(format!("{name}: {e}"));
+                        None
+                    }
+                },
+                Ok(None) => {
+                    self.warnings.push(format!("texture {name} not found"));
+                    None
+                }
+                Err(e) => {
+                    self.warnings.push(format!("{name}: {e}"));
+                    None
+                }
+            };
+            self.textures.insert(key, image.clone());
+            return image;
+        }
         let base = key.rsplit_once('.').map_or(key.as_str(), |(b, _)| b).to_string();
         let mut found = None;
         for ext in ["dds", "tga"] {

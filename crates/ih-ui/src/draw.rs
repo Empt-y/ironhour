@@ -433,6 +433,16 @@ impl WindowManager {
             }
             let o = self.screen_position(id);
             let rect = [o[0], o[1], o[0] + w.size[0], o[1] + w.size[1]];
+            if let Some(t) = &w.image {
+                let r = w.image_rect;
+                out.push(DrawCmd::Image {
+                    texture: t.clone(),
+                    uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                    rect: [(o[0] + r[0]) as f32, (o[1] + r[1]) as f32, (o[0] + r[2]) as f32, (o[1] + r[3]) as f32],
+                    color: [255; 4],
+                });
+                continue;
+            }
             match w.kind.as_str() {
                 "PUSHBUTTON" => self.push_button(&mut out, res, id, rect),
                 "STATICTEXT" => self.static_text(&mut out, res, id, rect),

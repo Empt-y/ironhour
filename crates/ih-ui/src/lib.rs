@@ -56,6 +56,10 @@ pub struct Window {
     pub text: Option<String>,
     /// Gadget state (sliders, lists, entries, radio groups).
     pub gadget: input::Gadget,
+    /// A texture drawn over `image_rect` (window-relative) instead of the
+    /// script's image: the map preview (`winSetEnabledImage` at run time).
+    pub image: Option<String>,
+    pub image_rect: [i32; 4],
     pub style: u32,
     /// `m_region.lo`: relative to the parent (to the screen for top-level windows).
     pub position: [i32; 2],
@@ -109,6 +113,8 @@ impl WindowManager {
             state: 0,
             text: None,
             gadget: Default::default(),
+            image: None,
+            image_rect: [0; 4],
             style: w.style(),
             position: [lo[0] - origin[0], lo[1] - origin[1]],
             size: [hi[0] - lo[0], hi[1] - lo[1]],

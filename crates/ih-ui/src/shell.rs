@@ -20,7 +20,7 @@ use crate::{WindowId, WindowManager, state};
 use ih_formats::wnd;
 
 /// A map from `MapCache.ini`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MapInfo {
     /// `maps\tournament desert\tournament desert.map`.
     pub path: String,
@@ -29,6 +29,10 @@ pub struct MapInfo {
     pub players: u32,
     pub multiplayer: bool,
     pub official: bool,
+    /// `extentMin` / `extentMax` x and y: lo x, lo y, hi x, hi y.
+    pub extent: [f32; 4],
+    /// `Player_N_Start` waypoints, in order.
+    pub starts: Vec<[f32; 2]>,
 }
 impl MapInfo {
     /// The map's folder name, as `World::load` takes it.
@@ -73,11 +77,28 @@ pub fn map_cache(bytes: &[u8]) -> Vec<MapInfo> {
         let first = |k: &str| get(k).and_then(|v| v.first().cloned()).unwrap_or_default();
         let path = unescape(&bname(b));
         let label = first("nameLookupTag");
+        let xy = |k: &str| {
+            let v = get(k).unwrap_or_default();
+            let c =
+                |a: &str| v.iter().find_map(|t| t.strip_prefix(a).and_then(|n| n.parse::<f32>().ok())).unwrap_or(0.0);
+            [c("X:"), c("Y:")]
+        };
+        let (lo, hi) = (xy("extentMin"), xy("extentMax"));
+        let mut starts = vec![];
+        for n in 1..=8 {
+            let k = format!("Player_{n}_Start");
+            if get(&k).is_none() {
+                break;
+            }
+            starts.push(xy(&k));
+        }
         let m = MapInfo {
             name_label: if label.is_empty() { path.clone() } else { label },
             players: first("numPlayers").parse().unwrap_or(0),
             multiplayer: first("isMultiplayer").eq_ignore_ascii_case("yes"),
             official: first("isOfficial").eq_ignore_ascii_case("yes"),
+            extent: [lo[0], lo[1], hi[0], hi[1]],
+            starts,
             path,
         };
         out.push(m);
@@ -106,10 +127,12 @@ pub struct Slot {
     pub color: Option<usize>,
     /// 1 to 4; `None` is no team.
     pub team: Option<u8>,
+    /// A start position (0-based `Player_N_Start`); `None` is given out at the start.
+    pub start: Option<u8>,
 }
 
 /// The skirmish being set up (`SkirmishGameInfo`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameSetup {
     pub map: Option<MapInfo>,
     pub slots: Vec<Slot>,
@@ -118,8 +141,40 @@ pub struct GameSetup {
     pub player_name: String,
 }
 
+impl GameSetup {
+    /// Reserve explicit positions first, then give each remaining player the
+    /// first free one. Inactive slots cannot reserve a position. Reject invalid
+    /// or duplicate choices rather than spawning players on top of one another.
+    pub fn assigned_starts(&self, count: usize) -> Option<Vec<Option<usize>>> {
+        let mut used = vec![false; count];
+        let mut positions = vec![None; self.slots.len()];
+        for (i, slot) in self.slots.iter().enumerate() {
+            if matches!(slot.kind, SlotKind::Open | SlotKind::Closed) {
+                continue;
+            }
+            if let Some(p) = slot.start {
+                let p = usize::from(p);
+                if *used.get(p)? {
+                    return None;
+                }
+                used[p] = true;
+                positions[i] = Some(p);
+            }
+        }
+        for (i, slot) in self.slots.iter().enumerate() {
+            if matches!(slot.kind, SlotKind::Open | SlotKind::Closed) || positions[i].is_some() {
+                continue;
+            }
+            let p = used.iter().position(|taken| !taken)?;
+            used[p] = true;
+            positions[i] = Some(p);
+        }
+        Some(positions)
+    }
+}
+
 /// What the shell asks of the game.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ShellEvent {
     StartGame(GameSetup),
     Quit,
@@ -215,7 +270,7 @@ const MAP_SELECT: &str = "Menus/SkirmishMapSelectMenu.wnd";
 
 impl Shell {
     pub fn new(display: [i32; 2], data: ShellData, loader: LayoutLoader, strings: Box<dyn Fn(&str) -> String>) -> Self {
-        let slot = |kind| Slot { kind, side: None, color: None, team: None };
+        let slot = |kind| Slot { kind, side: None, color: None, team: None, start: None };
         let mut slots = vec![slot(SlotKind::Human), slot(SlotKind::EasyAi)];
         slots.resize(8, slot(SlotKind::Closed));
         let map = data
@@ -383,6 +438,76 @@ impl Shell {
         if let Some(e) = self.find("SkirmishGameOptionsMenu.wnd:TextEntryMapDisplay") {
             self.ui.windows[e].text = Some(name);
         }
+        self.position_start_spots();
+    }
+
+    /// `positionStartSpots`: the preview letterboxed to the map's extent
+    /// (`findDrawPositions`), and a marker per `Player_N_Start`, numbered with
+    /// the slot that has it.
+    fn position_start_spots(&mut self) {
+        let Some(map_win) = self.find("SkirmishGameOptionsMenu.wnd:MapWindow") else { return };
+        let Some(m) = self.setup.map.clone() else { return };
+        let size = self.ui.windows[map_win].size;
+        let (w, h) = ((m.extent[2] - m.extent[0]).max(1.0), (m.extent[3] - m.extent[1]).max(1.0));
+        let (rw, rh) = (w / size[0].max(1) as f32, h / size[1].max(1) as f32);
+        let (ul, lr) = if rw >= rh {
+            let ry = h / rw;
+            let uy = ((size[1] as f32 - ry) / 2.0) as i32;
+            ([0, uy], [(w / rw) as i32, size[1] - uy])
+        } else {
+            let rx = w / rh;
+            let ux = ((size[0] as f32 - rx) / 2.0) as i32;
+            ([ux, 0], [size[0] - ux, (h / rh) as i32])
+        };
+        let folder = m.folder();
+        self.ui.windows[map_win].image = Some(format!("Maps\\{folder}\\{folder}.tga"));
+        self.ui.windows[map_win].image_rect = [ul[0], ul[1], lr[0], lr[1]];
+        let origin = self.ui.screen_position(map_win);
+        for i in 0..8 {
+            let Some(b) = self.find(&format!("SkirmishGameOptionsMenu.wnd:ButtonMapStartPosition{i}")) else {
+                continue;
+            };
+            let Some(p) = m.starts.get(i).filter(|_| m.multiplayer) else {
+                self.ui.hide(b, true);
+                continue;
+            };
+            self.ui.hide(b, false);
+            let gs = self.ui.windows[b].size;
+            let fx = (p[0] - m.extent[0]) / w.max(1.0);
+            let fy = (p[1] - m.extent[1]) / h.max(1.0);
+            let pos = [
+                (fx * (lr[0] - ul[0]) as f32) as i32 - gs[0] / 2 + ul[0],
+                ((1.0 - fy) * (lr[1] - ul[1]) as f32) as i32 - gs[1] / 2 + ul[1],
+            ];
+            // Relative to the marker's parent.
+            let parent = self.ui.windows[b].parent.map_or([0, 0], |q| self.ui.screen_position(q));
+            self.ui.windows[b].position = [origin[0] + pos[0] - parent[0], origin[1] + pos[1] - parent[1]];
+            let holder = self.setup.slots.iter().position(|s| s.start == Some(i as u8));
+            self.ui.windows[b].text = Some(holder.map_or(String::new(), |h| (h + 1).to_string()));
+        }
+    }
+
+    /// `getNextSelectablePlayer`: the first playing slot from `start` without a position.
+    fn next_selectable(&self, start: usize) -> Option<usize> {
+        (start..self.setup.slots.len()).find(|&j| {
+            let s = &self.setup.slots[j];
+            s.start.is_none() && !matches!(s.kind, SlotKind::Open | SlotKind::Closed)
+        })
+    }
+
+    /// A start position marker was clicked: a free one goes to the next player
+    /// without a position; a taken one passes to the next such player after its holder.
+    fn start_spot_clicked(&mut self, i: u8) {
+        if let Some(holder) = self.setup.slots.iter().position(|s| s.start == Some(i)) {
+            let next = self.next_selectable(holder + 1);
+            self.setup.slots[holder].start = None;
+            if let Some(n) = next {
+                self.setup.slots[n].start = Some(i);
+            }
+        } else if let Some(n) = self.next_selectable(0).or(Some(0)) {
+            self.setup.slots[n].start = Some(i);
+        }
+        self.position_start_spots();
     }
 
     /// The slot settings as the combo boxes show them.
@@ -397,6 +522,9 @@ impl Shell {
                     4 => SlotKind::HardAi,
                     _ => SlotKind::Closed,
                 };
+            }
+            if matches!(self.setup.slots[i].kind, SlotKind::Open | SlotKind::Closed) {
+                self.setup.slots[i].start = None;
             }
             let side = sel(self, format!("SkirmishGameOptionsMenu.wnd:ComboBoxPlayerTemplate{i}"));
             self.setup.slots[i].side = side.checked_sub(1).and_then(|s| self.data.sides.get(s)).map(|(n, _)| n.clone());
@@ -442,6 +570,7 @@ impl Shell {
                 }
                 UiEvent::System { message: Message::ListSelected(..), .. } if self.top() == Some(SKIRMISH) => {
                     self.skirmish_read();
+                    self.position_start_spots();
                 }
                 _ => {}
             }
@@ -472,6 +601,13 @@ impl Shell {
             | "optionsmenu.wnd:buttonback"
             | "optionsmenu.wnd:buttonaccept"
             | "creditsmenu.wnd:buttonback" => self.pop(),
+            n if n.starts_with("skirmishgameoptionsmenu.wnd:buttonmapstartposition") => {
+                if let Ok(i) = n.trim_start_matches("skirmishgameoptionsmenu.wnd:buttonmapstartposition").parse::<u8>()
+                {
+                    self.skirmish_read();
+                    self.start_spot_clicked(i);
+                }
+            }
             "skirmishgameoptionsmenu.wnd:buttonselectmap" => {
                 self.skirmish_read();
                 self.push(MAP_SELECT);
@@ -480,6 +616,11 @@ impl Shell {
                 if let Some(id) = self.find("SkirmishMapSelectMenu.wnd:ListboxMap")
                     && let Some(m) = self.ui.windows[id].gadget.selected.and_then(|i| self.data.maps.get(i))
                 {
+                    if self.setup.map.as_ref() != Some(m) {
+                        for s in &mut self.setup.slots {
+                            s.start = None;
+                        }
+                    }
                     self.setup.map = Some(m.clone());
                 }
                 self.pop();
@@ -488,7 +629,8 @@ impl Shell {
                 self.skirmish_read();
                 let playing =
                     self.setup.slots.iter().filter(|s| !matches!(s.kind, SlotKind::Open | SlotKind::Closed)).count();
-                let fits = self.setup.map.as_ref().is_some_and(|m| m.players as usize >= playing);
+                let fits =
+                    self.setup.map.as_ref().is_some_and(|m| self.setup.assigned_starts(m.players as usize).is_some());
                 if playing >= 2 && fits {
                     out.push(ShellEvent::StartGame(self.setup.clone()));
                 }
@@ -513,6 +655,52 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn setup() -> GameSetup {
+        GameSetup {
+            map: None,
+            slots: [SlotKind::Human, SlotKind::EasyAi, SlotKind::Closed]
+                .into_iter()
+                .map(|kind| Slot { kind, side: None, color: None, team: None, start: None })
+                .collect(),
+            starting_cash: 10000,
+            limit_superweapons: false,
+            player_name: "Player".into(),
+        }
+    }
+
+    #[test]
+    fn explicit_starts_are_reserved_before_unassigned_players() {
+        let mut s = setup();
+        s.slots[1].start = Some(0);
+        s.slots[2].start = Some(1); // A closed slot must not reserve this start.
+        assert_eq!(s.assigned_starts(2), Some(vec![Some(1), Some(0), None]));
+        s.slots[0].start = Some(0);
+        assert_eq!(s.assigned_starts(2), None); // Duplicate choice.
+        s.slots[0].start = Some(2);
+        assert_eq!(s.assigned_starts(2), None); // Outside the map.
+        s.slots[0].start = None;
+        assert_eq!(s.assigned_starts(1), None); // Too many players.
+    }
+
+    #[test]
+    fn start_marker_cycles_between_players_then_clears() {
+        let mut shell = Shell::new([800, 600], ShellData::default(), Box::new(|_| None), Box::new(str::to_string));
+        shell.start_spot_clicked(1);
+        assert_eq!(shell.setup.slots[0].start, Some(1));
+        shell.start_spot_clicked(1);
+        assert_eq!(shell.setup.slots[0].start, None);
+        assert_eq!(shell.setup.slots[1].start, Some(1));
+        shell.start_spot_clicked(1);
+        assert!(shell.setup.slots.iter().all(|s| s.start.is_none()));
+    }
+
+    #[test]
+    fn map_cache_has_preview_extents_and_start_waypoints() {
+        let maps = map_cache(b"MapCache maps_5Cx_5Cx_2Emap\n extentMin = X:10 Y:20 Z:0\n extentMax = X:410 Y:220 Z:0\n Player_1_Start = X:50 Y:75 Z:0\n Player_2_Start = X:350 Y:175 Z:0\nEND\n");
+        assert_eq!(maps[0].extent, [10.0, 20.0, 410.0, 220.0]);
+        assert_eq!(maps[0].starts, vec![[50.0, 75.0], [350.0, 175.0]]);
+    }
 
     #[test]
     fn map_cache_names_unescape() {

@@ -5,8 +5,8 @@
 //! gets its side's `StartingBuilding` at the map's `Player_N_Start` waypoint and
 //! `StartingUnit0` beside it, and the starting money. Random sides come from
 //! the setup's seed. Players are numbered after the map's own players (neutral
-//! and civilian). Start positions are given out in slot order (the original
-//! lets players choose or shuffles them), and AI players do nothing until M7.
+//! and civilian). Chosen starts are reserved before the other slots are assigned
+//! positions; AI players do nothing until M7.
 use anyhow::{Context, Result};
 use ih_client::{Definitions, World};
 use ih_render::{Assets, Renderer, ui::UiPass};
@@ -144,7 +144,8 @@ pub fn scenario_for(
     };
     let base = ih_sim::map_objects::players(&world.map).len().max(1) as u32;
     let mut commands = String::new();
-    let mut start = 0;
+    let positions = setup.assigned_starts(starts.len()).context("invalid or insufficient map start positions")?;
+    anyhow::ensure!(!sides.is_empty(), "no playable sides");
     for (i, slot) in setup.slots.iter().enumerate() {
         if matches!(slot.kind, SlotKind::Open | SlotKind::Closed) {
             continue;
@@ -156,8 +157,7 @@ pub fn scenario_for(
             Some(s) => s.clone(),
             None => sides[pick(&mut seed, sides.len())].0.clone(),
         };
-        let Some(&at) = starts.get(start) else { break };
-        start += 1;
+        let at = starts[positions[i].context("playing slot has no start position")?];
         if let Some(b) = field(&side, "StartingBuilding") {
             toml +=
                 &format!("\n[[spawn]]\ntemplate = {b:?}\nposition = [{:.1}, {:.1}]\nowner = {owner}\n", at[0], at[1]);
