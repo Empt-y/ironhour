@@ -1,0 +1,9 @@
+[package]
+name = "ih-ui"
+description = "The window system: WND layouts as live window trees, input and gadgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ih-formats.workspace = true

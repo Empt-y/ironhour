@@ -2258,3 +2258,25 @@ and the status and style bit names in `GameWindowGlobal.cpp`:
 
 Callbacks named across stock layouts: 55 system, 46 input, 20 draw,
 1 tooltip, 39 layout init, 30 update and 32 shutdown.
+
+### Live window trees
+
+From `GameWindowManager.cpp` (`winCreate`, `linkWindow`,
+`addWindowToParent`), `GameWindow.cpp` (`winPointInChild`,
+`winGetScreenPosition`, `winHide`, `winEnable`) and `parseScreenRect`'s scaling:
+the new `crates/ih-ui` crate.
+
+- A layout loads into an arena of windows scaled to the display (truncating,
+  as the original does) and positioned relative to the parent.
+- New children and new top-level windows go to the head of their list, so
+  the last window in a file is topmost. Drawing runs back to front, skipping
+  hidden windows.
+- `window_at` finds the topmost visible top-level window under a point, then
+  descends: hidden children are skipped, and a disabled child lets the windows
+  below it (or its parent) take the point. Edges are inclusive.
+- `ih-tools wnd` loads every layout into one live manager at 1024×768: 1,670
+  stock and 1,689 Contra windows, all found again by name.
+- Not yet: modal windows, focus and capture, input messages to the system and
+  input callbacks, gadget behaviour (buttons, check boxes, radio groups,
+  sliders, list and combo boxes, text entry, tab controls), the callback
+  table, mapped images, fonts and drawing.

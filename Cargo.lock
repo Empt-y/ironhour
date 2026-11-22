@@ -833,9 +833,17 @@ dependencies = [
  "ih-ini",
  "ih-render",
  "ih-sim",
+ "ih-ui",
  "ih-vfs",
  "png",
  "toml",
+]
+
+[[package]]
+name = "ih-ui"
+version = "0.1.0"
+dependencies = [
+ "ih-formats",
 ]
 
 [[package]]

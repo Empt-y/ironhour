@@ -13,6 +13,7 @@ path = "src/main.rs"
 ih-vfs.workspace = true
 ih-ini.workspace = true
 ih-formats.workspace = true
+ih-ui.workspace = true
 ih-render.workspace = true
 ih-client.workspace = true
 ih-sim.workspace = true

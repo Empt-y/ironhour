@@ -831,6 +831,9 @@ fn wnd(vfs: &Vfs, name: Option<&str>) -> Result<()> {
     }
     let files = vfs.list("Window", "*.wnd", true);
     let (mut windows, mut errors) = (0usize, 0usize);
+    // Every layout is also loaded as a live window tree (ih-ui) at 1024x768.
+    let mut ui = ih_ui::WindowManager::new([1024, 768]);
+    let mut unnamed = 0usize;
     let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
     let mut keys: BTreeMap<String, usize> = BTreeMap::new();
     let mut callbacks: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -843,7 +846,11 @@ fn wnd(vfs: &Vfs, name: Option<&str>) -> Result<()> {
                         *callbacks.entry((k.to_string(), v.clone())).or_default() += 1;
                     }
                 }
+                ui.load(&l);
                 for w in l.windows.iter().flat_map(|w| w.walk()) {
+                    if w.name().is_none_or(|n| ui.find(n).is_none()) {
+                        unnamed += 1;
+                    }
                     windows += 1;
                     *kinds.entry(w.kind.clone()).or_default() += 1;
                     for f in &w.fields {
@@ -863,6 +870,11 @@ fn wnd(vfs: &Vfs, name: Option<&str>) -> Result<()> {
         }
     }
     println!("{} layouts, {windows} windows, {errors} errors", files.len());
+    println!(
+        "live windows {} ({} top-level); {unnamed} without a name to find them by",
+        ui.windows.len(),
+        ui.top.len()
+    );
     println!("window types: {kinds:?}");
     println!("fields: {keys:?}");
     let mut by_kind: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
