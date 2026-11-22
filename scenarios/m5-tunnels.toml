@@ -1,0 +1,53 @@
+# Tunnels on Tournament Desert (owner 1): three Rebels (3-5) go into the west
+# Tunnel Network (1) and come out of the east one (2).
+map = "Tournament Desert"
+seed = 31
+frames = 900
+
+[[spawn]]
+template = "GLATunnelNetwork"
+position = [900.0, 1000.0]
+owner = 1
+
+[[spawn]]
+template = "GLATunnelNetwork"
+position = [1250.0, 1000.0]
+owner = 1
+
+[[spawn]]
+template = "GLAInfantryRebel"
+position = [820.0, 960.0]
+owner = 1
+
+[[spawn]]
+template = "GLAInfantryRebel"
+position = [820.0, 1000.0]
+owner = 1
+
+[[spawn]]
+template = "GLAInfantryRebel"
+position = [820.0, 1040.0]
+owner = 1
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 3
+target = 1
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 4
+target = 1
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 5
+target = 1
+
+[[commands]]
+frame = 400
+kind = "evacuate"
+object = 2

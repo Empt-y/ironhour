@@ -328,6 +328,8 @@ pub struct Templates {
     /// Bones of containers' pristine, damaged and really damaged models
     /// (`contain`), loaded with assets.
     pub condition_bones: BTreeMap<String, crate::bridges::ConditionBones>,
+    /// `GameData`'s `MaxTunnelCapacity` (0).
+    pub max_tunnel_capacity: i32,
     /// `GameData`'s `SellPercentage` (100%).
     pub sell_percentage: f32,
     /// `GameData`'s `BaseValuePerSupplyBox` (100).
@@ -446,6 +448,7 @@ impl Templates {
             height_variation: global(defs, "GameData", "AllowedHeightVariationForBuilding").unwrap_or(0.0),
             min_edge_distance: global(defs, "GameData", "MinDistFromEdgeOfMapForBuild").unwrap_or(0.0),
         };
+        out.max_tunnel_capacity = global(defs, "GameData", "MaxTunnelCapacity").map_or(0, |v| v as i32);
         // INI::parsePercentToReal
         out.sell_percentage = defs
             .all("GameData", "")

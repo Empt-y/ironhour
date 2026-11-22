@@ -30,8 +30,10 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContainData {
     pub class: String,
-    /// `GarrisonContain` (else `TransportContain`).
+    /// `GarrisonContain` (else `TransportContain` or `TunnelContain`).
     pub garrison: bool,
+    /// `TunnelContain`: the player's tunnels share one list of passengers.
+    pub tunnel: bool,
     pub passengers_fire: bool,
     pub mobile_garrison: bool,
     /// `HealObjects`.
@@ -64,14 +66,16 @@ pub struct ContainData {
 }
 impl ContainData {
     pub fn from_module(class: &str, b: &ih_ini::Block) -> Option<Self> {
-        let garrison = match class {
-            "TransportContain" => false,
-            "GarrisonContain" => true,
+        let (garrison, tunnel) = match class {
+            "TransportContain" => (false, false),
+            "GarrisonContain" => (true, false),
+            "TunnelContain" => (false, true),
             _ => return None,
         };
         let mut d = Self {
             class: class.into(),
             garrison,
+            tunnel,
             passengers_fire: false,
             mobile_garrison: false,
             heal: false,
@@ -82,7 +86,7 @@ impl ContainData {
             damage_percent: 0.0,
             burned_death: true,
             // OpenContain allows everything; transports only infantry.
-            allow_inside: (!garrison).then(|| vec!["INFANTRY".into()]),
+            allow_inside: (!garrison && !tunnel).then(|| vec!["INFANTRY".into()]),
             forbid_inside: vec![],
             exit_paths: 1,
             door_open_time: 1,
@@ -141,6 +145,8 @@ impl ContainData {
                 _ => {}
             }
         }
+        // Tunnels always heal, over TimeForFullHeal.
+        d.heal |= tunnel;
         Some(d)
     }
 }
@@ -164,6 +170,13 @@ pub struct Contain {
     /// `m_garrisonPointData`: who stands at each of the 40 fire points.
     pub points: Vec<Option<u32>>,
 }
+/// A player's `TunnelTracker`: its tunnels and everyone inside them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TunnelTracker {
+    pub tunnels: Vec<u32>,
+    pub riders: Vec<u32>,
+}
+
 /// `MAX_GARRISON_POINTS`.
 pub const GARRISON_POINTS: usize = 40;
 impl Contain {
@@ -194,6 +207,61 @@ impl Simulation {
     fn slots(&self, id: u32) -> i32 {
         self.templates.objects[&self.objects[&id].template].number("TransportSlotCount", 0.0) as u8 as i32
     }
+    /// The passengers of a container: its own, or its player's tunnel network.
+    pub fn riders_of(&self, container: u32) -> Vec<u32> {
+        match self.contain(container) {
+            Some(c) if c.data.tunnel => {
+                self.players.get(&self.objects[&container].owner).map(|p| p.tunnels.riders.clone()).unwrap_or_default()
+            }
+            Some(c) => c.riders.clone(),
+            None => vec![],
+        }
+    }
+    fn rider_list_mut(&mut self, container: u32) -> &mut Vec<u32> {
+        if self.contain(container).is_some_and(|c| c.data.tunnel) {
+            let owner = self.objects[&container].owner;
+            &mut self.player(owner).tunnels.riders
+        } else {
+            &mut self.contain_mut(container).riders
+        }
+    }
+    /// `TunnelTracker::onTunnelCreated` (`TunnelContain::onObjectCreated`).
+    pub(crate) fn register_tunnel(&mut self, id: u32) {
+        if self.contain(id).is_some_and(|c| c.data.tunnel) {
+            let owner = self.objects[&id].owner;
+            self.player(owner).tunnels.tunnels.push(id);
+        }
+    }
+    /// `TunnelTracker::onTunnelDestroyed`: with the last tunnel gone, everyone
+    /// inside is destroyed; otherwise those inside the dead one move to another.
+    fn tunnel_destroyed(&mut self, id: u32) {
+        let owner = self.objects[&id].owner;
+        let t = &mut self.player(owner).tunnels;
+        let Some(i) = t.tunnels.iter().position(|x| *x == id) else { return };
+        t.tunnels.remove(i);
+        if t.tunnels.is_empty() {
+            for r in std::mem::take(&mut t.riders) {
+                if let Some(o) = self.objects.get_mut(&r) {
+                    o.contained_by = None;
+                }
+                self.destroy_object(r);
+            }
+        } else {
+            let other = t.tunnels[0];
+            for r in t.riders.clone() {
+                if let Some(o) = self.objects.get_mut(&r)
+                    && o.contained_by == Some(id)
+                {
+                    o.contained_by = Some(other);
+                }
+            }
+        }
+    }
+    /// Whether a rider is inside a container (or, for tunnels, its network).
+    fn is_inside(&self, container: u32, rider: u32) -> bool {
+        self.riders_of(container).contains(&rider)
+    }
+
     /// Whether an object is out of the world inside a container (`OBJECT_STATUS_MASKED`).
     pub fn contained(&self, id: u32) -> bool {
         self.objects.get(&id).is_some_and(|o| o.contained_by.is_some())
@@ -215,6 +283,11 @@ impl Simulation {
         };
         if !allowed {
             return false;
+        }
+        if c.data.tunnel {
+            // TunnelTracker::isValidContainerFor
+            return !t.has_kind("AIRCRAFT")
+                && (!check_capacity || (self.riders_of(container).len() as i32) < self.templates.max_tunnel_capacity);
         }
         if c.data.garrison {
             // GarrisonContain::isValidContainerFor
@@ -256,12 +329,14 @@ impl Simulation {
         if t.disabled.has(DisabledReason::Subdued) || ot.has_kind("STRUCTURE") || ot.has_kind("IMMOBILE") {
             return false;
         }
-        let Some(c) = t.contain.as_ref() else { return false };
+        if t.contain.is_none() {
+            return false;
+        }
         // With stealth garrisons (not ported) a foreign container could skip the capacity check.
         let check = check_capacity;
         if t.owner != o.owner {
             // Someone else's occupied building (no stealth garrisons yet).
-            if !c.riders.is_empty() {
+            if !self.riders_of(target).is_empty() {
                 return false;
             }
             if tt.has_kind("FS_FACTORY") || tt.has_kind("FS_BASE_DEFENSE") {
@@ -369,10 +444,10 @@ impl Simulation {
             return;
         }
         let slots = self.slots(rider);
+        self.rider_list_mut(container).push(rider);
         let c = self.contain_mut(container);
-        c.riders.push(rider);
-        let garrison = c.data.garrison;
-        if !garrison {
+        let (garrison, tunnel) = (c.data.garrison, c.data.tunnel);
+        if !garrison && !tunnel {
             c.extra_slots += slots - 1;
         }
         // addOrRemoveObjFromWorld(false): out of the partition and the pathfinder.
@@ -383,6 +458,7 @@ impl Simulation {
         o.disabled.set(DisabledReason::Held, frame, None);
         o.status |= bits;
         o.contained_by = Some(container);
+        o.contained_frame = frame;
         o.target = None;
         o.path.clear();
         o.speed = 0.0;
@@ -395,7 +471,7 @@ impl Simulation {
             self.objects.get_mut(&rider).unwrap().position = p;
             self.objects.get_mut(&container).unwrap().status |= can_attack;
             self.recalc_garrison_owner(container);
-        } else {
+        } else if !tunnel {
             self.redeploy_occupants(container);
         }
         self.rebuild_partition_now();
@@ -631,15 +707,15 @@ impl Simulation {
     /// `removeFromContainViaIterator` and `TransportContain::onRemoving`: the rider
     /// is back in the world at the container's position (or its exit bone).
     fn remove_from_contain(&mut self, container: u32, rider: u32) {
-        let Some(c) = self.objects.get_mut(&container).and_then(|o| o.contain.as_mut()) else { return };
-        let Some(i) = c.riders.iter().position(|r| *r == rider) else { return };
-        c.riders.remove(i);
-        let data = c.data.clone();
+        let Some(data) = self.contain(container).map(|c| c.data.clone()) else { return };
+        let list = self.rider_list_mut(container);
+        let Some(i) = list.iter().position(|r| *r == rider) else { return };
+        list.remove(i);
         let (pos, angle, layer, dead) = {
             let k = &self.objects[&container];
             (k.position, k.angle, k.layer, k.dead)
         };
-        let slots = if data.garrison { 1 } else { self.slots(rider) };
+        let slots = if data.garrison || data.tunnel { 1 } else { self.slots(rider) };
         if data.garrison {
             self.remove_from_point(container, rider);
         }
@@ -709,7 +785,7 @@ impl Simulation {
     /// `TransportContain::isSpecificRiderFreeToExit`.
     fn rider_free_to_exit(&self, container: u32, rider: u32) -> bool {
         // Only transports can refuse (OpenContain says yes).
-        if self.contain(container).is_some_and(|c| c.data.garrison) || self.airborne_now(container) {
+        if self.contain(container).is_some_and(|c| c.data.garrison || c.data.tunnel) || self.airborne_now(container) {
             return true;
         }
         if !self.has_ai(rider) {
@@ -731,12 +807,19 @@ impl Simulation {
     /// `TransportContain::isExitBusy`.
     fn exit_busy(&self, container: u32) -> bool {
         let c = self.contain(container).unwrap();
+        if c.data.tunnel || c.data.garrison {
+            return false;
+        }
         (c.data.delay_exit_in_air && self.airborne_now(container)) || self.frame < c.exit_not_busy
     }
 
     /// `privateExit` (`MSG_EXIT`): leave the container, waiting if needed.
     pub(crate) fn begin_exit(&mut self, id: u32, from_ai: bool) -> Result<(), SimError> {
-        let Some(container) = self.objects.get(&id).and_then(|o| o.contained_by) else {
+        self.begin_exit_via(id, None, from_ai)
+    }
+    /// `aiExit(container)`: out through that container (any tunnel of the network).
+    fn begin_exit_via(&mut self, id: u32, via: Option<u32>, from_ai: bool) -> Result<(), SimError> {
+        let Some(container) = via.or_else(|| self.objects.get(&id).and_then(|o| o.contained_by)) else {
             return Err(SimError(format!("object {id} is not inside anything")));
         };
         if self.objects[&container].disabled.has(DisabledReason::Subdued) {
@@ -756,9 +839,10 @@ impl Simulation {
         if self.objects[&id].disabled.has(DisabledReason::Subdued) {
             return Ok(());
         }
-        for r in c.riders.clone() {
+        let _ = c;
+        for r in self.riders_of(id) {
             if self.has_ai(r) {
-                self.begin_exit(r, from_ai)?;
+                self.begin_exit_via(r, Some(id), from_ai)?;
             }
         }
         Ok(())
@@ -770,7 +854,7 @@ impl Simulation {
             self.end_order(id, Outcome::Failure);
             return 1;
         };
-        if self.objects[&id].contained_by != Some(goal) {
+        if !self.is_inside(goal, id) {
             self.end_order(id, Outcome::Failure);
             return 1;
         }
@@ -904,6 +988,22 @@ impl Simulation {
     /// `TransportContain::update`: the initial payload, health regeneration and the door.
     pub(crate) fn contain_update(&mut self, id: u32) -> u32 {
         let Some(c) = self.contain(id) else { return 1 };
+        if c.data.tunnel {
+            // TunnelTracker::healObjects: each tunnel heals the whole network.
+            let frames = c.data.heal_frames;
+            for r in self.riders_of(id) {
+                let Some(h) = self.objects.get(&r).and_then(|o| o.health.as_ref()) else { continue };
+                let amount = if (self.frame - self.objects[&r].contained_frame) as f32 >= frames {
+                    h.max
+                } else {
+                    h.max / frames
+                };
+                self.attempt_healing(r, amount, 0);
+            }
+            let c = self.contain_mut(id);
+            c.door_countdown = c.door_countdown.saturating_sub(1);
+            return 1;
+        }
         if c.data.garrison {
             self.garrison_update(id);
             let c = self.contain_mut(id);
@@ -949,6 +1049,11 @@ impl Simulation {
     /// cannot get out die, the rest scatter.
     pub(crate) fn contain_on_die(&mut self, id: u32) {
         let Some(c) = self.contain(id).cloned() else { return };
+        // TunnelContain::onDie: the network loses a tunnel; nobody is thrown out.
+        if c.data.tunnel {
+            self.tunnel_destroyed(id);
+            return;
+        }
         if c.data.damage_percent > 0.0 {
             let death = if c.data.burned_death { "BURNED" } else { "NORMAL" };
             let death = crate::body::death_type(death).unwrap_or(0);
@@ -985,6 +1090,10 @@ impl Simulation {
     /// `OpenContain::onDelete`: anything still inside goes with the container.
     pub(crate) fn contain_on_delete(&mut self, id: u32) {
         let Some(c) = self.contain(id) else { return };
+        if c.data.tunnel {
+            self.tunnel_destroyed(id);
+            return;
+        }
         for r in c.riders.clone() {
             self.destroy_object(r);
         }

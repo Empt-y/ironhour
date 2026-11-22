@@ -31,6 +31,8 @@ pub struct Player {
     pub sciences: BTreeSet<String>,
     /// Upgrades researched and in research (`upgrades`).
     pub upgrades: crate::upgrades::PlayerUpgrades,
+    /// `TunnelTracker` (`contain`).
+    pub tunnels: crate::contain::TunnelTracker,
 }
 impl Player {
     /// `Money::withdraw`: no more than the balance; returns what was taken.

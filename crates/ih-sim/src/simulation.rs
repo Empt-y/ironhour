@@ -283,6 +283,8 @@ pub struct Object {
     pub contain: Option<crate::contain::Contain>,
     /// `getContainedBy`.
     pub contained_by: Option<u32>,
+    /// `getContainedByFrame`.
+    pub contained_frame: u32,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -681,12 +683,15 @@ impl Simulation {
                 sole_healer: None,
                 contain,
                 contained_by: None,
+                contained_frame: 0,
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
         self.idle_enter(id);
         // Object::initObject: upgrade modules run with the player's upgrades.
         self.update_upgrade_modules(id);
+        // TunnelContain::onObjectCreated
+        self.register_tunnel(id);
         self.update_weapon_set(id);
         self.rebuild_partition();
         self.update_pos(id);
@@ -2311,7 +2316,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(29);
+        h.u32(30);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2567,6 +2572,12 @@ impl Simulation {
             for s in &p.sciences {
                 h.text(s);
             }
+            for list in [&p.tunnels.tunnels, &p.tunnels.riders] {
+                h.u64(list.len() as u64);
+                for v in list {
+                    h.u32(*v);
+                }
+            }
             for set in [&p.upgrades.in_progress, &p.upgrades.completed] {
                 h.u64(set.len() as u64);
                 for s in set {
@@ -2590,6 +2601,7 @@ impl Simulation {
         }
         for o in self.objects.values() {
             h.u32(o.contained_by.unwrap_or(0));
+            h.u32(o.contained_frame);
             h.u32(o.ai.enter.unwrap_or(0));
             h.u32(u32::from(o.contain.is_some()));
             if let Some(c) = &o.contain {
@@ -3106,10 +3118,15 @@ fn steer(
         return;
     }
     let layer = o.layer;
+    // AIEnterState: `setAllowInvalidPosition(true)` while walking into a container.
+    let allow_invalid = o.ai.state == AiState::Enter;
     // validMovementTerrain: the cell under the point is passable on this layer. On
     // a bridge layer, as in the original, the impassable cells around the deck
     // count as valid; only cells beyond the layer do not.
     let valid = |p: [f32; 2]| {
+        if allow_invalid {
+            return true;
+        }
         let c = crate::locomotion::CELL;
         let (x, y) = ((p[0] / c).floor() as i32, (p[1] / c).floor() as i32);
         if layer == 0 {
@@ -3213,7 +3230,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xa1e524c895c5bcea, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x32914657700142db, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3449,7 +3466,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x90b1dcb6d0ca1643, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xc031b905990058b8, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3541,7 +3558,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xa88dd0018e8bfa5b, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x0b4350862cc4e256, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

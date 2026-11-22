@@ -391,7 +391,11 @@ pub fn logical_bones(
     let mut files = Files { vfs, language, files: BTreeMap::new() };
     let mut out = BTreeMap::new();
     for (name, t) in &templates.objects {
-        if !t.modules.iter().any(|m| matches!(m.class.as_str(), "TransportContain" | "GarrisonContain")) {
+        if !t
+            .modules
+            .iter()
+            .any(|m| matches!(m.class.as_str(), "TransportContain" | "GarrisonContain" | "TunnelContain"))
+        {
             continue;
         }
         let scale = t.number("Scale", 1.0);

@@ -151,6 +151,9 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     println!("crushed (frame, victim, crusher): {:?}; move-asides: {}", a.crushed, a.move_asides);
     let money: Vec<(u32, u32)> = a.players.iter().map(|(id, p)| (*id, p.money)).collect();
     println!("money (player, amount): {money:?}");
+    for (id, p) in a.players.iter().filter(|(_, p)| !p.tunnels.tunnels.is_empty()) {
+        println!("  player {id} tunnels {:?} hold {:?}", p.tunnels.tunnels, p.tunnels.riders);
+    }
     for o in a.objects.values().filter(|o| o.contain.as_ref().is_some_and(|c| !c.riders.is_empty())) {
         println!("  {} {} (owner {}) carries {:?}", o.id, o.template, o.owner, o.contain.as_ref().unwrap().riders);
     }

@@ -1637,3 +1637,61 @@ Asset-free fixtures: `a1e524c895c5bcea` (ground), `a88dd0018e8bfa5b` (bridge),
 `NO_GARRISON` units and enemies being refused; a really damaged building
 being abandoned and refusing occupants; infantry firing from a transport;
 and matching hashes in two runs.
+
+### Tunnels (state hash v30)
+
+From `TunnelContain.cpp` (`addToContainList`, `removeFromContain`,
+`isValidContainerFor`, `onContaining`, `onRemoving`, `onDie`, `onDelete`,
+`onObjectCreated`, `update`) and `TunnelTracker.cpp` (`isValidContainerFor`,
+`onTunnelCreated`, `onTunnelDestroyed`, `healObjects`): `crates/ih-sim/src/contain.rs`.
+
+- Each player has one tunnel network: all of their `TunnelContain` buildings
+  share one list of passengers, up to `GameData`'s `MaxTunnelCapacity`, and
+  take anything but aircraft (with a `TransportSlotCount`, as `canEnterObject`
+  requires). A tunnel joins its network when it is created.
+- Units go in through any tunnel and come out of the one that is evacuated, at
+  its exit bones. Inside, every tunnel heals every passenger over
+  `TimeForFullHeal` each frame (fully once they have been in that long).
+- A tunnel that dies or is removed leaves the network; passengers who went in
+  through it now count as inside another tunnel. When the last tunnel goes,
+  everyone inside is destroyed.
+- Units walking into any container may step onto invalid cells
+  (`AIEnterState`'s `setAllowInvalidPosition`), so they reach structures that
+  block pathing.
+- `m5-tunnels` (stock): three Rebels go into one Tunnel Network and come out of
+  another 350 units away. `sim-run` prints each player's tunnels and their
+  passengers.
+- Not yet: tunnel defence (the nemesis and `AI_GUARD_TUNNEL_NETWORK`), hurried
+  exits, selling the last tunnel, capture, cave networks (`CaveContain`).
+
+All scenarios pass with v30 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `0cdf76f0d4bf3992` | `0b2db3cdcfbfef38` |
+| AI/status orders | `cd4c51fbe56b91b4` | `b410eecee8b4e1bf` |
+| Bridges | `5a2bd174c36181a6` | `34389a768e77aa2b` |
+| Traffic, Tournament Desert | `1010e910a6ca3a50` | `7cc3323897ab93c4` |
+| Traffic, Winding River | `d6b15b0fb3c9055a` | `b64952187cc60db2` |
+| Long map travel | `f750d952e9eda09e` | `47dd0e2bcaf8400f` |
+| Crush enemy / crush ally | `43c5dba86a99635c` / `9f8edacff89c6cd3` | |
+| Comanche out and back | `bfe249bdd1332ae0` | `21eb520c8e602330` |
+| Group move (`m4-group`) | `fde49e33a463d125` | |
+| Fight (`m5-fight`) | `4ccdc064809e7aab` | |
+| Missiles (`m5-missiles`) | `5cbde234fb14b07b` | |
+| Guard (`m5-guard`) | `58089b198bcb90f6` | |
+| Skirmish (`m5-skirmish`) | `0d34d0dd96d7cd40` | |
+| Production (`m5-production`) | `1535fa53ca243fff` | |
+| Supply (`m5-supply`) | `bd7ad9d0fea2a09f` | |
+| Upgrades (`m5-upgrades`) | `cb576ebeb4d2c82a` | |
+| Construction (`m5-construction`) | `cb516cf25843d17c` | |
+| Repair and selling (`m5-repair-sell`) | `a25aba2319f6c334` | |
+| Transports (`m5-transports`) | `60b7188b7461684a` | |
+| Garrison (`m5-garrison`) | `475a8aee674652b1` | |
+| Tunnels (`m5-tunnels`) | `42d9cf9f6d7d4cb9` | |
+
+Asset-free fixtures: `32914657700142db` (ground), `0b4350862cc4e256` (bridge),
+`c031b905990058b8` (head-on traffic), `774a01d0b06533b0` (AI/status orders).
+`tests/tunnels.rs` covers entering one tunnel and leaving from another, the
+shared capacity and aircraft refused, healing inside, passengers moving to
+another tunnel and dying with the last one, and matching hashes in two runs.
