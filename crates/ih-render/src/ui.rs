@@ -133,6 +133,7 @@ impl UiPass {
     }
 
     /// Records the quads into `target` (cleared to `clear` when given).
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         r: &mut Renderer,
