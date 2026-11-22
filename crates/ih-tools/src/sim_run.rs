@@ -196,6 +196,13 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
             None => println!("  {} {} built by {:?}", o.id, o.template, o.builder),
         }
     }
+    for (id, p) in a.players.iter().filter(|(id, _)| **id != 0) {
+        let g = &p.generals;
+        println!(
+            "  player {id} rank {}, skill points {}, purchase points {}, sciences {:?}",
+            g.rank, g.skill_points, g.purchase_points, p.sciences
+        );
+    }
     for (id, p) in &a.players {
         if !p.upgrades.completed.is_empty() || !p.upgrades.in_progress.is_empty() {
             println!(

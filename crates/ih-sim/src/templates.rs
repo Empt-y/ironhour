@@ -332,6 +332,12 @@ pub struct Templates {
     pub condition_bones: BTreeMap<String, crate::bridges::ConditionBones>,
     /// `ObjectCreationList` definitions by name (`ocl`).
     pub ocls: BTreeMap<String, Vec<crate::ocl::Nugget>>,
+    /// `Science` definitions (`sciences`).
+    pub sciences: BTreeMap<String, crate::sciences::ScienceInfo>,
+    /// `Rank` definitions, rank 1 first.
+    pub ranks: Vec<crate::sciences::RankInfo>,
+    /// `SpecialPower` definitions.
+    pub special_powers: BTreeMap<String, crate::sciences::SpecialPowerTemplate>,
     /// `GameData`'s `WeaponBonus` lines.
     pub weapon_bonus: crate::veterancy::BonusSet,
     /// `GameData`'s `HealthBonus_*` per veterancy level (100% each by default).
@@ -533,6 +539,7 @@ impl Templates {
                 crate::upgrades::UpgradeTemplate { name, object: true, build_time: 0.0, cost: 0 },
             );
         }
+        (out.sciences, out.ranks, out.special_powers) = crate::sciences::load(defs);
         for name in defs.names("ObjectCreationList") {
             if let Some(b) = defs.all("ObjectCreationList", name).last() {
                 out.ocls.insert(name.clone(), crate::ocl::parse(b));

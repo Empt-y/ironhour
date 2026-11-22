@@ -1958,3 +1958,79 @@ Asset-free fixtures: `7ca735eeb9c78ead` (ground), `1b9523b623e4838c` (bridge),
 fog returning after the persist time, auto-targeting only what the side can
 see (until an allied scout reveals it), and determinism. The garrison test's
 transport gained a vision range, since passengers see through their transport.
+
+### Sciences, ranks and special powers (state hash v35)
+
+From `Science.cpp`, `RankInfo.cpp`, `SpecialPower.cpp`, `SpecialPowerModule.cpp`,
+`OCLSpecialPower.cpp`, `CashHackSpecialPower.cpp`, `CashBountyPower.cpp`, the
+rank, skill and science functions of `Player.cpp` (`resetRank`,
+`setRankLevel`, `addSkillPoints`, `addSkillPointsForKill`, `doBountyForKill`,
+`addScience`, `grantScience`, `attemptToPurchaseScience`,
+`isCapableOfPurchasingScience`, the shared special power timers) and
+`AIGroup::groupDoSpecialPower*`: `crates/ih-sim/src/sciences.rs`.
+
+- Every player starts at rank 1 with that rank's sciences and purchase
+  points. Kills of enemies of a playable side give the victim's
+  `SkillPointValue` for its veterancy level (its `ExperienceValue` when unset);
+  enough points raise the rank, granting each new rank's sciences and points.
+  The `add_skill_points` command adds points directly.
+- `purchase_science` buys a science whose prerequisites the player has, for
+  its `SciencePurchasePointCost` (free sciences cannot be bought).
+  `GrantScienceUpgrade` now goes through `grantScience` (grantable sciences
+  only).
+- Special power modules keep their `ReloadTime` timer: started when the
+  object is created (not while under construction), restarted on use,
+  paused by `StartsPaused`, or shared across the player's objects with
+  `SharedSyncedTimer` (a shared timer starts ready). Gaining a power's
+  `RequiredScience` makes it ready at once. The `special_power` command
+  (object, power, optional target object or location) checks the science and
+  readiness, then runs the power:
+  - `OCLSpecialPower`: the OCL (or the first `UpgradeOCL` whose science the
+    player has) at the map edge near the source or target, the farthest edge,
+    at the location, or above it, aimed at the target.
+  - `CashHackSpecialPower`: takes up to `MoneyAmount` (or an upgrade amount)
+    from the target's owner.
+  - `CashBountyPower`: with its science, the player earns `Bounty` of each
+    kill's build cost.
+  - Every other power module keeps its timer and does nothing else yet.
+- sim-run prints each player's rank, points and sciences.
+- Not yet: player templates (intrinsic sciences and points per side),
+  disabled and hidden sciences, script rank limits, special abilities that
+  walk to their target, spy vision, defectors, cleanup, demoralise, Baikonur,
+  `UpdateModuleStartsAttack`, view objects, `OCLAdjustPositionToPassable`,
+  aircraft deliveries (`DeliverPayload`, so most airstrike OCLs create
+  nothing yet), and sounds, EVA and superweapon timers.
+
+All scenarios pass with v35 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `13088ad44dcf773d` | `3360e746df3c1d1a` |
+| AI/status orders | `fc4456f70e0e7094` | `28005e0555deb960` |
+| Bridges | `ac5092ac38b9b159` | `e2cfebea10efdc99` |
+| Traffic, Tournament Desert | `eae556d427d06840` | `0b6577abbfe92dc3` |
+| Traffic, Winding River | `a76545c8eadfe623` | `3efe9a00e7afb383` |
+| Long map travel | `575dcc4525993c39` | `8284886b48d374e0` |
+| Crush enemy / crush ally | `5d8ce4966122ac88` / `7b7416f455c60556` | |
+| Comanche out and back | `fac465d3c1d73ad0` | `e801b47a10edbf86` |
+| Group move (`m4-group`) | `07d9645db911af65` |  |
+| `m5-construction` | `5b02a2552d70517f` | |
+| `m5-fight` | `10c9757a57eedfe9` | |
+| `m5-garrison` | `a5727bc682a4719a` | |
+| `m5-guard` | `e5f7e741a83bc6d1` | |
+| `m5-missiles` | `90d653499dd65126` | |
+| `m5-production` | `e8f6c94a77410915` | |
+| `m5-repair-sell` | `ba647ed33d3b914b` | |
+| `m5-skirmish` | `e75690c639fc4542` | |
+| `m5-stealth` | `5d6a41fdd31939d3` | |
+| `m5-supply` | `4c738c99caffe80c` | |
+| `m5-transports` | `07f2aa890356dfd4` | |
+| `m5-tunnels` | `47c9e023ce6d3961` | |
+| `m5-upgrades` | `b008cae75d0e1f61` | |
+
+Asset-free fixtures: `1ff4cac75292d408` (ground), `e6e7a3fa22ae6f0d` (bridge),
+`e30b8b614c47439a` (head-on traffic), `2490929e1510b83b` (AI/status orders).
+`tests/sciences.rs` covers ranks from kills, buying sciences with
+prerequisites and points, a power that needs a science and reloads, a shared
+timer across two buildings, a cash hack, a cash bounty and determinism. In
+stock `m5-fight`, player 1 earns 120 skill points from its kills.

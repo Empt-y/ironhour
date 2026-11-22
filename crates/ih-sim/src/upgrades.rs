@@ -382,7 +382,8 @@ impl Simulation {
             }
             Effect::GrantScience(s) => {
                 let owner = self.objects[&id].owner;
-                self.player(owner).sciences.insert(s.clone());
+                // GrantScienceUpgrade: Player::grantScience.
+                self.grant_science(owner, s);
             }
             Effect::WeaponBonus => {
                 let o = self.objects.get_mut(&id).unwrap();

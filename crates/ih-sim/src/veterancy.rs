@@ -105,8 +105,7 @@ impl Simulation {
             .is_some_and(|v| v.eq_ignore_ascii_case("yes"))
     }
 
-    /// `Object::scoreTheKill` (the experience part; skill points and bounties
-    /// come with sciences).
+    /// `Object::scoreTheKill`.
     pub(crate) fn score_the_kill(&mut self, killer: u32, victim: u32) {
         let (Some(k), Some(v)) = (self.objects.get(&killer), self.objects.get(&victim)) else { return };
         // Neutral and civilian objects are not a playable side.
@@ -116,6 +115,10 @@ impl Simulation {
         if self.relationship(killer, victim) != crate::weapons::Relationship::Enemies || k.owner == v.owner {
             return;
         }
+        // Player::addSkillPointsForKill and doBountyForKill.
+        self.kill_rewards(killer, victim);
+        let k = &self.objects[&killer];
+        let v = &self.objects[&victim];
         let accepting = self.trainable(killer) || k.experience.sink.is_some();
         if accepting && !self.under_construction(victim) {
             let value = levels(&self.templates.objects[&v.template], "ExperienceValue")[v.experience.level as usize];

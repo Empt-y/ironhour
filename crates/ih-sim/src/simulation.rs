@@ -174,6 +174,25 @@ pub enum Command {
         factory: u32,
         upgrade: String,
     },
+    /// `Player::attemptToPurchaseScience` (`MSG_PURCHASE_SCIENCE`).
+    PurchaseScience {
+        player: u32,
+        science: String,
+    },
+    /// `Player::addSkillPoints` (scripts, cheats).
+    AddSkillPoints {
+        player: u32,
+        points: i32,
+    },
+    /// `MSG_DO_SPECIAL_POWER` / `_AT_OBJECT` / `_AT_LOCATION`.
+    SpecialPower {
+        object: u32,
+        power: String,
+        #[serde(default)]
+        target: Option<u32>,
+        #[serde(default)]
+        location: Option<[f32; 2]>,
+    },
 }
 fn default_damage_type() -> String {
     "EXPLOSION".into()
@@ -196,6 +215,8 @@ pub enum ModuleKind {
     Lifetime,
     /// `StealthUpdate` (`stealth`).
     Stealth,
+    /// A special power module (`sciences::Power`): not updated.
+    SpecialPower,
     /// `StealthDetectorUpdate` (`stealth`).
     StealthDetector,
     Steering,
@@ -311,6 +332,8 @@ pub struct Object {
     pub reveal_all_look: Option<crate::shroud::Look>,
     /// What the last look was taken with (`shroud::LookKey`).
     pub look_key: Option<crate::shroud::LookKey>,
+    /// Special power modules, in module order (`sciences`).
+    pub powers: Vec<crate::sciences::Power>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -554,6 +577,7 @@ impl Simulation {
         self.next_id = self.next_id.checked_add(1).ok_or_else(|| SimError("object IDs exhausted".into()))?;
         let mut modules = vec![];
         let (mut stealth, mut detector) = (None, None);
+        let mut powers = vec![];
         for m in t.modules.iter().filter(|m| matches!(m.kind.as_str(), "Behavior" | "Body")) {
             let known = ih_ini::schema::MODULES.iter().find(|d| d.name == m.class);
             let kind = if let Some(k) = crate::body::module_kind(m) {
@@ -574,6 +598,9 @@ impl Simulation {
                 ModuleKind::Lifetime
             } else if m.class == "StealthUpdate" {
                 ModuleKind::Stealth
+            } else if let Some(p) = crate::sciences::Power::from_module(&m.class, &m.block) {
+                powers.push(p);
+                ModuleKind::SpecialPower
             } else if m.class == "StealthDetectorUpdate" {
                 ModuleKind::StealthDetector
             } else if crate::production::Exit::from_module(&m.class, &m.block).is_some() {
@@ -758,9 +785,11 @@ impl Simulation {
                 look: None,
                 reveal_all_look: None,
                 look_key: None,
+                powers,
             },
         );
         self.stealth_created(id);
+        self.powers_created(id);
         // The AI state machine starts idle (AIIdleState::onEnter).
         self.idle_enter(id);
         // Object::initObject: upgrade modules run with the player's upgrades.
@@ -856,6 +885,13 @@ impl Simulation {
             Command::Evacuate { object } => self.evacuate(object, false)?,
             Command::Sell { object } => self.sell(object)?,
             Command::CancelResearch { factory, upgrade } => self.cancel_upgrade(factory, &upgrade)?,
+            Command::PurchaseScience { player, science } => self.purchase_science(player, &science)?,
+            Command::AddSkillPoints { player, points } => {
+                self.add_skill_points(player, points);
+            }
+            Command::SpecialPower { object, power, target, location } => {
+                self.do_special_power(object, &power, target, location)?
+            }
             Command::Dock { object, target } => {
                 if !self.objects.contains_key(&object) || !self.objects.contains_key(&target) {
                     return Err(SimError(format!("object {object} or {target} is missing")));
@@ -1287,7 +1323,8 @@ impl Simulation {
                 | ModuleKind::ProductionExit
                 | ModuleKind::Dock
                 | ModuleKind::Contain
-                | ModuleKind::Lifetime => 0,
+                | ModuleKind::Lifetime
+                | ModuleKind::SpecialPower => 0,
             };
             if !self.objects[&id].disabled.allows_module(exceptions) {
                 self.scheduler.reschedule((id, index), self.frame.saturating_add(1));
@@ -1322,7 +1359,7 @@ impl Simulation {
                 ModuleKind::Lifetime => self.lifetime_update(id),
                 ModuleKind::Stealth => self.stealth_update(id),
                 ModuleKind::StealthDetector => self.detector_update(id),
-                ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => FOREVER,
+                ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die | ModuleKind::SpecialPower => FOREVER,
             };
             self.update_pos(id);
             self.scheduler.reschedule((id, index), self.frame.saturating_add(delay.max(1)));
@@ -2409,7 +2446,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(34);
+        h.u32(35);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2676,6 +2713,16 @@ impl Simulation {
             for s in &p.sciences {
                 h.text(s);
             }
+            let g = &p.generals;
+            for v in [g.rank, g.skill_points, g.level_up, g.level_down, g.purchase_points] {
+                h.u32(v as u32);
+            }
+            h.float(g.skill_modifier);
+            h.float(g.cash_bounty);
+            for (t, f) in &g.shared_timers {
+                h.text(t);
+                h.u32(*f);
+            }
             for list in [&p.tunnels.tunnels, &p.tunnels.riders] {
                 h.u64(list.len() as u64);
                 for v in list {
@@ -2717,6 +2764,11 @@ impl Simulation {
                 h.u32(s.frames_granted);
             }
             h.u32(u32::from(o.detector.as_ref().is_some_and(|d| d.enabled)));
+            for p in &o.powers {
+                h.u32(p.available_on);
+                h.u32(p.paused_count);
+                h.u32(p.paused_on);
+            }
             let e = o.experience;
             h.u32(u32::from(e.level));
             h.u32(e.points as u32);
@@ -3045,6 +3097,25 @@ fn hash_command(c: &Command, h: &mut StateHash) {
             h.u32(*factory);
             h.text(upgrade);
         }
+        Command::PurchaseScience { player, science } => {
+            h.u32(29);
+            h.u32(*player);
+            h.text(science);
+        }
+        Command::AddSkillPoints { player, points } => {
+            h.u32(30);
+            h.u32(*player);
+            h.u32(*points as u32);
+        }
+        Command::SpecialPower { object, power, target, location } => {
+            h.u32(31);
+            h.u32(*object);
+            h.text(power);
+            h.u32(target.unwrap_or(0));
+            let l = location.unwrap_or([0.0; 2]);
+            h.float(l[0]);
+            h.float(l[1]);
+        }
     }
 }
 /// The goal point and remaining distance along a path (`Path::computePointOnPath`).
@@ -3355,7 +3426,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x7ca735eeb9c78ead, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x1ff4cac75292d408, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3591,7 +3662,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x9698feb644191d73, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xe30b8b614c47439a, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3683,7 +3754,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x1b9523b623e4838c, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xe6e7a3fa22ae6f0d, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

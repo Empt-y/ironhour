@@ -33,6 +33,8 @@ pub struct Player {
     pub upgrades: crate::upgrades::PlayerUpgrades,
     /// `TunnelTracker` (`contain`).
     pub tunnels: crate::contain::TunnelTracker,
+    /// Rank, skill and science purchase points, shared power timers (`sciences`).
+    pub generals: crate::sciences::Generals,
 }
 impl Player {
     /// `Money::withdraw`: no more than the balance; returns what was taken.
@@ -232,7 +234,12 @@ pub(crate) fn transform(position: [f32; 3], angle: f32, p: [f32; 3]) -> [f32; 3]
 
 impl Simulation {
     pub fn player(&mut self, id: u32) -> &mut Player {
-        self.players.entry(id).or_default()
+        if let std::collections::btree_map::Entry::Vacant(e) = self.players.entry(id) {
+            e.insert(Player::default());
+            // Player::init: resetRank.
+            self.reset_rank(id);
+        }
+        self.players.get_mut(&id).unwrap()
     }
     pub fn money(&self, player: u32) -> u32 {
         self.players.get(&player).map_or(0, |p| p.money)

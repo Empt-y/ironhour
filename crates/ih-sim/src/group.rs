@@ -89,7 +89,7 @@ impl Simulation {
     }
 
     /// The map extent (`getExtent`).
-    fn extent(&self) -> ([f32; 2], [f32; 2]) {
+    pub(crate) fn extent(&self) -> ([f32; 2], [f32; 2]) {
         ([0.0, 0.0], [self.grid.width as f32 * CELL, self.grid.height as f32 * CELL])
     }
     /// `clampToMap` for a human player: inside the map less one cell.
