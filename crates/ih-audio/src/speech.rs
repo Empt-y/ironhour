@@ -1,6 +1,10 @@
 //! Client narration arbitration. EVA uses Eva.ini's side, priority, expiry and
 //! repeat interval; unit responses share one voice channel with announcements.
 use super::*;
+use kira::sound::{
+    FromFileError,
+    streaming::{StreamingSoundData, StreamingSoundHandle},
+};
 
 #[derive(Clone, Debug)]
 pub struct EvaEvent {
@@ -45,14 +49,45 @@ struct Request {
     expires: Duration,
 }
 
+pub(super) enum Narration {
+    Sample(StaticSoundHandle),
+    Stream(StreamingSoundHandle<FromFileError>),
+}
+impl Narration {
+    fn state(&self) -> PlaybackState {
+        match self {
+            Self::Sample(h) => h.state(),
+            Self::Stream(h) => h.state(),
+        }
+    }
+    fn stop(&mut self, tween: kira::Tween) {
+        match self {
+            Self::Sample(h) => h.stop(tween),
+            Self::Stream(h) => h.stop(tween),
+        }
+    }
+    pub(super) fn set_volume(&mut self, db: Decibels, tween: kira::Tween) {
+        match self {
+            Self::Sample(h) => h.set_volume(db, tween),
+            Self::Stream(h) => h.set_volume(db, tween),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Speech {
     queue: Vec<Request>,
-    current: Option<(String, u32, StaticSoundHandle)>,
+    pub(super) current: Option<(String, u32, Narration)>,
     cooldown: BTreeMap<String, Duration>,
 }
 
 impl Catalog {
+    pub fn dialog_stream(&self, vfs: &Vfs, name: &str) -> Result<StreamingSoundData<FromFileError>> {
+        let event = self.dialog.get(name).with_context(|| format!("unknown speech event: {name}"))?;
+        let path = self.resolve_file(vfs, &self.speech_folder, &event.filename)?;
+        let bytes = vfs.read(&path)?.with_context(|| format!("speech missing: {path}"))?;
+        Ok(StreamingSoundData::from_cursor(Cursor::new(bytes))?.volume(decibels(event.volume * self.speech_volume)))
+    }
     pub fn dialog_data(&self, vfs: &Vfs, name: &str) -> Result<StaticSoundData> {
         let event = self.dialog.get(name).with_context(|| format!("unknown speech event: {name}"))?;
         let path = self.resolve_file(vfs, &self.speech_folder, &event.filename)?;
@@ -104,8 +139,38 @@ impl<B: Backend> Audio<B> {
         true
     }
 
+    /// Script/campaign hook: explicit interruption never displaces a higher-priority speaker.
+    pub fn request_dialog(
+        &mut self,
+        name: &str,
+        priority: u32,
+        interrupt: bool,
+        now: Duration,
+        lifetime: Duration,
+    ) -> bool {
+        if interrupt
+            && let Some((_, current_priority, handle)) = &mut self.speech.current
+            && priority >= *current_priority
+        {
+            handle.stop(kira::Tween::default());
+        }
+        self.queue_speech(name, priority, now, lifetime)
+    }
+    pub fn stop_speech(&mut self) {
+        if let Some((_, _, mut handle)) = self.speech.current.take() {
+            handle.stop(kira::Tween::default());
+        }
+        self.speech.queue.clear();
+    }
+
     /// Called every client frame, including frames with no simulation tick.
     pub fn update_speech(&mut self, vfs: &Vfs, now: Duration) -> Result<()> {
+        if let Some((_, _, Narration::Stream(handle))) = &mut self.speech.current
+            && let Some(error) = handle.pop_error()
+        {
+            handle.stop(kira::Tween::default());
+            return Err(anyhow::anyhow!("speech stream: {error}"));
+        }
         if self.speech.current.as_ref().is_some_and(|(_, _, h)| h.state() != PlaybackState::Stopped) {
             return Ok(());
         }
@@ -123,7 +188,7 @@ impl<B: Backend> Audio<B> {
             return Ok(());
         };
         let request = self.speech.queue.remove(index);
-        let data = if let Some(event) = self.catalog.events.get(&request.name).cloned() {
+        let handle = if let Some(event) = self.catalog.events.get(&request.name).cloned() {
             ensure!(!event.looping && !event.sounds.is_empty(), "{}: invalid speech event", request.name);
             let index = (self.random() * event.sounds.len() as f64) as usize % event.sounds.len();
             let path = self.catalog.resolve(vfs, &event.sounds[index])?;
@@ -133,11 +198,12 @@ impl<B: Backend> Audio<B> {
             let pitch = event.pitch[0] + (event.pitch[1] - event.pitch[0]) * self.random();
             let volume =
                 event.volume * self.catalog.speech_volume * (1.0 + event.volume_shift * (1.0 - self.random() as f32));
-            self.cache[&path].volume(decibels(volume.max(0.0))).playback_rate(pitch)
+            let data = self.cache[&path].volume(decibels(volume.max(0.0))).playback_rate(pitch);
+            Narration::Sample(self.manager.play(data).map_err(|e| anyhow::anyhow!("speech: {e:?}"))?)
         } else {
-            self.catalog.dialog_data(vfs, &request.name)?
+            let data = self.catalog.dialog_stream(vfs, &request.name)?;
+            Narration::Stream(self.manager.play(data).map_err(|e| anyhow::anyhow!("speech: {e:?}"))?)
         };
-        let handle = self.manager.play(data).map_err(|e| anyhow::anyhow!("speech {}: {e:?}", request.name))?;
         self.speech.current = Some((request.name, request.priority, handle));
         Ok(())
     }
@@ -187,6 +253,15 @@ mod tests {
         assert_eq!(catalog.dialog["Alert"].volume, 0.5);
         assert_eq!(catalog.dialog_data(&vfs, "Alert").unwrap().frames.len(), 4800);
         assert!(catalog.dialog_data(&vfs, "Missing").is_err());
+        assert_eq!(catalog.dialog_stream(&vfs, "Alert").unwrap().duration(), Duration::from_millis(100));
+        let manager = AudioManager::<MockBackend>::new(AudioManagerSettings::default()).unwrap();
+        let mut audio = Audio::with_manager(catalog, manager);
+        audio.request_dialog("Alert", 5, true, Duration::ZERO, Duration::from_secs(5));
+        audio.update_speech(&vfs, Duration::ZERO).unwrap();
+        assert!(matches!(audio.speech.current.as_ref().unwrap().2, Narration::Stream(_)));
+        assert!(audio.cache.is_empty(), "dialogue must not enter the whole-PCM cache");
+        audio.stop_speech();
+        assert!(audio.speech.current.is_none());
     }
     #[test]
     fn eva_uses_side_priority_expiry_cooldown_and_duplicate_suppression() {

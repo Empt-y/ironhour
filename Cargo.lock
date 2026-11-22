@@ -876,7 +876,9 @@ dependencies = [
  "ih-ini",
  "ih-vfs",
  "kira",
+ "serde",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

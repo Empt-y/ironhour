@@ -11,5 +11,6 @@ ih-ini.workspace = true
 anyhow.workspace = true
 kira = { version = "0.12.6", default-features = false, features = ["cpal", "wav", "pcm", "adpcm", "mp3", "ogg", "vorbis"] }
 
-[dev-dependencies]
+serde.workspace = true
+toml.workspace = true
 tempfile.workspace = true

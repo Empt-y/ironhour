@@ -54,6 +54,9 @@ struct Cli {
     /// Keep sound effects and speech, but disable background music.
     #[arg(long)]
     no_music: bool,
+    /// Override the per-user audio preferences file.
+    #[arg(long)]
+    audio_preferences: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -132,6 +135,8 @@ struct State {
     audio: Option<ih_audio::Audio>,
     local_player: Option<u32>,
     feedback: audio::Feedback,
+    preferences: ih_audio::preferences::Preferences,
+    preferences_path: PathBuf,
 }
 
 /// What `App::load_game` builds for a map.
@@ -170,7 +175,15 @@ impl App {
         let targets = renderer.targets((config.width, config.height));
         let now = Instant::now();
         let size = window.inner_size();
+        let preferences_path =
+            self.cli.audio_preferences.clone().unwrap_or_else(ih_audio::preferences::Preferences::path);
+        let preferences = ih_audio::preferences::Preferences::load(&preferences_path).unwrap_or_else(|e| {
+            eprintln!("audio preferences: {e:#}");
+            Default::default()
+        });
         self.state = Some(State {
+            preferences,
+            preferences_path,
             window,
             instance,
             surface,
@@ -203,7 +216,16 @@ impl App {
                 None
             } else {
                 match ih_audio::Audio::new(ih_audio::Catalog::load(&self.defs.data, &self.language)) {
-                    Ok(audio) => Some(audio),
+                    Ok(mut audio) => {
+                        audio.set_preferences(preferences)?;
+                        audio.set_time_of_day(match self.world.map.lighting.as_ref().map(|l| l.time_of_day) {
+                            Some(1) => "morning",
+                            Some(3) => "evening",
+                            Some(4) => "night",
+                            _ => "afternoon",
+                        });
+                        Some(audio)
+                    }
                     Err(e) => {
                         eprintln!("audio disabled: {e:#}");
                         None
@@ -222,6 +244,8 @@ impl App {
                 size,
                 Installs::locate().zero_hour.clone(),
             )?);
+            st.ui.as_mut().unwrap().shell.audio_volumes =
+                [st.preferences.effects, st.preferences.speech, st.preferences.music];
         }
         if !self.cli.no_music {
             let st = self.state.as_mut().unwrap();
@@ -447,6 +471,14 @@ impl App {
         st.selected.clear();
         st.ui = None;
         st.feedback = audio::Feedback::default();
+        if let Some(audio) = &mut st.audio {
+            audio.set_time_of_day(match self.world.map.lighting.as_ref().map(|l| l.time_of_day) {
+                Some(1) => "morning",
+                Some(3) => "evening",
+                Some(4) => "night",
+                _ => "afternoon",
+            });
+        }
         if !self.cli.no_music {
             audio::start_music(&mut st.audio, &self.vfs, st.simulation.as_ref(), st.local_player, false);
         }
@@ -632,6 +664,24 @@ impl ApplicationHandler for App {
                                 eprintln!("could not start the skirmish: {e:#}");
                             }
                             return;
+                        }
+                        ih_ui::shell::ShellEvent::AudioPreview(values)
+                        | ih_ui::shell::ShellEvent::AudioSave(values) => {
+                            let save = matches!(e, ih_ui::shell::ShellEvent::AudioSave(_));
+                            let st = self.state.as_mut().unwrap();
+                            st.preferences = ih_audio::preferences::Preferences {
+                                effects: values[0],
+                                speech: values[1],
+                                music: values[2],
+                            };
+                            if let Some(audio) = &mut st.audio
+                                && let Err(e) = audio.set_preferences(st.preferences)
+                            {
+                                eprintln!("volume: {e:#}");
+                            }
+                            if save && let Err(e) = st.preferences.save(&st.preferences_path) {
+                                eprintln!("save audio settings: {e:#}");
+                            }
                         }
                         ih_ui::shell::ShellEvent::Sound(name) => {
                             if let Some(audio) = self.state.as_mut().and_then(|s| s.audio.as_mut())

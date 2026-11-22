@@ -144,12 +144,17 @@ impl WindowManager {
                 None => return false,
             }
         };
+        let removed: Vec<_> = self.windows.iter().filter(|w| gone(self, w.id)).map(|w| w.id).collect();
         let s = &self.input_state;
         let (c, u, f) = (s.captor, s.under, s.focus);
         let (c, u, f) = (c.filter(|&w| !gone(self, w)), u.filter(|&w| !gone(self, w)), f.filter(|&w| !gone(self, w)));
         self.input_state.captor = c;
         self.input_state.under = u;
         self.input_state.focus = f;
+        for id in removed {
+            self.windows[id].name = None;
+            self.windows[id].status |= status::HIDDEN;
+        }
     }
 
     /// `winGetScreenPosition`.

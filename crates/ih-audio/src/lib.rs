@@ -7,6 +7,7 @@
 //! Original looping attack/body/decay and full ambient emitters remain pending.
 mod emitters;
 pub mod music;
+pub mod preferences;
 pub mod speech;
 #[cfg(test)]
 mod tests;
@@ -388,10 +389,17 @@ impl<B: Backend> Audio<B> {
     pub fn update_listener(&mut self, listener: Listener) {
         self.listener = listener;
         for voice in &mut self.active {
+            let category = if voice.spatial.is_some() {
+                self.catalog.world_volume * self.catalog.relative_world
+            } else {
+                self.catalog.sound_volume * self.catalog.relative_2d
+            };
             if let Some((at, range)) = voice.spatial {
                 let (gain, pan) = listener.spatial(at, range);
-                voice.handle.set_volume(decibels(voice.gain * gain), kira::Tween::default());
+                voice.handle.set_volume(decibels(voice.gain * gain * category), kira::Tween::default());
                 voice.handle.set_panning(pan, kira::Tween::default());
+            } else {
+                voice.handle.set_volume(decibels(voice.gain * category), kira::Tween::default());
             }
         }
     }
@@ -509,7 +517,8 @@ impl<B: Backend> Audio<B> {
         } else {
             self.catalog.sound_volume * self.catalog.relative_2d
         };
-        let volume = (event.volume as f64 * volume_shift * category as f64).max(0.0) as f32;
+        let base_gain = (event.volume as f64 * volume_shift).max(0.0) as f32;
+        let volume = base_gain * category;
         let db = decibels(volume * attenuation);
         let pitch = event.pitch[0] + (event.pitch[1] - event.pitch[0]) * self.random();
         let delay = if delay {
@@ -524,6 +533,6 @@ impl<B: Backend> Audio<B> {
             .start_time(Duration::from_secs_f64(delay / 1000.0));
         let handle = self.manager.play(sound).map_err(|e| anyhow::anyhow!("play {name}: {e:?}"))?;
         self.sequence.insert(name.into(), index);
-        Ok((handle, volume))
+        Ok((handle, base_gain))
     }
 }

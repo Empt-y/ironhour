@@ -180,6 +180,8 @@ pub enum ShellEvent {
     Quit,
     /// An interface sound to play.
     Sound(String),
+    AudioPreview([u8; 3]),
+    AudioSave([u8; 3]),
 }
 
 /// Data the menus offer.
@@ -254,6 +256,8 @@ struct Screen {
 
 /// `TheShell`.
 pub struct Shell {
+    pub audio_volumes: [u8; 3],
+    options_original: [u8; 3],
     pub ui: WindowManager,
     pub setup: GameSetup,
     pub data: ShellData,
@@ -286,8 +290,17 @@ impl Shell {
             limit_superweapons: false,
             player_name: strings("GUI:Player"),
         };
-        let mut s =
-            Shell { ui: WindowManager::new(display), setup, data, stack: vec![], loader, strings, missing: vec![] };
+        let mut s = Shell {
+            audio_volumes: [80, 70, 55],
+            options_original: [80, 70, 55],
+            ui: WindowManager::new(display),
+            setup,
+            data,
+            stack: vec![],
+            loader,
+            strings,
+            missing: vec![],
+        };
         s.push(MAIN);
         s
     }
@@ -363,6 +376,19 @@ impl Shell {
             }
             SKIRMISH => self.skirmish_init(),
             MAP_SELECT => self.map_select_init(),
+            "Menus/OptionsMenu.wnd" => {
+                self.options_original = self.audio_volumes;
+                for (name, value) in
+                    ["SliderSFXVolume", "SliderVoiceVolume", "SliderMusicVolume"].into_iter().zip(self.audio_volumes)
+                {
+                    if let Some(id) = self.find(&format!("OptionsMenu.wnd:{name}")) {
+                        let g = &mut self.ui.windows[id].gadget;
+                        g.min = 0;
+                        g.max = 100;
+                        g.value = value as i32;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -557,12 +583,27 @@ impl Shell {
         }
     }
 
+    fn read_audio_options(&mut self) -> [u8; 3] {
+        for (i, name) in ["SliderSFXVolume", "SliderVoiceVolume", "SliderMusicVolume"].into_iter().enumerate() {
+            if let Some(id) = self.find(&format!("OptionsMenu.wnd:{name}")) {
+                self.audio_volumes[i] = self.ui.windows[id].gadget.value.clamp(0, 100) as u8;
+            }
+        }
+        self.audio_volumes
+    }
+
     /// Feeds input to the window system and the menus; returns what the game must do.
     pub fn input(&mut self, input: &Input) -> Vec<ShellEvent> {
         let mut out = vec![];
         for e in self.ui.input(input) {
             match e {
                 UiEvent::Sound(s) => out.push(ShellEvent::Sound(s)),
+                UiEvent::System { message: Message::SliderTrack(..), .. }
+                    if self.top() == Some("Menus/OptionsMenu.wnd") =>
+                {
+                    let values = self.read_audio_options();
+                    out.push(ShellEvent::AudioPreview(values));
+                }
                 UiEvent::System { message: Message::Selected(control), .. } => {
                     if let Some(name) = self.ui.windows[control].name.clone() {
                         self.selected(&name, &mut out);
@@ -596,10 +637,18 @@ impl Shell {
             "mainmenu.wnd:buttonoptions" => self.push("Menus/OptionsMenu.wnd"),
             "mainmenu.wnd:buttoncredits" => self.push("Menus/CreditsMenu.wnd"),
             "mainmenu.wnd:buttonexit" => out.push(ShellEvent::Quit),
+            "optionsmenu.wnd:buttonaccept" => {
+                let values = self.read_audio_options();
+                out.push(ShellEvent::AudioSave(values));
+                self.pop();
+            }
+            "optionsmenu.wnd:buttonback" => {
+                self.audio_volumes = self.options_original;
+                out.push(ShellEvent::AudioPreview(self.audio_volumes));
+                self.pop();
+            }
             "skirmishgameoptionsmenu.wnd:buttonback"
             | "skirmishmapselectmenu.wnd:buttonback"
-            | "optionsmenu.wnd:buttonback"
-            | "optionsmenu.wnd:buttonaccept"
             | "creditsmenu.wnd:buttonback" => self.pop(),
             n if n.starts_with("skirmishgameoptionsmenu.wnd:buttonmapstartposition") => {
                 if let Ok(i) = n.trim_start_matches("skirmishgameoptionsmenu.wnd:buttonmapstartposition").parse::<u8>()
@@ -655,6 +704,39 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_options_preview_cancel_and_accept() {
+        let source = br#"WINDOW
+WINDOWTYPE = USER;
+SCREENRECT = UPPERLEFT: 0 0, BOTTOMRIGHT: 800 600, CREATIONRESOLUTION: 800 600;
+NAME = "OptionsMenu.wnd:Root";
+STATUS = ENABLED;
+SYSTEMCALLBACK = "OptionsMenuSystem";
+CHILD
+WINDOW
+WINDOWTYPE = HORZSLIDER;
+SCREENRECT = UPPERLEFT: 10 10, BOTTOMRIGHT: 110 30, CREATIONRESOLUTION: 800 600;
+NAME = "OptionsMenu.wnd:SliderSFXVolume";
+STATUS = ENABLED;
+END
+ENDALLCHILDREN
+END
+"#;
+        let mut shell = Shell::new([800, 600], ShellData::default(), Box::new(|_| None), Box::new(str::to_string));
+        shell.loader = Box::new(move |_| Some(wnd::parse(source).unwrap()));
+        shell.push("Menus/OptionsMenu.wnd");
+        let out = shell.click("OptionsMenu.wnd:SliderSFXVolume");
+        assert!(out.contains(&ShellEvent::AudioPreview([50, 70, 55])));
+        let mut out = vec![];
+        shell.selected("OptionsMenu.wnd:ButtonBack", &mut out);
+        assert!(out.contains(&ShellEvent::AudioPreview([80, 70, 55])));
+        shell.push("Menus/OptionsMenu.wnd");
+        shell.click("OptionsMenu.wnd:SliderSFXVolume");
+        out.clear();
+        shell.selected("OptionsMenu.wnd:ButtonAccept", &mut out);
+        assert!(out.contains(&ShellEvent::AudioSave([50, 70, 55])));
+    }
 
     fn setup() -> GameSetup {
         GameSetup {

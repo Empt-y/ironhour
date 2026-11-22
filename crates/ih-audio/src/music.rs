@@ -55,6 +55,24 @@ impl<B: Backend> Audio<B> {
         }
     }
 
+    pub(crate) fn refresh_media_volumes(&mut self) {
+        if let Some((name, handle)) = &mut self.music.current
+            && let Some(event) = self.catalog.music.get(name)
+        {
+            handle.set_volume(decibels(event.volume * self.catalog.music_volume), kira::Tween::default());
+        }
+        if let Some((name, _, handle)) = &mut self.speech.current {
+            let volume = self
+                .catalog
+                .events
+                .get(name)
+                .map(|e| e.volume)
+                .or_else(|| self.catalog.dialog.get(name).map(|e| e.volume))
+                .unwrap_or(1.0);
+            handle.set_volume(decibels(volume * self.catalog.speech_volume), kira::Tween::default());
+        }
+    }
+
     pub fn update_media(&mut self, vfs: &Vfs, now: Duration) -> Vec<String> {
         let mut errors = vec![];
         if let Err(e) = self.advance_voices(vfs) {

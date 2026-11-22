@@ -2556,3 +2556,18 @@ and event replacement release the emitter, with decay on ordinary stops. The
 bounded pool steals lower-priority voices and INTERRUPT replaces the oldest
 matching event at its limit. Mock-mixer tests exercise complete loop lifecycles,
 movement, stops and voice replacement without requiring an output device.
+
+### Audio completion: streaming dialogue and saved options
+
+- DialogEvent playback now uses the streaming decoder, including short EVA
+  dialogues; long speech never enters the whole-PCM sound cache. The narration
+  API exposes explicit priority/interrupt/stop requests for M7 script actions.
+  Stream errors are surfaced rather than silently blocking the voice channel.
+- Options' SFX, Voice and Music sliders preview changes on active sounds and
+  streams. Back restores the original values; Accept saves atomically to the
+  per-user ironhour/audio.toml. --audio-preferences overrides that path.
+  Invalid values are rejected without overwriting valid settings. Installed
+  game files and the original game's options are not modified.
+- Fixed unloaded window names remaining discoverable: reopening Options now
+  targets its live controls. Tests exercise actual slider input, reopening,
+  cancel, accept, preferences replacement and streaming dialogue playback.
