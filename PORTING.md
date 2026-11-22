@@ -2362,3 +2362,40 @@ and `draw.rs`.
   selection framed, combo boxes (the chosen row and the open drop-down) and
   typed text. Their exact original layouts (scroll bars, column widths, cursor,
   font-based row heights) are still approximate.
+
+### The shell and the skirmish menus
+
+From `Shell.cpp` and the menu callbacks in `GUICallbacks/Menus/`
+(`MainMenu.cpp`, `SkirmishGameOptionsMenu.cpp`, `SkirmishMapSelectMenu.cpp`,
+the options and credits back buttons), `GUIUtil.cpp` and the map cache:
+`crates/ih-ui/src/shell.rs`.
+
+- The shell is a stack of layouts. Pushing hides the screen below, and popping
+  removes the top and shows the one below again.
+- Main menu:
+  - Init hides every drop-down but the main one, the faction art and the save
+    buttons.
+  - Single Player, Multiplayer and Load/Replay switch drop-downs, and their
+    Back buttons switch back.
+  - Skirmish, Options and Credits push their screens, and Exit asks the game
+    to quit.
+- Skirmish setup:
+  - Each slot has a player combo box: the name entry for slot 0; for the other
+    seven, Open, Closed and Easy, Medium or Hard AI.
+  - Each slot also has a faction (Random or a playable side from
+    `PlayerTemplate.ini`), a colour (Random or a `MultiplayerColor`) and a team
+    (None or 1 to 4).
+  - Starting cash comes from `StartingMoneyChoice`, plus the superweapon limit
+    and the map name. The map defaults to Tournament Desert.
+  - Select Map lists the cache's official multiplayer maps.
+  - Start checks for at least two players on a map that fits them, then hands
+    the game a `GameSetup`.
+- Interface sounds from clicks come out as events for the audio system.
+- `ih-tools shell <window names...> [--out png]` clicks through the real menus
+  headless. On stock data it finds 13 sides, 8 colours, 4 cash choices and 64
+  maps, and the path main menu → Single Player → Skirmish → Select Map → OK →
+  Start produces the setup (Tournament Desert, you against an Easy AI,
+  $10,000). The rendered skirmish screen matches the original's layout.
+- Not yet: menu transitions, the shell map and menu schemes, start positions
+  on the map preview, the options themselves, preferences, the load and score
+  screens, and the campaign, challenge, network, replay and save screens.

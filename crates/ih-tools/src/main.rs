@@ -111,6 +111,17 @@ enum Cmd {
         #[arg(long, default_value_t = 600)]
         height: u32,
     },
+    /// Run the menus headless: click windows by name in order, report, optionally draw the last screen.
+    Shell {
+        /// Window names to click, e.g. MainMenu.wnd:ButtonSinglePlayer.
+        clicks: Vec<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 800)]
+        width: u32,
+        #[arg(long, default_value_t = 600)]
+        height: u32,
+    },
     /// Parse window layouts (.wnd): describe one, or check every layout the game can load.
     Wnd {
         /// Layout file (e.g. Menus\MainMenu.wnd or Window\Menus\MainMenu.wnd). Omit to scan all.
@@ -494,6 +505,59 @@ fn main() -> Result<()> {
         }
         Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
         Cmd::Wnd { name } => wnd(&mount(&cli)?, name.as_deref())?,
+        Cmd::Shell { clicks, out, width, height } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
+            let (strings, _) = load_strings(&vfs, &language)?;
+            let strings = std::rc::Rc::new(strings);
+            let cache = vfs.read("Maps\\MapCache.ini")?;
+            let data = ih_ui::shell::ShellData::load(&defs, cache.as_deref());
+            let loader_vfs = mount(&cli)?;
+            let loader = Box::new(move |name: &str| {
+                let path = format!("Window\\{}", name.replace('/', "\\"));
+                loader_vfs.read(&path).ok().flatten().and_then(|b| ih_formats::wnd::parse(&b).ok())
+            });
+            let st = strings.clone();
+            let mut shell = ih_ui::shell::Shell::new(
+                [*width as i32, *height as i32],
+                data,
+                loader,
+                Box::new(move |l| st.text(l).map_or_else(|| format!("MISSING: '{l}'"), str::to_string)),
+            );
+            println!(
+                "{} sides, {} colours, {} cash choices, {} maps; screen {:?}",
+                shell.data.sides.len(),
+                shell.data.colors.len(),
+                shell.data.cash.len(),
+                shell.data.maps.len(),
+                shell.top()
+            );
+            for c in clicks {
+                if shell.ui.find(c).is_none() {
+                    println!("  {c}: no such window");
+                    continue;
+                }
+                let events = shell.click(c);
+                println!("  {c} -> screen {:?}, events {:?}", shell.top(), events);
+            }
+            if !shell.missing.is_empty() {
+                println!("  screens not available: {:?}", shell.missing);
+            }
+            if let Some(out) = out {
+                let st = strings.clone();
+                let fallback = Installs::locate().zero_hour.clone();
+                let mut res = ih_ui::draw::Resources {
+                    images: ih_ui::draw::mapped_images(&defs),
+                    headers: ih_ui::draw::header_templates(&defs),
+                    strings: Box::new(move |l| st.text(l).map_or_else(|| format!("MISSING: '{l}'"), str::to_string)),
+                    fonts: ih_ui::text::Fonts::new(ih_ui::text::system_font_source(fallback)),
+                    default_font: ih_ui::text::FontSpec { name: "Times New Roman".into(), points: 14, bold: false },
+                };
+                let list = shell.ui.draw_list(&mut res);
+                draw_ui_png(&vfs, &language, &mut res, &list, out, *width, *height)?;
+            }
+        }
         Cmd::UiRender { name, out, width, height } => {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
@@ -518,40 +582,14 @@ fn main() -> Result<()> {
             ui.load(&layout);
             let list = ui.draw_list(&mut res);
             let images = &res.images;
-            let quads: Vec<ih_render::ui::UiQuad> = list
-                .iter()
-                .map(|c| match c {
-                    ih_ui::draw::DrawCmd::Image { texture, uv, rect, color } => ih_render::ui::UiQuad {
-                        texture: Some(texture.clone()),
-                        rect: *rect,
-                        uv: *uv,
-                        color: color.map(|c| f32::from(c) / 255.0),
-                    },
-                    ih_ui::draw::DrawCmd::Fill { rect, color } => ih_render::ui::UiQuad {
-                        texture: None,
-                        rect: rect.map(|v| v as f32),
-                        uv: [[0.0; 2]; 4],
-                        color: color.map(|c| f32::from(c) / 255.0),
-                    },
-                })
-                .collect();
-            let mut assets = ih_render::Assets::new(&vfs, &language);
-            let mut r = ih_render::Renderer::new()?;
-            let size = res.fonts.atlas_size;
-            r.set_texture_rgba(ih_ui::text::ATLAS, size, size, res.fonts.atlas.clone());
-            let rgba = r.render_ui(&mut assets, &quads, (*width, *height));
-            write_png(out, *width, *height, &rgba)?;
+            let known = images.len();
+            let quads_len = draw_ui_png(&vfs, &language, &mut res, &list, out, *width, *height)?;
             let images_drawn = list.iter().filter(|c| matches!(c, ih_ui::draw::DrawCmd::Image { .. })).count();
             println!(
-                "{} windows, {} quads ({images_drawn} images), {} mapped images known; wrote {}",
+                "{} windows, {quads_len} quads ({images_drawn} images), {known} mapped images known; wrote {}",
                 ui.windows.len(),
-                quads.len(),
-                images.len(),
                 out.display()
             );
-            for w in assets.warnings.iter().take(10) {
-                println!("  warning: {w}");
-            }
         }
         Cmd::Sheet { names, out, cell, columns, yaw, pitch, hide } => {
             let vfs = mount(&cli)?;
@@ -857,6 +895,45 @@ fn maps(vfs: &Vfs, name: Option<&str>, near: Option<&[f32]>, uses: &[String]) ->
     }
     println!("{} maps: {ok} read, {failed} failed, {warned} with warnings, {objects} objects", files.len());
     Ok(())
+}
+
+/// Draws a UI draw list offscreen to a PNG; returns the quad count.
+fn draw_ui_png(
+    vfs: &Vfs,
+    language: &str,
+    res: &mut ih_ui::draw::Resources,
+    list: &[ih_ui::draw::DrawCmd],
+    out: &std::path::Path,
+    width: u32,
+    height: u32,
+) -> Result<usize> {
+    let quads: Vec<ih_render::ui::UiQuad> = list
+        .iter()
+        .map(|c| match c {
+            ih_ui::draw::DrawCmd::Image { texture, uv, rect, color } => ih_render::ui::UiQuad {
+                texture: Some(texture.clone()),
+                rect: *rect,
+                uv: *uv,
+                color: color.map(|c| f32::from(c) / 255.0),
+            },
+            ih_ui::draw::DrawCmd::Fill { rect, color } => ih_render::ui::UiQuad {
+                texture: None,
+                rect: rect.map(|v| v as f32),
+                uv: [[0.0; 2]; 4],
+                color: color.map(|c| f32::from(c) / 255.0),
+            },
+        })
+        .collect();
+    let mut assets = ih_render::Assets::new(vfs, language);
+    let mut r = ih_render::Renderer::new()?;
+    let size = res.fonts.atlas_size;
+    r.set_texture_rgba(ih_ui::text::ATLAS, size, size, res.fonts.atlas.clone());
+    let rgba = r.render_ui(&mut assets, &quads, (width, height));
+    write_png(out, width, height, &rgba)?;
+    for w in assets.warnings.iter().take(10) {
+        println!("  warning: {w}");
+    }
+    Ok(quads.len())
 }
 
 fn wnd(vfs: &Vfs, name: Option<&str>) -> Result<()> {

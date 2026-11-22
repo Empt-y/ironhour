@@ -15,6 +15,7 @@ use ih_formats::wnd;
 
 pub mod draw;
 pub mod input;
+pub mod shell;
 pub mod text;
 
 pub mod state {
@@ -122,6 +123,27 @@ impl WindowManager {
             self.create(c, Some(id));
         }
         id
+    }
+
+    /// Removes top-level windows (and so their trees) from the screen
+    /// (`winDestroy` for a closed layout); the arena keeps them.
+    pub fn unload(&mut self, top: &[WindowId]) {
+        self.top.retain(|t| !top.contains(t));
+        let gone = |m: &Self, mut id: WindowId| loop {
+            if top.contains(&id) {
+                return true;
+            }
+            match m.windows[id].parent {
+                Some(p) => id = p,
+                None => return false,
+            }
+        };
+        let s = &self.input_state;
+        let (c, u, f) = (s.captor, s.under, s.focus);
+        let (c, u, f) = (c.filter(|&w| !gone(self, w)), u.filter(|&w| !gone(self, w)), f.filter(|&w| !gone(self, w)));
+        self.input_state.captor = c;
+        self.input_state.under = u;
+        self.input_state.focus = f;
     }
 
     /// `winGetScreenPosition`.
