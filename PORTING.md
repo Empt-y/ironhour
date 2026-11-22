@@ -2483,3 +2483,26 @@ Next audio slices: positional world sounds and FX dispatch, attack/body/decay
 and loop control, unit speech and EVA queues, streaming music and category
 volume preferences. Options, the in-game control bar and other M6 UI gaps remain
 as listed above.
+
+### Positional world sounds and combat FX
+
+- `FXList` Sound nuggets now dispatch after every simulation tick, including
+  catch-up ticks and minimized-window simulation updates. Sound-only dispatch
+  leaves particles and other FX nuggets for the renderer. No simulation hashes
+  or simulation RNG are changed.
+- World voices have a separate `SampleCount3D` budget. Gain uses
+  `Default3DSoundVolume`, `Relative2DVolume`, event variation and the original
+  inverse-distance attenuation, with a hard `MaxRange` cutoff. GLOBAL events
+  use AudioSettings' global ranges. Out-of-range requests are culled before I/O.
+- Active world sounds update their stereo panning and gain as the camera moves
+  or rotates. The listener sits 50 units above the camera's terrain target.
+  This is a stereo approximation; original microphone zoom rules and hardware
+  surround rendering are not ported.
+- Restricted FX only play for their owner. Team sharing awaits player/team
+  relationships; unspecified observers cannot hear restricted FX.
+- `audio-check --fx <FXList names...>` checks the actual Sound entries without
+  opening a device. Explicit audio event names can now include world sounds.
+- Tests cover inverse-distance falloff, cutoff, camera-relative panning, FX
+  parsing, independent UI/world budgets and private-event filtering.
+- Still pending: moving emitter attachment, ambient drawable loops, original
+  priority stealing and full attack/body/decay loop control.

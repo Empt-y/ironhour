@@ -46,6 +46,9 @@ enum Cmd {
     AudioCheck {
         /// AudioEvent names. Omit to check every UI event's base sounds.
         names: Vec<String>,
+        /// Treat names as FX lists and check their Sound entries.
+        #[arg(long)]
+        fx: bool,
     },
     /// Print the INI files the game loads at startup, in order, with where each comes from.
     LoadOrder,
@@ -304,12 +307,25 @@ fn main() -> Result<()> {
             }
             eprintln!("{} files", files.len());
         }
-        Cmd::AudioCheck { names } => {
+        Cmd::AudioCheck { names, fx } => {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
             let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
             let catalog = ih_audio::Catalog::load(&defs, &language);
-            let names: Vec<&str> = if names.is_empty() {
+            let fx_names: Vec<String> = if *fx {
+                let mut sounds = vec![];
+                for name in names {
+                    sounds.extend(
+                        catalog.fx_sounds.get(name).with_context(|| format!("unknown FX list: {name}"))?.clone(),
+                    );
+                }
+                sounds
+            } else {
+                vec![]
+            };
+            let names: Vec<&str> = if *fx {
+                fx_names.iter().map(String::as_str).collect()
+            } else if names.is_empty() {
                 catalog.ui_events().map(|(n, _)| n).collect()
             } else {
                 names.iter().map(String::as_str).collect()
@@ -318,7 +334,6 @@ fn main() -> Result<()> {
             let mut failed = 0;
             for name in &names {
                 let event = catalog.events.get(*name).with_context(|| format!("unknown audio event: {name}"))?;
-                anyhow::ensure!(event.ui, "{name}: not a UI sound");
                 anyhow::ensure!(!event.sounds.is_empty(), "{name}: no base sounds");
                 for sound in &event.sounds {
                     let result = catalog.resolve(&vfs, sound).and_then(|path| {
@@ -342,7 +357,7 @@ fn main() -> Result<()> {
                 }
             }
             println!(
-                "{} UI events: {} decoded clips, {failed} failures; no output device opened",
+                "{} audio events: {} decoded clips, {failed} failures; no output device opened",
                 names.len(),
                 checked.len()
             );

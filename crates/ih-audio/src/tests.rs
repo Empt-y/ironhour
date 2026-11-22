@@ -132,3 +132,32 @@ fn ui_voice_limits_release_after_playback_without_an_output_device() {
     assert!(audio.play_ui(&vfs, "Click").unwrap());
     assert_eq!(audio.cache.len(), 1);
 }
+
+#[test]
+fn world_attenuation_pans_with_the_camera_and_cuts_off_at_max_range() {
+    let listener = Listener::default();
+    assert_eq!(listener.spatial([50.0, 0.0, 0.0], [100.0, 400.0]), (1.0, 1.0));
+    assert_eq!(listener.spatial([-200.0, 0.0, 0.0], [100.0, 400.0]), (0.5, 0.0));
+    assert_eq!(listener.spatial([400.0, 0.0, 0.0], [100.0, 400.0]).0, 0.0);
+    let rotated = Listener { right: [0.0, 1.0], ..listener };
+    assert_eq!(rotated.spatial([0.0, 200.0, 0.0], [100.0, 400.0]), (0.5, 1.0));
+    assert_eq!(listener.spatial([0.0, 0.0, 200.0], [100.0, 400.0]), (0.5, 0.5));
+}
+
+#[test]
+fn fx_sounds_use_world_budget_without_consuming_ui_voices() {
+    let (_temp, vfs) = files(false);
+    let d = definitions(
+        "AudioSettings\n SampleCount3D = 1\nEnd\nAudioEvent Shot\n Type = world\n Sounds = click\n MinRange = 100\n MaxRange = 400\nEnd\nFXList Fire\n Sound\n Name = Shot\n End\n ParticleSystem\n Name = Smoke\n End\nEnd\n",
+    );
+    let manager = AudioManager::<MockBackend>::new(AudioManagerSettings::default()).unwrap();
+    let mut audio = Audio::with_manager(Catalog::load(&d, "English"), manager);
+    assert_eq!(audio.catalog.fx_sounds["Fire"], ["Shot"]);
+    assert!(!audio.play_world(&vfs, "Shot", [500.0, 0.0, 0.0]).unwrap());
+    assert!(audio.cache.is_empty(), "out-of-range sounds are culled before decoding");
+    assert!(audio.play_fx(&vfs, "Fire", [50.0, 0.0, 0.0]).is_empty());
+    assert_eq!(audio.active.len(), 1);
+    assert!(!audio.play_world(&vfs, "Shot", [50.0, 0.0, 0.0]).unwrap());
+    assert!(audio.play_ui(&vfs, "Click").unwrap());
+    assert_eq!(audio.active.len(), 2);
+}

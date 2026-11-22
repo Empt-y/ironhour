@@ -3,7 +3,7 @@
 //!
 //! Files come from the mounted VFS, never an extracted copy. Kira mixes decoded
 //! Symphonia samples. This client-only slice does not consume simulation RNG.
-//! World sounds, looping attack/body/decay, speech, music and EVA follow later.
+//! Looping attack/body/decay, speech, music and EVA follow in later slices.
 #[cfg(test)]
 mod tests;
 
@@ -34,6 +34,8 @@ pub struct Event {
     pub delay_ms: [u64; 2],
     pub limit: usize,
     pub ui: bool,
+    pub range: [f32; 2],
+    global: bool,
     random: bool,
     looping: bool,
 }
@@ -48,6 +50,8 @@ impl Default for Event {
             delay_ms: [0; 2],
             limit: 0,
             ui: false,
+            range: [175.0, 800.0],
+            global: false,
             random: false,
             looping: false,
         }
@@ -76,7 +80,12 @@ impl Event {
                     }
                 }
                 "limit" => self.limit = first.parse().unwrap_or(self.limit),
-                "type" => self.ui = values.iter().any(|s| s.eq_ignore_ascii_case("ui")),
+                "minrange" => self.range[0] = first.parse().unwrap_or(self.range[0]),
+                "maxrange" => self.range[1] = first.parse().unwrap_or(self.range[1]),
+                "type" => {
+                    self.ui = values.iter().any(|s| s.eq_ignore_ascii_case("ui"));
+                    self.global = values.iter().any(|s| s.eq_ignore_ascii_case("global"));
+                }
                 "control" => {
                     self.random = values.iter().any(|s| s.eq_ignore_ascii_case("random"));
                     self.looping = values.iter().any(|s| s.eq_ignore_ascii_case("loop"));
@@ -97,6 +106,11 @@ pub struct Catalog {
     pub sound_volume: f32,
     pub relative_2d: f32,
     pub max_ui_voices: usize,
+    pub max_world_voices: usize,
+    pub world_volume: f32,
+    relative_world: f32,
+    global_range: [f32; 2],
+    pub fx_sounds: BTreeMap<String, Vec<String>>,
 }
 
 impl Catalog {
@@ -110,6 +124,11 @@ impl Catalog {
             sound_volume: 0.8,
             relative_2d: 1.0,
             max_ui_voices: 4,
+            max_world_voices: 25,
+            world_volume: 0.8,
+            relative_world: 1.0,
+            global_range: [5000.0, 500000.0],
+            fx_sounds: BTreeMap::new(),
         };
         for block in defs.ordered("AudioSettings") {
             for f in block.fields() {
@@ -120,7 +139,15 @@ impl Catalog {
                     "soundsfolder" => c.folder = v.clone(),
                     "soundsextension" => c.extension = v.trim_start_matches('.').into(),
                     "defaultsoundvolume" => c.sound_volume = percent(v).unwrap_or(c.sound_volume).clamp(0.0, 1.0),
-                    "relative2dvolume" => c.relative_2d = 1.0 + percent(v).unwrap_or(0.0).clamp(-1.0, 0.0),
+                    "relative2dvolume" => {
+                        let relative = percent(v).unwrap_or(0.0).clamp(-1.0, 1.0);
+                        c.relative_2d = 1.0 + relative.min(0.0);
+                        c.relative_world = 1.0 - relative.max(0.0);
+                    }
+                    "default3dsoundvolume" => c.world_volume = percent(v).unwrap_or(c.world_volume).clamp(0.0, 1.0),
+                    "samplecount3d" => c.max_world_voices = v.parse().unwrap_or(c.max_world_voices),
+                    "globalminrange" => c.global_range[0] = v.parse().unwrap_or(c.global_range[0]),
+                    "globalmaxrange" => c.global_range[1] = v.parse().unwrap_or(c.global_range[1]),
                     "samplecount2d" => c.max_ui_voices = v.parse().unwrap_or(c.max_ui_voices),
                     _ => {}
                 }
@@ -133,6 +160,16 @@ impl Catalog {
             let mut event = c.events.get("DefaultSoundEffect").cloned().unwrap_or_default();
             event.apply(block);
             c.events.insert(name, event);
+        }
+        for block in defs.ordered("FXList") {
+            let Some(name) = block.args().first().cloned() else { continue };
+            let sounds = block
+                .blocks()
+                .filter(|b| b.kind.eq_ignore_ascii_case("Sound"))
+                .filter_map(|b| b.fields().find(|f| f.name.eq_ignore_ascii_case("Name"))?.values().first().cloned())
+                .filter(|n| !n.eq_ignore_ascii_case("None"))
+                .collect();
+            c.fx_sounds.insert(name, sounds);
         }
         c
     }
@@ -164,12 +201,52 @@ pub fn decode(vfs: &Vfs, path: &str) -> Result<StaticSoundData> {
     StaticSoundData::from_cursor(Cursor::new(bytes)).with_context(|| format!("decode {path}"))
 }
 
-/// A bounded UI voice pool; a missing device can be handled by the game host.
+/// Listener at the camera's ground target, with a screen-right unit vector.
+#[derive(Clone, Copy, Debug)]
+pub struct Listener {
+    pub position: [f32; 3],
+    pub right: [f32; 2],
+}
+impl Default for Listener {
+    fn default() -> Self {
+        Self { position: [0.0; 3], right: [1.0, 0.0] }
+    }
+}
+impl Listener {
+    /// Miles' effective-volume inverse-distance rule and hard maximum cutoff.
+    /// Panning is a stereo approximation to the original 3D backend.
+    pub fn spatial(&self, at: [f32; 3], range: [f32; 2]) -> (f32, f32) {
+        let d = [at[0] - self.position[0], at[1] - self.position[1], at[2] - self.position[2]];
+        let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let gain = if distance >= range[1] {
+            0.0
+        } else if distance <= range[0] {
+            1.0
+        } else {
+            range[0].max(0.0) / distance.max(0.001)
+        };
+        let horizontal = d[0].hypot(d[1]);
+        let pan = if horizontal > 0.001 { (d[0] * self.right[0] + d[1] * self.right[1]) / horizontal } else { 0.0 };
+        (gain, ((pan.clamp(-1.0, 1.0) + 1.0) * 0.5))
+    }
+}
+fn decibels(volume: f32) -> Decibels {
+    if volume > 0.0 { Decibels(20.0 * volume.log10()) } else { Decibels::SILENCE }
+}
+struct Voice {
+    name: String,
+    handle: StaticSoundHandle,
+    spatial: Option<([f32; 3], [f32; 2])>,
+    gain: f32,
+}
+
+/// A bounded UI and world voice pool; a missing device can be handled by the game host.
 pub struct Audio<B: Backend = DefaultBackend> {
     manager: AudioManager<B>,
     pub catalog: Catalog,
     cache: BTreeMap<String, StaticSoundData>,
-    active: Vec<(String, StaticSoundHandle)>,
+    active: Vec<Voice>,
+    listener: Listener,
     sequence: BTreeMap<String, usize>,
     rng: u32,
 }
@@ -183,7 +260,15 @@ impl Audio {
 
 impl<B: Backend> Audio<B> {
     pub fn with_manager(catalog: Catalog, manager: AudioManager<B>) -> Self {
-        Self { manager, catalog, cache: BTreeMap::new(), active: vec![], sequence: BTreeMap::new(), rng: 0x91ab_3d57 }
+        Self {
+            manager,
+            catalog,
+            cache: BTreeMap::new(),
+            active: vec![],
+            sequence: BTreeMap::new(),
+            rng: 0x91ab_3d57,
+            listener: Listener::default(),
+        }
     }
 
     fn random(&mut self) -> f64 {
@@ -193,15 +278,53 @@ impl<B: Backend> Audio<B> {
         self.rng as f64 / u32::MAX as f64
     }
 
-    /// False means the event was culled by its limit or the UI voice budget.
+    pub fn update_listener(&mut self, listener: Listener) {
+        self.listener = listener;
+        self.active.retain(|v| v.handle.state() != PlaybackState::Stopped);
+        for voice in &mut self.active {
+            if let Some((at, range)) = voice.spatial {
+                let (gain, pan) = listener.spatial(at, range);
+                voice.handle.set_volume(decibels(voice.gain * gain), kira::Tween::default());
+                voice.handle.set_panning(pan, kira::Tween::default());
+            }
+        }
+    }
+
     pub fn play_ui(&mut self, vfs: &Vfs, name: &str) -> Result<bool> {
-        self.active.retain(|(_, h)| h.state() != PlaybackState::Stopped);
+        self.play(vfs, name, None)
+    }
+
+    pub fn play_world(&mut self, vfs: &Vfs, name: &str, position: [f32; 3]) -> Result<bool> {
+        self.play(vfs, name, Some(position))
+    }
+
+    /// Dispatch only the Sound nuggets. Particles and bone transforms are separate client work.
+    pub fn play_fx(&mut self, vfs: &Vfs, name: &str, position: [f32; 3]) -> Vec<String> {
+        let sounds = self.catalog.fx_sounds.get(name).cloned().unwrap_or_default();
+        sounds
+            .into_iter()
+            .filter_map(|sound| self.play_world(vfs, &sound, position).err().map(|e| format!("{sound}: {e:#}")))
+            .collect()
+    }
+
+    fn play(&mut self, vfs: &Vfs, name: &str, position: Option<[f32; 3]>) -> Result<bool> {
+        self.active.retain(|v| v.handle.state() != PlaybackState::Stopped);
         let event = self.catalog.events.get(name).with_context(|| format!("unknown audio event: {name}"))?.clone();
-        ensure!(event.ui, "{name}: world audio is not implemented yet");
+        ensure!(event.ui || position.is_some(), "{name}: world audio needs a position");
         ensure!(!event.looping, "{name}: looping audio is not implemented yet");
         ensure!(!event.sounds.is_empty(), "{name}: no sounds");
-        if self.active.len() >= self.catalog.max_ui_voices
-            || (event.limit > 0 && self.active.iter().filter(|(n, _)| n == name).count() >= event.limit)
+        let spatial = if event.ui {
+            None
+        } else {
+            position.map(|p| (p, if event.global { self.catalog.global_range } else { event.range }))
+        };
+        let (attenuation, pan) = spatial.map_or((1.0, 0.5), |(at, range)| self.listener.spatial(at, range));
+        if attenuation <= 0.0 {
+            return Ok(false);
+        }
+        let budget = if spatial.is_some() { self.catalog.max_world_voices } else { self.catalog.max_ui_voices };
+        if self.active.iter().filter(|v| v.spatial.is_some() == spatial.is_some()).count() >= budget
+            || (event.limit > 0 && self.active.iter().filter(|v| v.name == name).count() >= event.limit)
         {
             return Ok(false);
         }
@@ -220,17 +343,23 @@ impl<B: Backend> Audio<B> {
             self.cache.insert(path.clone(), decode(vfs, &path)?);
         }
         let volume_shift = 1.0 + event.volume_shift as f64 * (1.0 - self.random());
-        let volume =
-            (event.volume as f64 * volume_shift * self.catalog.sound_volume as f64 * self.catalog.relative_2d as f64)
-                .max(0.0);
-        let db = if volume > 0.0 { Decibels((20.0 * volume.log10()) as f32) } else { Decibels::SILENCE };
+        let category = if spatial.is_some() {
+            self.catalog.world_volume * self.catalog.relative_world
+        } else {
+            self.catalog.sound_volume * self.catalog.relative_2d
+        };
+        let volume = (event.volume as f64 * volume_shift * category as f64).max(0.0) as f32;
+        let db = decibels(volume * attenuation);
         let pitch = event.pitch[0] + (event.pitch[1] - event.pitch[0]) * self.random();
         let delay = event.delay_ms[0] as f64 + (event.delay_ms[1] - event.delay_ms[0]) as f64 * self.random();
-        let sound =
-            self.cache[&path].volume(db).playback_rate(pitch).start_time(Duration::from_secs_f64(delay / 1000.0));
+        let sound = self.cache[&path]
+            .volume(db)
+            .panning(pan)
+            .playback_rate(pitch)
+            .start_time(Duration::from_secs_f64(delay / 1000.0));
         let handle = self.manager.play(sound).map_err(|e| anyhow::anyhow!("play {name}: {e:?}"))?;
         self.sequence.insert(name.into(), index);
-        self.active.push((name.into(), handle));
+        self.active.push(Voice { name: name.into(), handle, spatial, gain: volume });
         Ok(true)
     }
 }

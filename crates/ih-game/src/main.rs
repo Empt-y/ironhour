@@ -7,6 +7,7 @@ use ih_client::{Definitions, TacticalCamera, World};
 use ih_render::{Assets, Renderer, Scene, Targets};
 use ih_vfs::{Installs, ModProfile, Vfs};
 
+mod audio;
 mod shell;
 use std::{
     collections::HashSet,
@@ -126,6 +127,7 @@ struct State {
     /// The menus, while they are up.
     ui: Option<shell::UiLayer>,
     audio: Option<ih_audio::Audio>,
+    local_player: Option<u32>,
 }
 
 /// What `App::load_game` builds for a map.
@@ -190,6 +192,7 @@ impl App {
             right_start: None,
             left_start: None,
             paused: false,
+            local_player: self.scenario.as_ref().and_then(|s| s.spawn.first()).map(|s| s.owner),
             ui: None,
             audio: if self.cli.no_audio || self.cli.smoke {
                 None
@@ -427,6 +430,7 @@ impl App {
         };
         st.scene = scene;
         st.simulation = simulation;
+        st.local_player = self.scenario.as_ref().and_then(|s| s.spawn.first()).map(|s| s.owner);
         st.sim_draw = sim_draw;
         st.reset_camera = camera.clone();
         st.camera = camera;
@@ -463,10 +467,14 @@ impl State {
         let elapsed = now - self.last_frame;
         let dt = elapsed.as_secs_f32().min(0.1);
         self.last_frame = now;
+        if let Some(audio) = &mut self.audio {
+            audio.update_listener(audio::listener(&self.camera, &world.map));
+        }
         if let Some(sim) = &mut self.simulation {
             if !self.paused {
                 for _ in 0..self.clock.advance(elapsed) {
                     sim.step();
+                    audio::dispatch(&mut self.audio, sim, vfs, self.local_player);
                 }
             }
             if let Some(draw) = &mut self.sim_draw {
@@ -817,6 +825,7 @@ impl ApplicationHandler for App {
                     if !s.paused {
                         for _ in 0..s.clock.advance(now - s.last_frame) {
                             sim.step();
+                            audio::dispatch(&mut s.audio, sim, &self.vfs, s.local_player);
                         }
                     }
                     s.last_frame = now;
