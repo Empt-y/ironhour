@@ -23,4 +23,7 @@ exclude = [
     "*_HotkeysOriginal_Russian.*",
     # The launcher's own executable, not an archive.
     "generals.ctr",
+    # Rise of the Reds, when its launcher has enabled it.
+    "!Rotr_*",
+    "!!Rotr_*",
 ]

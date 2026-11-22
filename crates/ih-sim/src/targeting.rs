@@ -34,6 +34,7 @@ pub struct IdleState {
 
 /// `AutoAcquireEnemiesWhenIdle` bits.
 pub const AAS_IDLE: u32 = 0x01;
+pub const AAS_IDLE_STEALTHED: u32 = 0x02;
 pub const AAS_NOT_WHILE_ATTACKING: u32 = 0x08;
 pub const AAS_ATTACK_BUILDINGS: u32 = 0x10;
 
@@ -128,6 +129,10 @@ impl Simulation {
         if vt.has_kind("UNATTACKABLE") {
             return None;
         }
+        // Stealthed and undetected victims cannot be attacked.
+        if self.stealth_prevents_attack(id, victim) {
+            return None;
+        }
         let r = self.relationship(id, victim);
         if r != Relationship::Enemies && !(vt.has_kind("MINE") && r != Relationship::Allies) && from_player {
             return None;
@@ -184,6 +189,10 @@ impl Simulation {
             let o = &self.objects[&other];
             // LiveMapEnemies
             if o.dead || o.contained_by.is_some() || self.relationship(id, other) != Relationship::Enemies {
+                continue;
+            }
+            // StealthedAndUndetected
+            if self.hidden_from(id, other) {
                 continue;
             }
             let d2 = self.attack_distance_sqr(id, None, Some(other), o.position);
@@ -259,6 +268,20 @@ impl Simulation {
         }
         let attacking = matches!(o.ai.state, crate::ai::AiState::AttackObject | crate::ai::AiState::AttackPosition);
         if attacking && auto & AAS_NOT_WHILE_ATTACKING != 0 {
+            return None;
+        }
+        // A stealthed unit keeps quiet unless it may fire while stealthed or
+        // sits in a container its passengers fire from.
+        if during_idle
+            && o.status & crate::stealth::bits().stealthed != 0
+            && auto & AAS_IDLE_STEALTHED == 0
+            && !o.stealth.as_ref().is_some_and(|s| s.data.granted_by_special_power)
+            && !o
+                .contained_by
+                .and_then(|c| self.objects.get(&c))
+                .and_then(|c| c.contain.as_ref())
+                .is_some_and(|c| c.data.passengers_fire)
+        {
             return None;
         }
         let now = self.frame;

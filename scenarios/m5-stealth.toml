@@ -1,0 +1,35 @@
+# Stealth on Tournament Desert: Colonel Burton (1) hides two seconds after he
+# appears. An enemy Ranger (2) walks up beside him at frame 120 and ignores
+# him. An enemy Scout Drone (3) flies over at frame 300; its detector reveals
+# Burton and the Ranger opens fire (Burton, still stealthed, does not pick
+# targets of his own).
+map = "Tournament Desert"
+seed = 31
+frames = 900
+
+[[spawn]]
+template = "AirF_AmericaInfantryColonelBurton"
+position = [1230.0, 1229.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1700.0, 1100.0]
+owner = 2
+
+[[spawn]]
+template = "AmericaVehicleScoutDrone"
+position = [1700.0, 1229.0]
+owner = 2
+
+[[commands]]
+frame = 120
+kind = "move"
+object = 2
+target = [1290.0, 1229.0]
+
+[[commands]]
+frame = 300
+kind = "move"
+object = 3
+target = [1260.0, 1260.0]

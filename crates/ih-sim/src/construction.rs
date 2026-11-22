@@ -192,7 +192,7 @@ impl Simulation {
             })
             .collect()
     }
-    fn player_relationship(&self, player: u32, other: u32) -> crate::weapons::Relationship {
+    pub(crate) fn player_relationship(&self, player: u32, other: u32) -> crate::weapons::Relationship {
         use crate::weapons::Relationship::*;
         let owner = self.objects[&other].owner;
         if owner == player {

@@ -243,6 +243,12 @@ impl Simulation {
             self.exit_sub(id, sub);
             return self.enter_sub(id, Sub::Chase);
         }
+        // cannotPossiblyAttackObject (only its stealth veto so far): leave the
+        // machine with a failure.
+        if matches!(sub, Sub::Aim | Sub::Fire) && m.victim.is_some_and(|v| self.stealth_prevents_attack(id, v)) {
+            self.exit_sub(id, sub);
+            return Ret::Failure;
+        }
         Ret::Continue
     }
 
@@ -463,6 +469,10 @@ impl Simulation {
     fn approach_update_internal(&mut self, id: u32) -> Ret {
         let m = self.machine(id);
         if m.victim.is_some_and(|v| !self.objects.contains_key(&v)) {
+            return Ret::Failure;
+        }
+        // A victim that stealthed can no longer be approached.
+        if m.victim.is_some_and(|v| self.stealthed_and_undetected(v)) {
             return Ret::Failure;
         }
         if m.stop_if_in_range && self.in_range(id, &m) {

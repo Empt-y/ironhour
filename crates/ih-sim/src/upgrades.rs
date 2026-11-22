@@ -176,6 +176,8 @@ impl UpgradeModuleDef {
             "MaxHealthUpgrade" => Effect::MaxHealth { add, change },
             "CommandSetUpgrade" => Effect::CommandSet { set, alt, trigger_alt },
             "StatusBitsUpgrade" => Effect::StatusBits { set: to_set, clear: to_clear },
+            // StealthUpgrade: the object may stealth from now on.
+            "StealthUpgrade" => Effect::StatusBits { set: crate::stealth::bits().can_stealth, clear: 0 },
             "PowerPlantUpgrade" => Effect::PowerPlant,
             "CostModifierUpgrade" => Effect::CostModifier { kinds, percent },
             "GrantScienceUpgrade" => Effect::GrantScience(science),

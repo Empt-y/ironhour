@@ -194,6 +194,10 @@ pub enum ModuleKind {
     Contain,
     /// `LifetimeUpdate` (`ocl`).
     Lifetime,
+    /// `StealthUpdate` (`stealth`).
+    Stealth,
+    /// `StealthDetectorUpdate` (`stealth`).
+    StealthDetector,
     Steering,
     Physics,
     /// The body module (`body`): not updated.
@@ -298,6 +302,10 @@ pub struct Object {
     pub experience: crate::veterancy::Experience,
     /// `LifetimeUpdate::m_dieFrame`.
     pub die_frame: Option<u32>,
+    /// `StealthUpdate`.
+    pub stealth: Option<crate::stealth::Stealth>,
+    /// `StealthDetectorUpdate`.
+    pub detector: Option<crate::stealth::Detector>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -533,6 +541,7 @@ impl Simulation {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).ok_or_else(|| SimError("object IDs exhausted".into()))?;
         let mut modules = vec![];
+        let (mut stealth, mut detector) = (None, None);
         for m in t.modules.iter().filter(|m| matches!(m.kind.as_str(), "Behavior" | "Body")) {
             let known = ih_ini::schema::MODULES.iter().find(|d| d.name == m.class);
             let kind = if let Some(k) = crate::body::module_kind(m) {
@@ -551,6 +560,10 @@ impl Simulation {
                 ModuleKind::Contain
             } else if m.class == "LifetimeUpdate" {
                 ModuleKind::Lifetime
+            } else if m.class == "StealthUpdate" {
+                ModuleKind::Stealth
+            } else if m.class == "StealthDetectorUpdate" {
+                ModuleKind::StealthDetector
             } else if crate::production::Exit::from_module(&m.class, &m.block).is_some() {
                 ModuleKind::ProductionExit
             } else if known.is_some_and(|d| d.tables.iter().any(|t| t.starts_with("AIUpdateModuleData::"))) {
@@ -586,6 +599,29 @@ impl Simulation {
             } else if kind == ModuleKind::SlowDeath {
                 // Asleep until the object dies.
                 self.scheduler.insert((id, index), FOREVER, Phase::Normal);
+            } else if kind == ModuleKind::Stealth && stealth.is_none() {
+                // Awake from the start (unless granted by a special power, see stealth_created).
+                let data = crate::stealth::StealthData::from_module(&m.block);
+                stealth = Some(crate::stealth::Stealth {
+                    allowed_frame: self.frame.saturating_add(data.delay),
+                    enabled: !data.team_disguised,
+                    data,
+                    module: index,
+                    detection_expires: 0,
+                    next_black_market_check: 0,
+                    frames_granted: 0,
+                });
+                self.scheduler.insert((id, index), self.frame.max(1), Phase::Normal);
+            } else if kind == ModuleKind::StealthDetector && detector.is_none() {
+                // The constructor's random first wake-up.
+                let d = crate::stealth::Detector::from_module(&m.block);
+                let wake = if d.enabled {
+                    self.frame.max(1) + self.rng.integer(1, d.rate.max(1) as i32) as u32
+                } else {
+                    FOREVER
+                };
+                self.scheduler.insert((id, index), wake, Phase::Normal);
+                detector = Some(d);
             }
             let die = crate::body::DieKind::from_module(&m.class, &m.block, &self.templates);
             modules.push(Module {
@@ -705,8 +741,11 @@ impl Simulation {
                 bonus_flags: 0,
                 experience: Default::default(),
                 die_frame: None,
+                stealth,
+                detector,
             },
         );
+        self.stealth_created(id);
         // The AI state machine starts idle (AIIdleState::onEnter).
         self.idle_enter(id);
         // Object::initObject: upgrade modules run with the player's upgrades.
@@ -1223,7 +1262,9 @@ impl Simulation {
                     u32::MAX
                 }
                 // DisabledTypesToProcess defaults to HELD.
-                ModuleKind::Production => 1 << (DisabledReason::Held as u32),
+                ModuleKind::Production | ModuleKind::Stealth | ModuleKind::StealthDetector => {
+                    1 << (DisabledReason::Held as u32)
+                }
                 ModuleKind::Stub
                 | ModuleKind::Body
                 | ModuleKind::Die
@@ -1263,6 +1304,8 @@ impl Simulation {
                 ModuleKind::Dock => self.dock_update(id),
                 ModuleKind::Contain => self.contain_update(id),
                 ModuleKind::Lifetime => self.lifetime_update(id),
+                ModuleKind::Stealth => self.stealth_update(id),
+                ModuleKind::StealthDetector => self.detector_update(id),
                 ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => FOREVER,
             };
             self.update_pos(id);
@@ -1455,7 +1498,9 @@ impl Simulation {
                 }
             }
         }
-        if self.objects[&id].ai.active() {
+        // An order that ended this update entered the idle state, which runs
+        // next frame (end_order's wake-up would otherwise be overwritten).
+        if self.objects[&id].ai.active() || self.objects[&id].ai.idle.inited {
             1
         } else {
             // doLocomotor keeps hovering and circling flyers going once idle.
@@ -2346,7 +2391,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(32);
+        h.u32(33);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2634,6 +2679,15 @@ impl Simulation {
             h.u32(o.contained_frame);
             h.u32(o.bonus_flags);
             h.u32(o.die_frame.unwrap_or(0));
+            h.u32(u32::from(o.stealth.is_some()));
+            if let Some(s) = &o.stealth {
+                h.u32(s.allowed_frame);
+                h.u32(s.detection_expires);
+                h.u32(s.next_black_market_check);
+                h.u32(u32::from(s.enabled));
+                h.u32(s.frames_granted);
+            }
+            h.u32(u32::from(o.detector.as_ref().is_some_and(|d| d.enabled)));
             let e = o.experience;
             h.u32(u32::from(e.level));
             h.u32(e.points as u32);
@@ -3272,7 +3326,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x9fd5d4a24a5442f6, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xc0152113b75327cd, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3508,7 +3562,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x7a1e18bf45c3d636, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xa8e0f2f6de2e439d, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3600,7 +3654,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xcdc091a00ef422db, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xcbde734037fae148, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

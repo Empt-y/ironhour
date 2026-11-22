@@ -154,6 +154,19 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     for o in a.objects.values().filter(|o| o.experience.points > 0) {
         println!("  {} {} experience {} (level {})", o.id, o.template, o.experience.points, o.experience.level);
     }
+    let b = ih_sim::stealth::bits();
+    for o in a.objects.values().filter(|o| o.stealth.is_some() && o.status & (b.can_stealth | b.detected) != 0) {
+        let s = o.stealth.as_ref().unwrap();
+        println!(
+            "  {} {} stealth: can {}, stealthed {}, detected {} (until frame {})",
+            o.id,
+            o.template,
+            o.status & b.can_stealth != 0,
+            o.status & b.stealthed != 0,
+            o.status & b.detected != 0,
+            s.detection_expires
+        );
+    }
     for (id, p) in a.players.iter().filter(|(_, p)| !p.tunnels.tunnels.is_empty()) {
         println!("  player {id} tunnels {:?} hold {:?}", p.tunnels.tunnels, p.tunnels.riders);
     }

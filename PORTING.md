@@ -1814,3 +1814,81 @@ Asset-free fixtures: `9fd5d4a24a5442f6` (ground), `cdc091a00ef422db` (bridge),
 `tests/ocl.rs` covers survivors and expiring debris on death, the
 every-other-name quirk, a weapon's `FireOCL` with an offset, and determinism.
 In stock `m5-fight`, destroyed vehicles now leave `GenericDebris`.
+
+### Stealth and detection (state hash v33)
+
+From `StealthUpdate.cpp`, `StealthDetectorUpdate.cpp`, `StealthUpgrade.cpp`,
+`PartitionFilterStealthedAndUndetected` and the stealth checks in
+`WeaponSet::getAbleToAttackSpecificObject`, `cannotPossiblyAttackObject`,
+`AIAttackApproachTargetState` and `getNextMoodTarget`: `crates/ih-sim/src/stealth.rs`.
+
+- `StealthUpdate` runs every frame. An object that may stealth (`CAN_STEALTH`,
+  set by `InnateStealth` or a `StealthUpgrade`) becomes `STEALTHED` once
+  `StealthDelay` has passed with nothing forbidding it. Forbidding conditions:
+  attacking, moving faster than `MoveThresholdSpeed`, firing a given weapon
+  slot, recent damage, no black market (with the original's lagging check
+  timer and its random draw), being inside a non-garrison container, riders
+  attacking, and `RequiredStatus`/`ForbiddenStatus`. Anything that forbids
+  it restarts the delay. `UseRiderStealth` takes the rules from the first
+  rider. `RevealDistanceFromTarget` reveals near the victim, and granted
+  stealth (`receive_grant`) counts down for special powers to use later.
+- `StealthDetectorUpdate` scans every `DetectionRate` frames (first scan at a
+  random frame, as the constructor draws it), over `DetectionRange` or the
+  vision range, with the kind-of filters and the garrisoned or contained
+  rules. It marks stealthed non-allies as `DETECTED` for one rate plus a
+  frame, and stealthed riders of a garrison for one rate plus two.
+  `OrderIdleEnemiesToAttackMeUponReveal` makes idle enemies in vision range
+  check for targets at once.
+- A stealthed, undetected object (not a `DISGUISER`) cannot be targeted:
+  auto-targeting skips it, as it skips a building garrisoned only by
+  undetected stealthed enemies. Attack orders on it, aiming and firing all
+  fail, and an approach stops when the victim stealths. A stealthed unit does
+  not pick targets of its own unless its AI has `AutoAcquireEnemiesWhenIdle`
+  `Stealthed` or it sits in a container its passengers fire from.
+- Fixed while testing this slice: after an order ended, the AI went back to
+  idle but slept for good, so units never auto-targeted after a move. Idle
+  now runs the next frame, as in the original.
+- Profiles: both profiles now exclude Rise of the Reds' archives, which its
+  launcher enables in the Zero Hour folder, as Contra's does.
+- Not yet: disguises (bomb trucks), the client side (opacity, heat vision,
+  IR particles, sounds, EVA, radar events), slave and spawn stealth,
+  `USING_ABILITY`, script-disabled stealth, `IGNORING_STEALTH` for weapons
+  with a continue range, and garrison apparent owners.
+- Known gap found here: `GLAInfantryRebel` never auto-targets, with or
+  without stealth (it predates this slice). The new `m5-stealth` scenario
+  uses a Ranger as the watcher.
+
+All scenarios pass with v33 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `b66a15a030bcc692` | `7ac56b9893b4a7ad` |
+| AI/status orders | `f4d6539552eedc52` | `485b08c8623c6dac` |
+| Bridges | `f2113ff78bf64d37` | `777e9472a752d0aa` |
+| Traffic, Tournament Desert | `572dfb4a3c9caf17` | `cb1ec0b8d0d15242` |
+| Traffic, Winding River | `bc48bfcb54be81c3` | `8e843f481641d145` |
+| Long map travel | `b85f544a8e808884` | `9441d1fcaec212eb` |
+| Crush enemy / crush ally | `b930d7f761b3875e` / `02fa457177a8b8cc` | |
+| Comanche out and back | `71c141e5dfd8ed33` | `7b3ddbff4135ff48` |
+| Group move (`m4-group`) | `fc101c21ae726526` |  |
+| `m5-construction` | `e6e3b5b83dd2abf8` | |
+| `m5-fight` | `76985fc4422315a1` | |
+| `m5-garrison` | `528355543aaa7e32` | |
+| `m5-guard` | `657a94d170ab6135` | |
+| `m5-missiles` | `25eeaac36a10fa0e` | |
+| `m5-production` | `62b78ef21889e7c8` | |
+| `m5-repair-sell` | `977fc3354277b28c` | |
+| `m5-skirmish` | `68a0c0c249952835` | |
+| `m5-stealth` | `6c54f8c35dea6a10` | |
+| `m5-supply` | `3822b43b264375a2` | |
+| `m5-transports` | `389e75b8cc63f116` | |
+| `m5-tunnels` | `51bf256ae8d57df0` | |
+| `m5-upgrades` | `666a22f53c2f8a36` | |
+
+Asset-free fixtures: `c0152113b75327cd` (ground), `cbde734037fae148` (bridge),
+`a8e0f2f6de2e439d` (head-on traffic), `060815e3e61a144a` (AI/status orders).
+`tests/stealth.rs` covers the stealth delay, a guard ignoring a stealthed
+unit and refusing an order to attack it, a detector revealing it so the guard
+fires, moving and firing revealing it, and determinism. In stock
+`m5-stealth`, Colonel Burton hides from a Ranger beside him until a Scout
+Drone's detector reveals him, then takes fire.
