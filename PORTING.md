@@ -2399,3 +2399,28 @@ the options and credits back buttons), `GUIUtil.cpp` and the map cache:
 - Not yet: menu transitions, the shell map and menu schemes, start positions
   on the map preview, the options themselves, preferences, the load and score
   screens, and the campaign, challenge, network, replay and save screens.
+
+### The menus in the game window
+
+`crates/ih-game/src/shell.rs` and `main.rs`.
+
+- `ih-game --shell` opens in the menus, drawn by the UI pass over the loaded
+  map. The map stands in for the shell map, which is not ported yet. Mouse and
+  keyboard go to the window system while the menus are up, and Exit quits.
+- Start Game loads the chosen map in the same window and plays the setup as a
+  scenario:
+  - Each playing slot gets its side's `StartingBuilding` at the map's
+    `Player_N_Start` waypoint and `StartingUnit0` beside it, plus the starting
+    money.
+  - Random sides come from a fixed seed, and start positions go in slot order.
+  - Skirmish players are numbered after the map's own players, so the map's
+    civilian objects keep their owner. Before this they shared player 1 with
+    the human.
+  - AI players do nothing until M7.
+- `ih-game --smoke --shell` clicks Single Player, Skirmish and Start through the
+  real menus in a hidden window, starts the game, runs 60 frames and renders.
+  On stock Tournament Desert: an Air Force General command center and dozer
+  against a Demolitions General command center and worker, $10,000 each.
+- Not yet: interface sounds (the audio system is next), the load and score
+  screens, the in-game control bar, returning to the menus, resizing the menus
+  with the window, and human players choosing start positions.

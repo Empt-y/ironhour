@@ -187,6 +187,9 @@ impl ShellData {
     }
 }
 
+/// Loads a layout by its shell name (`Menus/MainMenu.wnd`).
+pub type LayoutLoader = Box<dyn Fn(&str) -> Option<wnd::Layout>>;
+
 /// A screen on the stack: its layout and its top-level windows.
 #[derive(Clone, Debug)]
 struct Screen {
@@ -200,7 +203,7 @@ pub struct Shell {
     pub setup: GameSetup,
     pub data: ShellData,
     stack: Vec<Screen>,
-    loader: Box<dyn Fn(&str) -> Option<wnd::Layout>>,
+    loader: LayoutLoader,
     strings: Box<dyn Fn(&str) -> String>,
     /// Screens the original shows but are not ported, by layout name (for reports).
     pub missing: Vec<String>,
@@ -211,12 +214,7 @@ const SKIRMISH: &str = "Menus/SkirmishGameOptionsMenu.wnd";
 const MAP_SELECT: &str = "Menus/SkirmishMapSelectMenu.wnd";
 
 impl Shell {
-    pub fn new(
-        display: [i32; 2],
-        data: ShellData,
-        loader: Box<dyn Fn(&str) -> Option<wnd::Layout>>,
-        strings: Box<dyn Fn(&str) -> String>,
-    ) -> Self {
+    pub fn new(display: [i32; 2], data: ShellData, loader: LayoutLoader, strings: Box<dyn Fn(&str) -> String>) -> Self {
         let slot = |kind| Slot { kind, side: None, color: None, team: None };
         let mut slots = vec![slot(SlotKind::Human), slot(SlotKind::EasyAi)];
         slots.resize(8, slot(SlotKind::Closed));

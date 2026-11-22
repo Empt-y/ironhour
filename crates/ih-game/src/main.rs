@@ -6,6 +6,8 @@ use glam::Vec2;
 use ih_client::{Definitions, TacticalCamera, World};
 use ih_render::{Assets, Renderer, Scene, Targets};
 use ih_vfs::{Installs, ModProfile, Vfs};
+
+mod shell;
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -42,6 +44,9 @@ struct Cli {
     /// Load a recorded M4 movement scenario; its map replaces the positional map.
     #[arg(long)]
     scenario: Option<PathBuf>,
+    /// Start in the menus (drawn over the map); Start Game in skirmish plays it.
+    #[arg(long)]
+    shell: bool,
 }
 
 fn main() -> Result<()> {
@@ -115,7 +120,12 @@ struct State {
     /// Where a left press began (drag-box selection).
     left_start: Option<Vec2>,
     paused: bool,
+    /// The menus, while they are up.
+    ui: Option<shell::UiLayer>,
 }
+
+/// What `App::load_game` builds for a map.
+type Game = (Scene, Option<ih_sim::Simulation>, Option<ih_client::sim_draw::SimDrawables>, TacticalCamera);
 
 impl App {
     fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -146,86 +156,7 @@ impl App {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         let mut renderer = Renderer::with_adapter(&adapter, config.format)?;
         surface.configure(&renderer.device, &config);
-        let mut assets = Assets::new(&self.vfs, &self.language);
-        let mut scene = Scene::default();
-        self.world.add_terrain(&mut renderer, &mut assets, &self.vfs, &self.defs, &mut scene)?;
-        self.world.add_roads(&mut renderer, &mut assets, &self.defs, &mut scene);
-        self.world.add_bridges(&mut renderer, &mut assets, &self.defs, &mut scene);
-        self.world.add_water(&mut renderer, &mut assets, &self.defs, &mut scene);
-        let objects = self.world.add_objects(&mut renderer, &mut assets, &self.defs, &mut scene);
-        let (simulation, sim_draw) = if let Some(scenario) = &self.scenario {
-            let templates = Arc::new(ih_sim::templates::Templates::for_map(
-                &self.defs.data,
-                &self.world.map,
-                &self.vfs,
-                &self.language,
-            )?);
-            for w in &templates.warnings {
-                eprintln!("template: {w}");
-            }
-            let sim = scenario.instantiate(Arc::new(self.world.map.clone()), templates.clone())?;
-            let names =
-                scenario.spawn.iter().map(|s| s.template.clone()).chain(scenario.commands.iter().filter_map(|c| {
-                    match &c.command {
-                        ih_sim::Command::Spawn { template, .. } => Some(template.clone()),
-                        _ => None,
-                    }
-                }));
-            // Their weapons' projectiles are drawn too.
-            let mut names: Vec<String> = names.collect();
-            for n in names.clone() {
-                if let Some(t) = templates.objects.get(&n) {
-                    for set in &t.weapon_sets {
-                        for w in set.weapons.iter().flatten() {
-                            if let Some(p) = templates.weapons.get(w).and_then(|w| w.projectile.clone())
-                                && !names.contains(&p)
-                            {
-                                names.push(p);
-                            }
-                        }
-                    }
-                }
-            }
-            let draw = ih_client::sim_draw::SimDrawables::new(
-                &mut renderer,
-                &mut assets,
-                &templates,
-                names.into_iter(),
-                &self.world.condition_flags(),
-                scene.instances.len(),
-            );
-            eprintln!("M4 movement slice: {} objects; explicit stub modules: {:?}", sim.objects.len(), sim.stub_counts);
-            (Some(sim), Some(draw))
-        } else {
-            (None, None)
-        };
-        for w in self.world.warnings.iter().chain(&assets.warnings) {
-            eprintln!("warning: {w}");
-        }
-        eprintln!(
-            "{}: {objects} objects; {} road types; {} bridges; {}",
-            self.world.path,
-            scene.roads.len(),
-            scene.bridges.len(),
-            renderer.adapter_name
-        );
-        let mut camera = TacticalCamera::new(self.world.playable_bounds(), &self.defs);
-        if let Some(sim) = &simulation
-            && sim.objects.values().any(|o| o.map_index.is_none())
-        {
-            let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-            for o in sim.objects.values().filter(|o| o.map_index.is_none()) {
-                let p = Vec2::new(o.position[0], o.position[1]);
-                lo = lo.min(p);
-                hi = hi.max(p);
-            }
-            camera.center = (lo + hi) * 0.5;
-            let half_tan = (camera.fov_y * 0.5).tan() * (config.width as f32 / config.height as f32).min(1.0);
-            camera.distance = camera.distance.max((hi - lo).length() * 0.5 / half_tan + 80.0);
-        }
-        if self.cli.overview {
-            camera.overview();
-        }
+        let (scene, simulation, sim_draw, camera) = self.load_game(&mut renderer, (config.width, config.height))?;
         let targets = renderer.targets((config.width, config.height));
         let now = Instant::now();
         let size = window.inner_size();
@@ -255,7 +186,63 @@ impl App {
             right_start: None,
             left_start: None,
             paused: false,
+            ui: None,
         });
+        if self.cli.shell {
+            let st = self.state.as_mut().unwrap();
+            let size = (st.config.width, st.config.height);
+            st.ui = Some(shell::UiLayer::new(
+                &self.vfs,
+                &self.language,
+                &self.defs,
+                &st.renderer,
+                size,
+                Installs::locate().zero_hour.clone(),
+            )?);
+        }
+        if self.cli.smoke && self.cli.shell {
+            // Click through the real menus to Start Game, play the skirmish briefly.
+            let ui = self.state.as_mut().unwrap().ui.as_mut().unwrap();
+            let mut started = None;
+            for name in [
+                "MainMenu.wnd:ButtonSinglePlayer",
+                "MainMenu.wnd:ButtonSkirmish",
+                "SkirmishGameOptionsMenu.wnd:ButtonStart",
+            ] {
+                for e in ui.shell.click(name) {
+                    if let ih_ui::shell::ShellEvent::StartGame(setup) = e {
+                        started = Some(setup);
+                    }
+                }
+            }
+            let setup = started.context("the menus did not start a game")?;
+            self.start_skirmish(&setup)?;
+            let s = self.state.as_mut().unwrap();
+            let sim = s.simulation.as_mut().context("no simulation")?;
+            for _ in 0..60 {
+                sim.step();
+            }
+            let owned: Vec<(u32, String)> =
+                sim.objects.values().filter(|o| o.map_index.is_none()).map(|o| (o.owner, o.template.clone())).collect();
+            let money: Vec<(u32, u32)> = sim.players.keys().map(|&p| (p, sim.money(p))).collect();
+            let rgba = s.renderer.render_scene(
+                &s.scene,
+                &s.camera.camera(&self.world.map),
+                &self.world.object_lights(),
+                (320, 240),
+                [0.0, 0.0, 0.0, 1.0],
+                0.0,
+            );
+            if !rgba.as_chunks::<4>().0.iter().any(|p| p[..3] != [0, 0, 0]) {
+                bail!("skirmish render is empty");
+            }
+            eprintln!(
+                "shell smoke passed: {} on {}; players' objects {owned:?}; money {money:?}",
+                setup.player_name, self.cli.map
+            );
+            event_loop.exit();
+            return Ok(());
+        }
         if self.cli.smoke {
             let s = self.state.as_mut().unwrap();
             for (step, size) in [(0, (320, 240)), (1, (640, 360)), (2, (512, 512))] {
@@ -312,6 +299,130 @@ impl App {
         }
         Ok(())
     }
+    /// The world, the scenario's simulation and drawables, and a camera, for
+    /// the current map.
+    fn load_game(&mut self, renderer: &mut Renderer, size: (u32, u32)) -> Result<Game> {
+        let renderer = &mut *renderer;
+        let mut assets = Assets::new(&self.vfs, &self.language);
+        let mut scene = Scene::default();
+        self.world.add_terrain(renderer, &mut assets, &self.vfs, &self.defs, &mut scene)?;
+        self.world.add_roads(renderer, &mut assets, &self.defs, &mut scene);
+        self.world.add_bridges(renderer, &mut assets, &self.defs, &mut scene);
+        self.world.add_water(renderer, &mut assets, &self.defs, &mut scene);
+        let objects = self.world.add_objects(renderer, &mut assets, &self.defs, &mut scene);
+        let (simulation, sim_draw) = if let Some(scenario) = &self.scenario {
+            let templates = Arc::new(ih_sim::templates::Templates::for_map(
+                &self.defs.data,
+                &self.world.map,
+                &self.vfs,
+                &self.language,
+            )?);
+            for w in &templates.warnings {
+                eprintln!("template: {w}");
+            }
+            let sim = scenario.instantiate(Arc::new(self.world.map.clone()), templates.clone())?;
+            let names =
+                scenario.spawn.iter().map(|s| s.template.clone()).chain(scenario.commands.iter().filter_map(|c| {
+                    match &c.command {
+                        ih_sim::Command::Spawn { template, .. } => Some(template.clone()),
+                        _ => None,
+                    }
+                }));
+            // Their weapons' projectiles are drawn too.
+            let mut names: Vec<String> = names.collect();
+            for n in names.clone() {
+                if let Some(t) = templates.objects.get(&n) {
+                    for set in &t.weapon_sets {
+                        for w in set.weapons.iter().flatten() {
+                            if let Some(p) = templates.weapons.get(w).and_then(|w| w.projectile.clone())
+                                && !names.contains(&p)
+                            {
+                                names.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+            let draw = ih_client::sim_draw::SimDrawables::new(
+                renderer,
+                &mut assets,
+                &templates,
+                names.into_iter(),
+                &self.world.condition_flags(),
+                scene.instances.len(),
+            );
+            eprintln!("M4 movement slice: {} objects; explicit stub modules: {:?}", sim.objects.len(), sim.stub_counts);
+            (Some(sim), Some(draw))
+        } else {
+            (None, None)
+        };
+        for w in self.world.warnings.iter().chain(&assets.warnings) {
+            eprintln!("warning: {w}");
+        }
+        eprintln!(
+            "{}: {objects} objects; {} road types; {} bridges; {}",
+            self.world.path,
+            scene.roads.len(),
+            scene.bridges.len(),
+            renderer.adapter_name
+        );
+        let mut camera = TacticalCamera::new(self.world.playable_bounds(), &self.defs);
+        if let Some(sim) = &simulation
+            && sim.objects.values().any(|o| o.map_index.is_none())
+        {
+            let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+            for o in sim.objects.values().filter(|o| o.map_index.is_none()) {
+                let p = Vec2::new(o.position[0], o.position[1]);
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+            camera.center = (lo + hi) * 0.5;
+            let half_tan = (camera.fov_y * 0.5).tan() * (size.0 as f32 / size.1.max(1) as f32).min(1.0);
+            camera.distance = camera.distance.max((hi - lo).length() * 0.5 / half_tan + 80.0);
+        }
+        if self.cli.overview {
+            camera.overview();
+        }
+        Ok((scene, simulation, sim_draw, camera))
+    }
+
+    /// Start Game from the skirmish menu: load its map and play the setup.
+    fn start_skirmish(&mut self, setup: &ih_ui::shell::GameSetup) -> Result<()> {
+        let map = setup.map.as_ref().context("no map chosen")?.folder();
+        let world = World::load(&self.vfs, &map)?;
+        let mut defs = Definitions::load(&self.vfs, &self.language);
+        defs.load_map_overrides(&self.vfs, &world.path)?;
+        let sides =
+            self.state.as_ref().and_then(|s| s.ui.as_ref()).map(|u| u.shell.data.sides.clone()).unwrap_or_default();
+        let text = shell::scenario_for(setup, &sides, &defs, &world)?;
+        let scenario: ih_sim::scenario::Scenario = toml::from_str(&text)?;
+        self.world = world;
+        self.defs = defs;
+        self.scenario = Some(scenario);
+        self.cli.map = map;
+        let mut st = self.state.take().context("no window")?;
+        let size = (st.config.width, st.config.height);
+        let built = self.load_game(&mut st.renderer, size);
+        let (scene, simulation, sim_draw, camera) = match built {
+            Ok(g) => g,
+            Err(e) => {
+                self.state = Some(st);
+                return Err(e);
+            }
+        };
+        st.scene = scene;
+        st.simulation = simulation;
+        st.sim_draw = sim_draw;
+        st.reset_camera = camera.clone();
+        st.camera = camera;
+        st.clock = ih_sim::LogicClock::default();
+        st.selected.clear();
+        st.ui = None;
+        st.window.set_title(&format!("ironhour — {}", self.cli.map));
+        self.state = Some(st);
+        Ok(())
+    }
+
     fn fail(&mut self, event_loop: &ActiveEventLoop, e: anyhow::Error) {
         self.error = Some(e);
         event_loop.exit();
@@ -329,7 +440,7 @@ impl State {
         self.surface.configure(&self.renderer.device, &self.config);
         self.targets = self.renderer.targets((size.width, size.height));
     }
-    fn render(&mut self, world: &World) -> Result<()> {
+    fn render(&mut self, world: &World, vfs: &Vfs, language: &str) -> Result<()> {
         if self.size.width == 0 || self.size.height == 0 {
             return Ok(());
         }
@@ -411,6 +522,10 @@ impl State {
             [0.0, 0.0, 0.0, 1.0],
             self.started.elapsed().as_secs_f32() * 1000.0,
         );
+        if let Some(ui) = &mut self.ui {
+            let size = (self.config.width, self.config.height);
+            ui.draw(&mut self.renderer, vfs, language, &mut enc, &view, size);
+        }
         self.renderer.queue.submit([enc.finish()]);
         self.window.pre_present_notify();
         self.renderer.queue.present(frame);
@@ -434,11 +549,57 @@ impl ApplicationHandler for App {
         if id != s.window.id() {
             return;
         }
+        if s.ui.is_some() {
+            let ui = s.ui.as_mut().unwrap();
+            let p = |v: Vec2| [v.x as i32, v.y as i32];
+            let input = match &event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    s.cursor = Some(Vec2::new(position.x as f32, position.y as f32));
+                    Some(ih_ui::input::Input::MouseMove(p(s.cursor.unwrap())))
+                }
+                WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => s.cursor.map(|c| {
+                    if state.is_pressed() {
+                        ih_ui::input::Input::LeftDown(p(c))
+                    } else {
+                        ih_ui::input::Input::LeftUp(p(c))
+                    }
+                }),
+                WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => match event.physical_key {
+                    PhysicalKey::Code(KeyCode::Backspace) => Some(ih_ui::input::Input::Backspace),
+                    PhysicalKey::Code(KeyCode::Enter) => Some(ih_ui::input::Input::Enter),
+                    _ => event
+                        .text
+                        .as_ref()
+                        .and_then(|t| t.chars().next())
+                        .filter(|c| !c.is_control())
+                        .map(ih_ui::input::Input::Char),
+                },
+                _ => None,
+            };
+            if let Some(input) = input {
+                let events = ui.input(&input);
+                for e in events {
+                    match e {
+                        ih_ui::shell::ShellEvent::Quit => event_loop.exit(),
+                        ih_ui::shell::ShellEvent::StartGame(setup) => {
+                            if let Err(e) = self.start_skirmish(&setup) {
+                                eprintln!("could not start the skirmish: {e:#}");
+                            }
+                            return;
+                        }
+                        // Interface sounds wait for the audio system.
+                        ih_ui::shell::ShellEvent::Sound(_) => {}
+                    }
+                }
+                return;
+            }
+        }
+        let Some(s) = &mut self.state else { return };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => s.resize(size),
             WindowEvent::RedrawRequested => {
-                if let Err(e) = s.render(&self.world) {
+                if let Err(e) = s.render(&self.world, &self.vfs, &self.language) {
                     self.fail(event_loop, e);
                 }
             }
