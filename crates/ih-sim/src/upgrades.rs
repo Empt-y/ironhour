@@ -84,6 +84,8 @@ pub enum Effect {
     WeaponBonus,
     /// `ExperienceScalarUpgrade`'s `AddXPScalar`.
     ExperienceScalar(f32),
+    /// `ObjectCreationUpgrade`'s `UpgradeObject`.
+    ObjectCreation(String),
     /// Not ported yet; the module still counts as executed.
     Other,
 }
@@ -134,6 +136,7 @@ impl UpgradeModuleDef {
         let (mut kinds, mut percent) = (vec![], 0.0);
         let mut science = String::new();
         let mut xp = 0.0;
+        let mut ocl = String::new();
         for f in b.fields() {
             let v = f.values();
             let first = v.first().cloned().unwrap_or_default();
@@ -162,6 +165,7 @@ impl UpgradeModuleDef {
                     percent = ih_ini::values::scan_real(first.trim_end_matches('%').as_bytes()).unwrap_or(0.0) / 100.0
                 }
                 "GrantScience" => science = first,
+                "UpgradeObject" => ocl = first.clone(),
                 "AddXPScalar" => xp = ih_ini::values::scan_real(first.as_bytes()).unwrap_or(0.0),
                 _ => {}
             }
@@ -177,6 +181,7 @@ impl UpgradeModuleDef {
             "GrantScienceUpgrade" => Effect::GrantScience(science),
             "WeaponBonusUpgrade" => Effect::WeaponBonus,
             "ExperienceScalarUpgrade" => Effect::ExperienceScalar(xp),
+            "ObjectCreationUpgrade" => Effect::ObjectCreation(ocl),
             _ => Effect::Other,
         };
         Some(d)
@@ -383,6 +388,9 @@ impl Simulation {
                 o.bonus_flags |= crate::veterancy::bonus_flag("PLAYER_UPGRADE");
             }
             Effect::ExperienceScalar(x) => self.objects.get_mut(&id).unwrap().experience.scalar += x,
+            Effect::ObjectCreation(ocl) => {
+                self.create_ocl(ocl, id, None);
+            }
             // The power bonus is read from the executed module (`power_bonus`).
             Effect::PowerPlant | Effect::Other => {}
         }

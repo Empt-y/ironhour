@@ -1755,3 +1755,62 @@ Asset-free fixtures: `03993afe03c9308d` (ground), `b26043fb530c8cd4` (bridge),
 `tests/veterancy.rs` covers experience from kills, promotion with its health
 and damage bonuses, no experience for neutral kills, and the elite rate of
 fire and hero weapon set.
+
+### Object creation lists (state hash v32)
+
+From `ObjectCreationList.cpp` (`GenericObjectCreationNugget` for `CreateObject`
+and `CreateDebris`, `ApplyRandomForceNugget`, `FireWeaponNugget`,
+`AttackNugget`, `calcRandomForce`), `LifetimeUpdate.cpp`, `CreateObjectDie.cpp`,
+`ObjectCreationUpgrade.cpp`, `SlowDeathBehavior::doPhaseStuff` and the OCL half
+of `WeaponTemplate::fireWeaponTemplate`: `crates/ih-sim/src/ocl.rs`.
+
+- Nuggets create objects (or `GenericDebris` for `CreateDebris`) `Count`
+  times, with the owner of the source unless told otherwise, at the source or
+  an explicit position, plus `Offset` along the facing. Dispositions:
+  `LIKE_EXISTING`, `ON_GROUND_ALIGNED`, `SEND_IT_FLYING`, `SEND_IT_UP`,
+  `SEND_IT_OUT`, `RANDOM_FORCE`, `INHERIT_VELOCITY` and `WHIRLING` set the
+  position, facing and physics force, drawing random values in the original
+  order. `MinLifetime`/`MaxLifetime` replace the template's lifetime.
+- `LifetimeUpdate` kills its object after a random lifetime (the hash keeps
+  the death frame).
+- Hooked up: `CreateObjectDie` (with `DieMuxData` and `TransferPreviousHealth`),
+  slow-death phase OCLs and weapons, a weapon's `FireOCL` (before scatter) and
+  `ProjectileDetonationOCL`, and `ObjectCreationUpgrade`.
+- Faithful quirk: `ObjectNames` and `ModelNames` keep only every other name,
+  because `parseDebrisObjectNames` reads a second token on each pass.
+- Not yet: `DeliverPayload` (aircraft deliveries), debris models, animations
+  and particles (client), bounce and spin, floating, invulnerability, slaved
+  objects, ignoring collision with the source, fades, and
+  `RequiresLivePlayer`.
+
+All scenarios pass with v32 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `abcb96c43efd26dd` | `86d2c12cbc96d16e` |
+| AI/status orders | `6d8e0432f343c37f` | `38defa594e126191` |
+| Bridges | `31b87a5040a8a4e5` | `700401095600f2ae` |
+| Traffic, Tournament Desert | `659d7fa23f1e893f` | `e2a8a0113259c0a7` |
+| Traffic, Winding River | `c7846ba537bf6c25` | `73b90c9c42571343` |
+| Long map travel | `19001e9cf07d7b79` | `fbcce4db685b1656` |
+| Crush enemy / crush ally | `6673154f90155c47` / `61023fc793723150` | |
+| Comanche out and back | `1daa661f220b6c06` | `9d780d87fd905bb9` |
+| Group move (`m4-group`) | `c7a6bd663c77ba64` |  |
+| `m5-construction` | `87cfa0440e91dd47` | |
+| `m5-fight` | `9bce359838713247` | |
+| `m5-garrison` | `e997321f5401f6fd` | |
+| `m5-guard` | `3edeeeffc34c255f` | |
+| `m5-missiles` | `a5c0f295d22ae249` | |
+| `m5-production` | `c22350c83b49dcff` | |
+| `m5-repair-sell` | `8b84ec96934e9d42` | |
+| `m5-skirmish` | `ca57d73e030f45a7` | |
+| `m5-supply` | `b6a21e62a0101954` | |
+| `m5-transports` | `4b4c7efdbe9da477` | |
+| `m5-tunnels` | `273c69d070ac612a` | |
+| `m5-upgrades` | `88a25906ce5676b7` | |
+
+Asset-free fixtures: `9fd5d4a24a5442f6` (ground), `cdc091a00ef422db` (bridge),
+`7a1e18bf45c3d636` (head-on traffic), `39ee23a33e2cbe05` (AI/status orders).
+`tests/ocl.rs` covers survivors and expiring debris on death, the
+every-other-name quirk, a weapon's `FireOCL` with an offset, and determinism.
+In stock `m5-fight`, destroyed vehicles now leave `GenericDebris`.

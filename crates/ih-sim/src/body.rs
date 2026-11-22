@@ -343,11 +343,22 @@ pub enum DieKind {
     Destroy(DieMux),
     /// `SlowDeathBehavior` (`death`).
     SlowDeath(Box<crate::death::SlowDeathData>),
+    /// `CreateObjectDie`: an object creation list, optionally passing on the damage taken.
+    CreateObject { mux: DieMux, ocl: String, transfer_health: bool },
 }
 impl DieKind {
     pub fn from_module(class: &str, block: &ih_ini::Block, templates: &crate::templates::Templates) -> Option<Self> {
         match class {
             "DestroyDie" => Some(DieKind::Destroy(DieMux::parse(block))),
+            "CreateObjectDie" => {
+                let get = |k: &str| block.fields().filter(|f| f.name == k).last().map(|f| f.values());
+                Some(DieKind::CreateObject {
+                    mux: DieMux::parse(block),
+                    ocl: get("CreationList").and_then(|v| v.first().cloned()).unwrap_or_default(),
+                    transfer_health: get("TransferPreviousHealth")
+                        .is_some_and(|v| v.first().is_some_and(|s| s.eq_ignore_ascii_case("yes"))),
+                })
+            }
             "SlowDeathBehavior" => {
                 Some(DieKind::SlowDeath(Box::new(crate::death::SlowDeathData::parse(block, &|kind, name| {
                     templates.effects.contains(&(kind.to_string(), name.to_string()))
@@ -601,6 +612,24 @@ impl Simulation {
                 DieKind::Destroy(mux) if mux.applies(info.death_type, status) => self.destroy_object(id),
                 DieKind::Destroy(_) => {}
                 DieKind::SlowDeath(_) => self.slow_death_on_die(id, i, info),
+                DieKind::CreateObject { mux, ocl, transfer_health } if mux.applies(info.death_type, status) => {
+                    let dealer = Some(info.source).filter(|s| self.objects.contains_key(s));
+                    let made = self.create_ocl(&ocl, id, dealer);
+                    if let (Some(new), true) = (made, transfer_health) {
+                        // TransferPreviousHealth: the new object takes the damage the old had.
+                        let (max, prev, src) = {
+                            let h = self.objects[&id].health.as_ref();
+                            (h.map_or(0.0, |h| h.max), h.map_or(0.0, |h| h.previous), info.source)
+                        };
+                        if max - prev > 0.0 {
+                            self.attempt_damage(
+                                new,
+                                DamageInfo::new(src, DAMAGE_UNRESISTABLE, DEATH_NORMAL, max - prev),
+                            );
+                        }
+                    }
+                }
+                DieKind::CreateObject { .. } => {}
             }
         }
     }
@@ -642,7 +671,7 @@ pub fn module_kind(m: &crate::templates::ModuleDef) -> Option<ModuleKind> {
         return Some(ModuleKind::Body);
     }
     match m.class.as_str() {
-        "DestroyDie" => Some(ModuleKind::Die),
+        "DestroyDie" | "CreateObjectDie" => Some(ModuleKind::Die),
         "SlowDeathBehavior" => Some(ModuleKind::SlowDeath),
         _ => None,
     }

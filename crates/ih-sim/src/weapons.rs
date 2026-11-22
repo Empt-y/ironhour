@@ -97,6 +97,9 @@ pub struct WeaponTemplate {
     pub pre_attack_delay: u32,
     /// `PreAttackType` (`PER_SHOT`, `PER_ATTACK`, `PER_CLIP`).
     pub pre_attack_type: u8,
+    /// `FireOCL` and `ProjectileDetonationOCL` per veterancy level.
+    pub fire_ocl: [Option<String>; 4],
+    pub detonation_ocl: [Option<String>; 4],
     /// `WeaponBonus` lines of this weapon (`getExtraBonus`).
     pub extra_bonus: crate::veterancy::BonusSet,
     pub radius_damage_angle: f32,
@@ -137,6 +140,8 @@ impl WeaponTemplate {
             pre_attack_delay: 0,
             pre_attack_type: 0,
             extra_bonus: Default::default(),
+            fire_ocl: Default::default(),
+            detonation_ocl: Default::default(),
             radius_damage_angle: std::f32::consts::PI,
             continue_range: 0.0,
             laser: false,
@@ -230,6 +235,16 @@ impl WeaponTemplate {
             "AutoReloadsClip" => self.auto_reload = index_of("TheWeaponReloadNames", &first()) == Some(0),
             "PreAttackDelay" => self.pre_attack_delay = duration(real(0)),
             "WeaponBonus" => self.extra_bonus.add_line(v),
+            "FireOCL" => self.fire_ocl = std::array::from_fn(|_| v.first().cloned()),
+            "ProjectileDetonationOCL" => self.detonation_ocl = std::array::from_fn(|_| v.first().cloned()),
+            "VeterancyFireOCL" | "VeterancyProjectileDetonationOCL" => {
+                if let Some(l) =
+                    v.first().and_then(|l| crate::veterancy::LEVELS.iter().position(|n| n.eq_ignore_ascii_case(l)))
+                {
+                    let list = if key == "VeterancyFireOCL" { &mut self.fire_ocl } else { &mut self.detonation_ocl };
+                    list[l] = v.get(1).cloned();
+                }
+            }
             "PreAttackType" => self.pre_attack_type = index_of("TheWeaponPrefireNames", &first()).unwrap_or(0) as u8,
             "RadiusDamageAngle" => self.radius_damage_angle = real(0).to_radians(),
             "ContinueAttackRange" => self.continue_range = real(0),
@@ -787,6 +802,15 @@ impl Simulation {
         }
         if d2 < wt.minimum_range().powi(2) && !detonation {
             return;
+        }
+        // FireOCL / ProjectileDetonationOCL for the shooter's veterancy.
+        let level = self.objects[&id].experience.level as usize;
+        let ocl = if detonation { wt.detonation_ocl[level].clone() } else { wt.fire_ocl[level].clone() };
+        if let Some(ocl) = ocl {
+            self.create_ocl(&ocl, id, None);
+            if !self.objects.contains_key(&id) {
+                return;
+            }
         }
         let mut dest = victim_pos;
         let infantry = victim.is_some_and(|v| self.templates.objects[&self.objects[&v].template].has_kind("INFANTRY"));

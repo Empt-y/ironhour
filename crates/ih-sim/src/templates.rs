@@ -328,6 +328,8 @@ pub struct Templates {
     /// Bones of containers' pristine, damaged and really damaged models
     /// (`contain`), loaded with assets.
     pub condition_bones: BTreeMap<String, crate::bridges::ConditionBones>,
+    /// `ObjectCreationList` definitions by name (`ocl`).
+    pub ocls: BTreeMap<String, Vec<crate::ocl::Nugget>>,
     /// `GameData`'s `WeaponBonus` lines.
     pub weapon_bonus: crate::veterancy::BonusSet,
     /// `GameData`'s `HealthBonus_*` per veterancy level (100% each by default).
@@ -527,6 +529,11 @@ impl Templates {
                 name.clone(),
                 crate::upgrades::UpgradeTemplate { name, object: true, build_time: 0.0, cost: 0 },
             );
+        }
+        for name in defs.names("ObjectCreationList") {
+            if let Some(b) = defs.all("ObjectCreationList", name).last() {
+                out.ocls.insert(name.clone(), crate::ocl::parse(b));
+            }
         }
         for name in defs.names("Weapon") {
             let blocks: Vec<&ih_ini::Block> = defs.all("Weapon", name).iter().collect();

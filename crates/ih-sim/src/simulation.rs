@@ -192,6 +192,8 @@ pub enum ModuleKind {
     Dock,
     /// A container (`contain::Contain`).
     Contain,
+    /// `LifetimeUpdate` (`ocl`).
+    Lifetime,
     Steering,
     Physics,
     /// The body module (`body`): not updated.
@@ -294,6 +296,8 @@ pub struct Object {
     pub bonus_flags: u32,
     /// `ExperienceTracker` (`veterancy`).
     pub experience: crate::veterancy::Experience,
+    /// `LifetimeUpdate::m_dieFrame`.
+    pub die_frame: Option<u32>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -545,6 +549,8 @@ impl Simulation {
                 ModuleKind::Dock
             } else if crate::contain::ContainData::from_module(&m.class, &m.block).is_some() {
                 ModuleKind::Contain
+            } else if m.class == "LifetimeUpdate" {
+                ModuleKind::Lifetime
             } else if crate::production::Exit::from_module(&m.class, &m.block).is_some() {
                 ModuleKind::ProductionExit
             } else if known.is_some_and(|d| d.tables.iter().any(|t| t.starts_with("AIUpdateModuleData::"))) {
@@ -574,6 +580,9 @@ impl Simulation {
             {
                 // Updated every frame (UPDATE_SLEEP_NONE); the other exits sleep forever.
                 self.scheduler.insert((id, index), self.frame.max(1), Phase::Normal);
+            } else if kind == ModuleKind::Lifetime {
+                // Scheduled once the object exists (LifetimeUpdate's constructor).
+                self.scheduler.insert((id, index), FOREVER, Phase::Normal);
             } else if kind == ModuleKind::SlowDeath {
                 // Asleep until the object dies.
                 self.scheduler.insert((id, index), FOREVER, Phase::Normal);
@@ -695,6 +704,7 @@ impl Simulation {
                 contained_frame: 0,
                 bonus_flags: 0,
                 experience: Default::default(),
+                die_frame: None,
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
@@ -703,6 +713,12 @@ impl Simulation {
         self.update_upgrade_modules(id);
         // TunnelContain::onObjectCreated
         self.register_tunnel(id);
+        // LifetimeUpdate's constructor: a random lifetime.
+        let templates = self.templates.clone();
+        if let Some(m) = templates.objects[name].modules.iter().find(|m| m.class == "LifetimeUpdate") {
+            let (min, max) = crate::ocl::lifetime_range(&m.block);
+            self.set_lifetime(id, min, max);
+        }
         self.update_weapon_set(id);
         self.rebuild_partition();
         self.update_pos(id);
@@ -1213,7 +1229,8 @@ impl Simulation {
                 | ModuleKind::Die
                 | ModuleKind::ProductionExit
                 | ModuleKind::Dock
-                | ModuleKind::Contain => 0,
+                | ModuleKind::Contain
+                | ModuleKind::Lifetime => 0,
             };
             if !self.objects[&id].disabled.allows_module(exceptions) {
                 self.scheduler.reschedule((id, index), self.frame.saturating_add(1));
@@ -1245,6 +1262,7 @@ impl Simulation {
                 ModuleKind::ProductionExit => self.exit_update(id),
                 ModuleKind::Dock => self.dock_update(id),
                 ModuleKind::Contain => self.contain_update(id),
+                ModuleKind::Lifetime => self.lifetime_update(id),
                 ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die => FOREVER,
             };
             self.update_pos(id);
@@ -2328,7 +2346,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(31);
+        h.u32(32);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2615,6 +2633,7 @@ impl Simulation {
             h.u32(o.contained_by.unwrap_or(0));
             h.u32(o.contained_frame);
             h.u32(o.bonus_flags);
+            h.u32(o.die_frame.unwrap_or(0));
             let e = o.experience;
             h.u32(u32::from(e.level));
             h.u32(e.points as u32);
@@ -3253,7 +3272,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x03993afe03c9308d, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x9fd5d4a24a5442f6, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3489,7 +3508,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0x67679682a78be711, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x7a1e18bf45c3d636, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3581,7 +3600,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xb26043fb530c8cd4, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xcdc091a00ef422db, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

@@ -35,10 +35,10 @@ pub struct SlowDeathData {
     pub destruction_delay: u32,
     pub destruction_delay_variance: u32,
     pub destruction_altitude: f32,
-    /// List lengths per phase: FX, OCL, weapons (entries may name nothing).
-    pub fx: [usize; PHASES],
-    pub ocl: [usize; PHASES],
-    pub weapons: [usize; PHASES],
+    /// Lists per phase: FX, OCL, weapons (entries may name nothing).
+    pub fx: [Vec<String>; PHASES],
+    pub ocl: [Vec<String>; PHASES],
+    pub weapons: [Vec<String>; PHASES],
     /// `m_maskOfLoadedEffects` is nonzero: some entry names a real effect.
     pub any_effect: bool,
     pub fling_force: f32,
@@ -64,9 +64,9 @@ impl SlowDeathData {
             destruction_delay: 0,
             destruction_delay_variance: 0,
             destruction_altitude: -10.0,
-            fx: [0; PHASES],
-            ocl: [0; PHASES],
-            weapons: [0; PHASES],
+            fx: Default::default(),
+            ocl: Default::default(),
+            weapons: Default::default(),
             any_effect: false,
             fling_force: 0.0,
             fling_force_variance: 0.0,
@@ -109,7 +109,7 @@ impl SlowDeathData {
                         _ => &mut d.weapons,
                     };
                     for name in &v[1..] {
-                        list[phase] += 1;
+                        list[phase].push(name.clone());
                         if known(kind, name) {
                             d.any_effect = true;
                         }
@@ -244,17 +244,27 @@ impl Simulation {
         s.activated = true;
         self.objects.get_mut(&id).unwrap().modules[index].death = s;
         self.scheduler.awaken((id, index), now, wake);
-        self.slow_death_phase(&d, 0);
+        self.slow_death_phase(id, &d, 0);
     }
 
-    /// `doPhaseStuff`: one random FX, OCL and weapon of the phase (not run yet).
-    fn slow_death_phase(&mut self, d: &SlowDeathData, phase: usize) {
+    /// `doPhaseStuff`: one random FX (not drawn yet), OCL and weapon of the phase.
+    fn slow_death_phase(&mut self, id: u32, d: &SlowDeathData, phase: usize) {
         if !d.any_effect {
             return;
         }
-        for n in [d.fx[phase], d.ocl[phase], d.weapons[phase]] {
-            if n > 0 {
-                let _ = self.rng.integer(0, n as i32 - 1);
+        if !d.fx[phase].is_empty() {
+            let _ = self.rng.integer(0, d.fx[phase].len() as i32 - 1);
+        }
+        if !d.ocl[phase].is_empty() {
+            let i = self.rng.integer(0, d.ocl[phase].len() as i32 - 1) as usize;
+            self.create_ocl(&d.ocl[phase][i], id, None);
+        }
+        if !d.weapons[phase].is_empty() {
+            let i = self.rng.integer(0, d.weapons[phase].len() as i32 - 1) as usize;
+            // createAndFireTempWeapon at our own position.
+            if let (Some(wt), Some(o)) = (self.weapon_template(&d.weapons[phase][i]).cloned(), self.objects.get(&id)) {
+                let p = o.position;
+                self.fire_weapon_template(id, &wt, None, p, false);
             }
         }
     }
@@ -286,12 +296,12 @@ impl Simulation {
             o.position[2] -= d.sink_rate;
         }
         if now >= s.midpoint_frame && !s.midpoint_done {
-            self.slow_death_phase(&d, 1);
+            self.slow_death_phase(id, &d, 1);
             s.midpoint_done = true;
         }
         self.objects.get_mut(&id).unwrap().modules[index].death = s;
         if now >= s.destruction_frame {
-            self.slow_death_phase(&d, 2);
+            self.slow_death_phase(id, &d, 2);
             self.destroy_object(id);
         }
         1
