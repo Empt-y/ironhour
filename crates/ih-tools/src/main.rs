@@ -42,6 +42,11 @@ enum Cmd {
     Extract { pattern: String, out: PathBuf },
     /// Print a text file to stdout.
     Cat { path: String },
+    /// Resolve and decode UI sound assets without opening an audio device.
+    AudioCheck {
+        /// AudioEvent names. Omit to check every UI event's base sounds.
+        names: Vec<String>,
+    },
     /// Print the INI files the game loads at startup, in order, with where each comes from.
     LoadOrder,
     /// Decode textures: save one as PNG, or check every texture the game can load.
@@ -298,6 +303,50 @@ fn main() -> Result<()> {
                 println!("{f}");
             }
             eprintln!("{} files", files.len());
+        }
+        Cmd::AudioCheck { names } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
+            let catalog = ih_audio::Catalog::load(&defs, &language);
+            let names: Vec<&str> = if names.is_empty() {
+                catalog.ui_events().map(|(n, _)| n).collect()
+            } else {
+                names.iter().map(String::as_str).collect()
+            };
+            let mut checked = std::collections::BTreeSet::new();
+            let mut failed = 0;
+            for name in &names {
+                let event = catalog.events.get(*name).with_context(|| format!("unknown audio event: {name}"))?;
+                anyhow::ensure!(event.ui, "{name}: not a UI sound");
+                anyhow::ensure!(!event.sounds.is_empty(), "{name}: no base sounds");
+                for sound in &event.sounds {
+                    let result = catalog.resolve(&vfs, sound).and_then(|path| {
+                        if checked.contains(&path) {
+                            return Ok(());
+                        }
+                        let data = ih_audio::decode(&vfs, &path)?;
+                        println!(
+                            "{path}: {} Hz, {} frames, {:.3}s",
+                            data.sample_rate,
+                            data.frames.len(),
+                            data.duration().as_secs_f64()
+                        );
+                        checked.insert(path);
+                        Ok(())
+                    });
+                    if let Err(e) = result {
+                        failed += 1;
+                        eprintln!("{name}: {e:#}");
+                    }
+                }
+            }
+            println!(
+                "{} UI events: {} decoded clips, {failed} failures; no output device opened",
+                names.len(),
+                checked.len()
+            );
+            anyhow::ensure!(failed == 0, "audio asset check failed");
         }
         Cmd::Which { path } => {
             let vfs = mount(&cli)?;

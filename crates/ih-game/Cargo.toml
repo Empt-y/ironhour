@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ih-audio.workspace = true
 ih-vfs.workspace = true
 ih-client.workspace = true
 ih-render.workspace = true

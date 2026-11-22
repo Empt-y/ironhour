@@ -47,6 +47,9 @@ struct Cli {
     /// Start in the menus (drawn over the map); Start Game in skirmish plays it.
     #[arg(long)]
     shell: bool,
+    /// Disable audio output (smoke checks are always silent).
+    #[arg(long)]
+    no_audio: bool,
 }
 
 fn main() -> Result<()> {
@@ -122,6 +125,7 @@ struct State {
     paused: bool,
     /// The menus, while they are up.
     ui: Option<shell::UiLayer>,
+    audio: Option<ih_audio::Audio>,
 }
 
 /// What `App::load_game` builds for a map.
@@ -187,6 +191,17 @@ impl App {
             left_start: None,
             paused: false,
             ui: None,
+            audio: if self.cli.no_audio || self.cli.smoke {
+                None
+            } else {
+                match ih_audio::Audio::new(ih_audio::Catalog::load(&self.defs.data, &self.language)) {
+                    Ok(audio) => Some(audio),
+                    Err(e) => {
+                        eprintln!("audio disabled: {e:#}");
+                        None
+                    }
+                }
+            },
         });
         if self.cli.shell {
             let st = self.state.as_mut().unwrap();
@@ -586,8 +601,13 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
-                        // Interface sounds wait for the audio system.
-                        ih_ui::shell::ShellEvent::Sound(_) => {}
+                        ih_ui::shell::ShellEvent::Sound(name) => {
+                            if let Some(audio) = self.state.as_mut().and_then(|s| s.audio.as_mut())
+                                && let Err(e) = audio.play_ui(&self.vfs, &name)
+                            {
+                                eprintln!("interface sound: {e:#}");
+                            }
+                        }
                     }
                 }
                 return;

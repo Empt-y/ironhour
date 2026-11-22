@@ -229,7 +229,6 @@ impl WindowManager {
                 }
             }
             "CHECKBOX" => {
-                out.push(UiEvent::Sound("GUICheckboxClick".into()));
                 self.windows[id].state ^= state::SELECTED;
                 out.push(self.system(id, Message::Selected(id)));
             }
@@ -244,7 +243,6 @@ impl WindowManager {
                     }
                 }
                 self.windows[id].state |= state::SELECTED;
-                out.push(UiEvent::Sound("GUIClick".into()));
                 out.push(self.system(id, Message::Selected(id)));
             }
             "HORZSLIDER" | "VERTSLIDER" => self.slide(id, p, out),
@@ -254,6 +252,9 @@ impl WindowManager {
                 let g = &mut self.windows[id].gadget;
                 g.selected = (row < g.rows.len()).then_some(row);
                 let sel = g.selected;
+                if sel.is_some() {
+                    out.push(UiEvent::Sound("GUIComboBoxClick".into()));
+                }
                 out.push(self.system(id, Message::ListSelected(id, sel)));
             }
             "COMBOBOX" => {
@@ -268,11 +269,14 @@ impl WindowManager {
                     }
                     g.open = false;
                     let sel = g.selected;
+                    if sel.is_some() {
+                        out.push(UiEvent::Sound("GUIComboBoxClick".into()));
+                    }
                     out.push(self.system(id, Message::ListSelected(id, sel)));
                 } else {
                     g.open = !g.open;
+                    out.push(UiEvent::Sound("GUIClick".into()));
                 }
-                out.push(UiEvent::Sound("GUIComboBoxClick".into()));
             }
             _ => {}
         }

@@ -1,0 +1,134 @@
+use super::*;
+use kira::backend::mock::{MockBackend, MockBackendSettings};
+
+fn definitions(extra: &str) -> Definitions {
+    let mut d = Definitions::default();
+    d.add_document(ih_ini::parse(
+        format!(
+            r#"
+AudioSettings
+  AudioRoot = Data\Audio
+  SoundsFolder = Sounds
+  SoundsExtension = wav
+  DefaultSoundVolume = 80%
+  Relative2DVolume = -10%
+  SampleCount2D = 2
+End
+AudioEvent DefaultSoundEffect
+  Volume = 100
+  Type = ui player
+  Control = random
+  Limit = 1
+  PitchShift = 0 0
+End
+AudioEvent Click
+  Sounds = click
+  Volume = 30
+End
+{extra}
+"#
+        )
+        .as_bytes(),
+    ));
+    d
+}
+
+fn wav() -> Vec<u8> {
+    let frames = 4800u32;
+    let mut b = b"RIFF".to_vec();
+    b.extend((36 + frames * 2).to_le_bytes());
+    b.extend(b"WAVEfmt ");
+    b.extend(16u32.to_le_bytes());
+    b.extend(1u16.to_le_bytes()); // PCM
+    b.extend(1u16.to_le_bytes()); // mono
+    b.extend(48000u32.to_le_bytes());
+    b.extend(96000u32.to_le_bytes());
+    b.extend(2u16.to_le_bytes());
+    b.extend(16u16.to_le_bytes());
+    b.extend(b"data");
+    b.extend((frames * 2).to_le_bytes());
+    for _ in 0..frames {
+        b.extend(16000i16.to_le_bytes());
+    }
+    b
+}
+
+fn files(localized: bool) -> (tempfile::TempDir, Vfs) {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("Data/Audio/Sounds");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("click.wav"), wav()).unwrap();
+    if localized {
+        std::fs::create_dir_all(dir.join("English")).unwrap();
+        std::fs::write(dir.join("English/click.wav"), wav()).unwrap();
+    }
+    let mut vfs = Vfs::new();
+    vfs.set_loose_root(temp.path()).unwrap();
+    (temp, vfs)
+}
+
+#[test]
+fn defaults_and_later_overrides_follow_original_parser() {
+    let mut d = definitions("");
+    d.add_document(ih_ini::parse(b"AudioEvent Click\n Sounds = replacement\nEnd\n"));
+    let c = Catalog::load(&d, "English");
+    let e = &c.events["Click"];
+    assert_eq!(e.sounds, ["replacement"]);
+    assert_eq!(e.volume, 1.0); // Replacement starts from defaults, not old Volume=30.
+    assert!(e.ui);
+    assert_eq!(e.limit, 1);
+    assert_eq!(c.sound_volume, 0.8);
+    assert_eq!(c.relative_2d, 0.9);
+    assert_eq!(c.max_ui_voices, 2);
+}
+
+#[test]
+fn localized_clip_wins_and_generic_is_the_fallback() {
+    let (_temp, vfs) = files(true);
+    let d = definitions("");
+    let english = Catalog::load(&d, "English");
+    assert_eq!(english.resolve(&vfs, "click").unwrap(), "Data\\Audio\\Sounds\\English\\click.wav");
+    let french = Catalog::load(&d, "French");
+    assert_eq!(french.resolve(&vfs, "click").unwrap(), "Data\\Audio\\Sounds\\click.wav");
+    assert!(english.resolve(&vfs, "missing").is_err());
+}
+
+#[test]
+fn pcm_decodes_from_the_vfs_and_corrupt_audio_reports_an_error() {
+    let (_temp, vfs) = files(false);
+    let data = decode(&vfs, "Data\\Audio\\Sounds\\click.wav").unwrap();
+    assert_eq!(data.sample_rate, 48000);
+    assert_eq!(data.frames.len(), 4800);
+    assert!((data.duration().as_secs_f64() - 0.1).abs() < 0.00001);
+    assert!(data.frames[200].left > 0.4);
+    assert!(StaticSoundData::from_cursor(Cursor::new(b"bad file")).is_err());
+}
+
+#[test]
+fn ui_voice_limits_release_after_playback_without_an_output_device() {
+    let (_temp, vfs) = files(false);
+    let d = definitions(
+        "AudioEvent Other\n Sounds = click\n Limit = 0\nEnd\nAudioEvent World\n Type = world\n Sounds = click\nEnd\n",
+    );
+    let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {
+        backend_settings: MockBackendSettings { sample_rate: 48000 },
+        ..Default::default()
+    })
+    .unwrap();
+    let mut audio = Audio::with_manager(Catalog::load(&d, "English"), manager);
+    assert!(audio.play_ui(&vfs, "Click").unwrap());
+    assert!(!audio.play_ui(&vfs, "Click").unwrap()); // Per-event limit.
+    assert!(audio.play_ui(&vfs, "Other").unwrap());
+    assert!(!audio.play_ui(&vfs, "Other").unwrap()); // Total UI budget.
+    assert!(audio.play_ui(&vfs, "World").is_err());
+    assert!(audio.play_ui(&vfs, "Missing").is_err());
+    let sound = &audio.cache["Data\\Audio\\Sounds\\click.wav"];
+    assert_eq!(sound.frames.len(), 4800);
+    // Process actual mixer buffers to complete both sounds; no speaker is opened.
+    for _ in 0..100 {
+        audio.manager.backend_mut().on_start_processing();
+        audio.manager.backend_mut().process();
+    }
+    assert!(audio.play_ui(&vfs, "Click").unwrap());
+    assert_eq!(audio.cache.len(), 1);
+}

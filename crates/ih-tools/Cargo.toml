@@ -10,6 +10,7 @@ name = "ih-tools"
 path = "src/main.rs"
 
 [dependencies]
+ih-audio.workspace = true
 ih-vfs.workspace = true
 ih-ini.workspace = true
 ih-formats.workspace = true

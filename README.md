@@ -18,6 +18,12 @@ Command logs replay with identical per-tick state hashes. The
 [movement demo](docs/m4-movement.md) supports selection and move orders and has a
 review checklist.
 
+M5 now has deterministic combat and economy logic slices (with gameplay and
+visual gaps recorded in PORTING.md). M6 is in progress: the original WND menus
+can start a skirmish, including map previews and chosen start positions. UI
+click sounds play from the game's mounted audio assets; the control bar,
+world audio, speech, music and EVA are still to come. Skirmish AI is M7.
+
 ## You need the game
 
 No game assets are included or ever will be. ironhour reads an installed copy of Zero Hour (and the base Generals install it depends on) in place, read-only.
@@ -34,7 +40,14 @@ leaves Contra out.
 
 ## Tools
 
+Linux builds need the ALSA development headers and pkg-config (on Ubuntu:
+`sudo apt-get install libasound2-dev pkg-config`). Audio tests use a mock
+backend and do not need a speaker or output device.
+
 ```
+cargo run -p ih-tools -- audio-check GUIClick GUIComboBoxClick GUIClickDisabled
+cargo run -p ih-game -- --shell             # menu clicks use the installed sounds
+cargo run -p ih-game -- --shell --no-audio  # disable output
 cargo run -p ih-tools -- installs               # show detected installs
 cargo run -p ih-tools -- archives               # archives in mount order
 cargo run -p ih-tools -- ls "data\ini\*.ini"    # list resolved files

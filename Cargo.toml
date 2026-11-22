@@ -16,6 +16,7 @@ ih-client = { path = "crates/ih-client" }
 ih-math = { path = "crates/ih-math" }
 ih-sim = { path = "crates/ih-sim" }
 ih-ui = { path = "crates/ih-ui" }
+ih-audio = { path = "crates/ih-audio" }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

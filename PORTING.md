@@ -2438,3 +2438,48 @@ the options and credits back buttons), `GUIUtil.cpp` and the map cache:
   than dropping players or overlapping their bases.
 - Asset-free tests cover cache coordinates, marker cycling, explicit and
   unassigned starts, inactive slots and invalid assignments.
+
+### Interface sound playback (first audio slice)
+
+`crates/ih-audio`, based on `INIAudioEventInfo.cpp`, `AudioEventRTS.cpp`
+(filename generation, localization and play information) and `AudioSettings`.
+
+- `AudioEvent`s inherit `DefaultSoundEffect`. Later definitions replace earlier
+  ones using those defaults, matching the original parser. Sounds, volume,
+  volume/pitch variation, delay, UI type, random selection and limits are read.
+- Paths use `AudioRoot`, `SoundsFolder` and `SoundsExtension`. A localized clip
+  takes precedence over the generic clip. Reads use the existing VFS, including
+  mod mount priority; there is no asset extraction or installation modification.
+- Kira/CPAL opens the system output; Symphonia decodes WAV (PCM and ADPCM), MP3
+  and Ogg/Vorbis from VFS bytes. Decoded UI samples are cached and reused.
+- The game consumes shell sound events. The gain combines the event's percentage,
+  `DefaultSoundVolume`, `Relative2DVolume` and volume variation. Selection uses
+  client-only randomness and never advances the simulation RNG or state hash.
+- Active voices respect the event limit and `SampleCount2D`. Completed handles
+  release their slots. This initial pool drops excess requests; original priority
+  stealing and interrupt semantics are not ported yet.
+- `--no-audio` disables output; hidden-window smoke checks stay silent. A missing
+  audio device reports a warning and leaves the game running.
+- Removed the invented `GUICheckboxClick` event: stock data has no such event and
+  the original checkbox gadget does not request one. Radio buttons are also
+  silent; combo opening uses `GUIClick` and list selection `GUIComboBoxClick`,
+  following the original gadget sources.
+- `ih-tools audio-check [event names...]` resolves and decodes the base clips
+  without opening an output device. With no names it checks all UI event base
+  sounds (not attack/decay or time-of-day variants).
+- Asset-free tests exercise default inheritance and replacement, localized lookup
+  and fallback, PCM decoding, corrupt input, per-event and total voice limits,
+  cache reuse, and releasing voices by processing Kira's mock mixer.
+- Linux CI installs ALSA build headers; no CI job requires an audio device.
+
+Verification for this slice: formatting, workspace Clippy with warnings denied,
+workspace tests and release simulation tests pass locally. The hidden-window
+shell still starts a skirmish with audio disabled. Stock menu checks decode
+three clips for `GUIClick`, `GUIComboBoxClick` and `GUIClickDisabled`; Contra
+resolves those three events to two overridden clips. Both checks have zero
+failures. Hardware listening review is still pending.
+
+Next audio slices: positional world sounds and FX dispatch, attack/body/decay
+and loop control, unit speech and EVA queues, streaming music and category
+volume preferences. Options, the in-game control bar and other M6 UI gaps remain
+as listed above.
