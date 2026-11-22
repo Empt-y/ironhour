@@ -49,7 +49,12 @@ enum Cmd {
         /// Treat names as FX lists and check their Sound entries.
         #[arg(long)]
         fx: bool,
+        /// Treat names as EVA events for this side (mutually exclusive with --fx).
+        #[arg(long, conflicts_with = "fx")]
+        eva_side: Option<String>,
     },
+    /// Probe VFS music streams without an output device. Defaults to Shell.
+    MusicCheck { names: Vec<String> },
     /// Print the INI files the game loads at startup, in order, with where each comes from.
     LoadOrder,
     /// Decode textures: save one as PNG, or check every texture the game can load.
@@ -307,12 +312,39 @@ fn main() -> Result<()> {
             }
             eprintln!("{} files", files.len());
         }
-        Cmd::AudioCheck { names, fx } => {
+        Cmd::MusicCheck { names } => {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
             let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
             let catalog = ih_audio::Catalog::load(&defs, &language);
-            let fx_names: Vec<String> = if *fx {
+            let names = if names.is_empty() { vec!["Shell".to_string()] } else { names.clone() };
+            for name in &names {
+                let stream = catalog.music_data(&vfs, name)?;
+                println!("{name}: {:.3}s, streaming decoder ready", stream.duration().as_secs_f64());
+            }
+            println!("{} music streams probed; no output device opened", names.len());
+        }
+        Cmd::AudioCheck { names, fx, eva_side } => {
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
+            let catalog = ih_audio::Catalog::load(&defs, &language);
+            let fx_names: Vec<String> = if let Some(side) = eva_side {
+                let mut sounds = vec![];
+                for name in names {
+                    let info = catalog
+                        .eva
+                        .get(&name.to_ascii_lowercase())
+                        .with_context(|| format!("unknown EVA event: {name}"))?;
+                    sounds.extend(
+                        info.sides
+                            .get(&side.to_ascii_lowercase())
+                            .with_context(|| format!("{name}: no sounds for {side}"))?
+                            .clone(),
+                    );
+                }
+                sounds
+            } else if *fx {
                 let mut sounds = vec![];
                 for name in names {
                     sounds.extend(
@@ -323,7 +355,7 @@ fn main() -> Result<()> {
             } else {
                 vec![]
             };
-            let names: Vec<&str> = if *fx {
+            let names: Vec<&str> = if *fx || eva_side.is_some() {
                 fx_names.iter().map(String::as_str).collect()
             } else if names.is_empty() {
                 catalog.ui_events().map(|(n, _)| n).collect()
@@ -333,6 +365,12 @@ fn main() -> Result<()> {
             let mut checked = std::collections::BTreeSet::new();
             let mut failed = 0;
             for name in &names {
+                if catalog.dialog.contains_key(*name) {
+                    let data = catalog.dialog_data(&vfs, name)?;
+                    println!("{name}: dialog {} Hz, {:.3}s", data.sample_rate, data.duration().as_secs_f64());
+                    checked.insert(format!("dialog:{name}"));
+                    continue;
+                }
                 let event = catalog.events.get(*name).with_context(|| format!("unknown audio event: {name}"))?;
                 anyhow::ensure!(!event.sounds.is_empty(), "{name}: no base sounds");
                 for sound in &event.sounds {

@@ -1,7 +1,7 @@
 use super::*;
 use kira::backend::mock::{MockBackend, MockBackendSettings};
 
-fn definitions(extra: &str) -> Definitions {
+pub(crate) fn definitions(extra: &str) -> Definitions {
     let mut d = Definitions::default();
     d.add_document(ih_ini::parse(
         format!(
@@ -53,7 +53,7 @@ fn wav() -> Vec<u8> {
     b
 }
 
-fn files(localized: bool) -> (tempfile::TempDir, Vfs) {
+pub(crate) fn files(localized: bool) -> (tempfile::TempDir, Vfs) {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("Data/Audio/Sounds");
     std::fs::create_dir_all(&dir).unwrap();

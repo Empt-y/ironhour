@@ -1,6 +1,6 @@
 [package]
 name = "ih-audio"
-description = "Client audio: original audio events and VFS-backed interface sounds"
+description = "Client audio: positional sounds, narration and VFS music streaming"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

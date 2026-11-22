@@ -51,6 +51,9 @@ struct Cli {
     /// Disable audio output (smoke checks are always silent).
     #[arg(long)]
     no_audio: bool,
+    /// Keep sound effects and speech, but disable background music.
+    #[arg(long)]
+    no_music: bool,
 }
 
 fn main() -> Result<()> {
@@ -128,6 +131,7 @@ struct State {
     ui: Option<shell::UiLayer>,
     audio: Option<ih_audio::Audio>,
     local_player: Option<u32>,
+    feedback: audio::Feedback,
 }
 
 /// What `App::load_game` builds for a map.
@@ -192,6 +196,7 @@ impl App {
             right_start: None,
             left_start: None,
             paused: false,
+            feedback: audio::Feedback::default(),
             local_player: self.scenario.as_ref().and_then(|s| s.spawn.first()).map(|s| s.owner),
             ui: None,
             audio: if self.cli.no_audio || self.cli.smoke {
@@ -217,6 +222,10 @@ impl App {
                 size,
                 Installs::locate().zero_hour.clone(),
             )?);
+        }
+        if !self.cli.no_music {
+            let st = self.state.as_mut().unwrap();
+            audio::start_music(&mut st.audio, &self.vfs, st.simulation.as_ref(), st.local_player, self.cli.shell);
         }
         if self.cli.smoke && self.cli.shell {
             // Click through the real menus to Start Game, play the skirmish briefly.
@@ -437,6 +446,10 @@ impl App {
         st.clock = ih_sim::LogicClock::default();
         st.selected.clear();
         st.ui = None;
+        st.feedback = audio::Feedback::default();
+        if !self.cli.no_music {
+            audio::start_music(&mut st.audio, &self.vfs, st.simulation.as_ref(), st.local_player, false);
+        }
         st.window.set_title(&format!("ironhour — {}", self.cli.map));
         self.state = Some(st);
         Ok(())
@@ -469,12 +482,22 @@ impl State {
         self.last_frame = now;
         if let Some(audio) = &mut self.audio {
             audio.update_listener(audio::listener(&self.camera, &world.map));
+            for error in audio.update_media(vfs, self.started.elapsed()) {
+                eprintln!("audio: {error}");
+            }
         }
         if let Some(sim) = &mut self.simulation {
             if !self.paused {
                 for _ in 0..self.clock.advance(elapsed) {
                     sim.step();
                     audio::dispatch(&mut self.audio, sim, vfs, self.local_player);
+                    audio::feedback(
+                        &mut self.audio,
+                        sim,
+                        &mut self.feedback,
+                        self.local_player,
+                        self.started.elapsed(),
+                    );
                 }
             }
             if let Some(draw) = &mut self.sim_draw {
@@ -795,6 +818,17 @@ impl ApplicationHandler for App {
                         } else {
                             vec![ih_sim::Command::GroupMove { objects: s.selected.clone(), target }]
                         };
+                        let attack = commands.iter().any(|c| {
+                            matches!(c, ih_sim::Command::Attack { .. } | ih_sim::Command::AttackPosition { .. })
+                        });
+                        audio::unit_voice(
+                            &mut s.audio,
+                            sim,
+                            &s.selected,
+                            s.local_player,
+                            if attack { "VoiceAttack" } else { "VoiceMove" },
+                            s.started.elapsed(),
+                        );
                         for command in commands {
                             sim.enqueue(sim.frame, command).ok();
                         }
@@ -820,12 +854,18 @@ impl ApplicationHandler for App {
         }
         if let Some(s) = &mut self.state {
             if s.size.width == 0 || s.size.height == 0 {
+                if let Some(audio) = &mut s.audio {
+                    for error in audio.update_media(&self.vfs, s.started.elapsed()) {
+                        eprintln!("audio: {error}");
+                    }
+                }
                 if let Some(sim) = &mut s.simulation {
                     let now = Instant::now();
                     if !s.paused {
                         for _ in 0..s.clock.advance(now - s.last_frame) {
                             sim.step();
                             audio::dispatch(&mut s.audio, sim, &self.vfs, s.local_player);
+                            audio::feedback(&mut s.audio, sim, &mut s.feedback, s.local_player, s.started.elapsed());
                         }
                     }
                     s.last_frame = now;

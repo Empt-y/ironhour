@@ -2506,3 +2506,43 @@ as listed above.
   parsing, independent UI/world budgets and private-event filtering.
 - Still pending: moving emitter attachment, ambient drawable loops, original
   priority stealing and full attack/body/decay loop control.
+
+### Unit speech, initial EVA and streaming music
+
+- `DialogEvent`s and `MusicTrack`s inherit their own original defaults. Filename
+  lookup uses `StreamingFolder` or `MusicFolder`, with localized files preferred,
+  and the existing VFS mount priority. Category gains use `DefaultSpeechVolume`
+  and `DefaultMusicVolume`.
+- Unit selection and move/attack orders request the first owned selected unit's
+  inherited `VoiceSelect`, `VoiceMove` or `VoiceAttack` event. Enemy selections
+  never request their voice. Unit responses expire after two seconds and replace
+  older pending responses rather than accumulating stale acknowledgements.
+- A separate, bounded speech channel serializes unit responses and EVA/dialog.
+  Higher priority announcements run first, FIFO for equal priority, with duplicate
+  suppression and expiration. A unit response cannot interrupt an announcement.
+  Sound-effect voice budgets do not consume the narration channel.
+- Eva.ini supplies side-specific sound lists, priority, repeat interval and
+  expiration. Priority zero disables an event. Initial client-side sources are
+  low power, lost units/buildings, damage to owned structures and general rank
+  increases. Client snapshots and clocks do not alter simulation hashes.
+- These are initial sources, not the full original EVA checker: superweapon,
+  detection, upgrade, sabotage and economy failure notifications remain to wire.
+  Teams, exact original interrupt/timeout policy and scripted campaign dialogue
+  are also pending. EVA repeat/expiration currently use elapsed client time.
+- Shell music loops the original `Shell` track. Starting a game switches to the
+  matching `Game_USA_`, `Game_CHI_` or `Game_GLA_` playlist, advancing in name order
+  and wrapping when the tracks end. Adaptive combat music is not ported yet.
+- Music uses Kira's streaming decoder over the compressed bytes read from the
+  VFS. It does not decode or cache an entire track as PCM. Replacement loads
+  before the old track stops; stream errors are reported. `--no-music` preserves
+  effects and speech, while `--no-audio` and smoke mode disable all output.
+- `music-check [tracks...]` probes the real stream headers without an output
+  device. `audio-check --eva-side <side> <events...>` checks EVA mappings and
+  their actual sound/dialog assets; explicit dialog names are supported too.
+- Asset-free tests cover speech priority, FIFO, duplicate suppression, expiry,
+  cooldowns, disabled EVA, localized dialog, stream probing, and failed music
+  replacement preserving the current track. Hardware listening remains pending.
+
+Remaining audio parity: ambient/moving emitters, attack/body/decay loops and
+original voice stealing; complete EVA sources, long campaign speech streaming,
+adaptive music, and persistent category preferences in the options UI.

@@ -21,8 +21,9 @@ review checklist.
 M5 now has deterministic combat and economy logic slices (with gameplay and
 visual gaps recorded in PORTING.md). M6 is in progress: the original WND menus
 can start a skirmish, including map previews and chosen start positions. UI
-click sounds play from the game's mounted audio assets; the control bar,
-world audio, speech, music and EVA are still to come. Skirmish AI is M7.
+clicks, positional combat sounds, unit responses, initial EVA alerts and streaming
+shell/faction music use the game's mounted assets. The control bar and remaining
+M6 gaps are recorded in PORTING.md. Skirmish AI is M7.
 
 ## You need the game
 
@@ -46,8 +47,12 @@ backend and do not need a speaker or output device.
 
 ```
 cargo run -p ih-tools -- audio-check GUIClick GUIComboBoxClick GUIClickDisabled
+cargo run -p ih-tools -- audio-check --fx WeaponFX_GenericTankShellDetonation
+cargo run -p ih-tools -- audio-check --eva-side America LowPower UnitLost
+cargo run -p ih-tools -- music-check Shell Game_USA_01
 cargo run -p ih-game -- --shell             # menu clicks use the installed sounds
 cargo run -p ih-game -- --shell --no-audio  # disable output
+cargo run -p ih-game -- --shell --no-music  # sound effects and speech only
 cargo run -p ih-tools -- installs               # show detected installs
 cargo run -p ih-tools -- archives               # archives in mount order
 cargo run -p ih-tools -- ls "data\ini\*.ini"    # list resolved files

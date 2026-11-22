@@ -1,9 +1,12 @@
-//! Interface audio, following `INIAudioEventInfo.cpp`, `AudioEventRTS.cpp`
+//! Client audio, following `INIAudioEventInfo.cpp`, `AudioEventRTS.cpp`
 //! (`generateFilename`, localization and play information) and AudioSettings.
 //!
 //! Files come from the mounted VFS, never an extracted copy. Kira mixes decoded
 //! Symphonia samples. This client-only slice does not consume simulation RNG.
-//! Looping attack/body/decay, speech, music and EVA follow in later slices.
+//! Positional FX, unit speech, EVA and streaming music stay outside simulation.
+//! Original looping attack/body/decay and full ambient emitters remain pending.
+pub mod music;
+pub mod speech;
 #[cfg(test)]
 mod tests;
 
@@ -97,8 +100,21 @@ impl Event {
 }
 
 /// Audio definitions are inspectable without opening an output device.
+#[derive(Clone, Debug, Default)]
+pub struct FileEvent {
+    pub filename: String,
+    pub volume: f32,
+}
+
 pub struct Catalog {
     pub events: BTreeMap<String, Event>,
+    pub dialog: BTreeMap<String, FileEvent>,
+    pub music: BTreeMap<String, FileEvent>,
+    pub eva: BTreeMap<String, speech::EvaEvent>,
+    pub speech_volume: f32,
+    pub music_volume: f32,
+    speech_folder: String,
+    music_folder: String,
     root: String,
     folder: String,
     extension: String,
@@ -117,6 +133,13 @@ impl Catalog {
     pub fn load(defs: &Definitions, language: &str) -> Self {
         let mut c = Self {
             events: BTreeMap::new(),
+            dialog: BTreeMap::new(),
+            music: BTreeMap::new(),
+            eva: BTreeMap::new(),
+            speech_volume: 0.7,
+            music_volume: 0.55,
+            speech_folder: "Speech".into(),
+            music_folder: "Tracks".into(),
             root: "Data\\Audio".into(),
             folder: "Sounds".into(),
             extension: "wav".into(),
@@ -137,6 +160,10 @@ impl Catalog {
                 match f.name.to_ascii_lowercase().as_str() {
                     "audioroot" => c.root = v.clone(),
                     "soundsfolder" => c.folder = v.clone(),
+                    "streamingfolder" => c.speech_folder = v.clone(),
+                    "musicfolder" => c.music_folder = v.clone(),
+                    "defaultspeechvolume" => c.speech_volume = percent(v).unwrap_or(c.speech_volume).clamp(0.0, 1.0),
+                    "defaultmusicvolume" => c.music_volume = percent(v).unwrap_or(c.music_volume).clamp(0.0, 1.0),
                     "soundsextension" => c.extension = v.trim_start_matches('.').into(),
                     "defaultsoundvolume" => c.sound_volume = percent(v).unwrap_or(c.sound_volume).clamp(0.0, 1.0),
                     "relative2dvolume" => {
@@ -161,6 +188,31 @@ impl Catalog {
             event.apply(block);
             c.events.insert(name, event);
         }
+        for (kind, default, target) in
+            [("MusicTrack", "DefaultMusicTrack", &mut c.music), ("DialogEvent", "DefaultDialog", &mut c.dialog)]
+        {
+            for block in defs.ordered(kind) {
+                let Some(name) = block.args().first().cloned() else { continue };
+                let mut event =
+                    target.get(default).cloned().unwrap_or(FileEvent { filename: String::new(), volume: 1.0 });
+                for f in block.fields() {
+                    let v = f.values();
+                    let Some(first) = v.first() else { continue };
+                    if f.name.eq_ignore_ascii_case("Filename") {
+                        event.filename = first.clone();
+                    }
+                    if f.name.eq_ignore_ascii_case("Volume") {
+                        event.volume = percent(first).unwrap_or(event.volume).max(0.0);
+                    }
+                }
+                target.insert(name, event);
+            }
+        }
+        for block in defs.ordered("EvaEvent") {
+            if let Some(name) = block.args().first() {
+                c.eva.insert(name.to_ascii_lowercase(), speech::EvaEvent::parse(block));
+            }
+        }
         for block in defs.ordered("FXList") {
             let Some(name) = block.args().first().cloned() else { continue };
             let sounds = block
@@ -183,8 +235,11 @@ impl Catalog {
 
     /// Localized clips win over generic clips; VFS mount priority still applies.
     pub fn resolve(&self, vfs: &Vfs, sound: &str) -> Result<String> {
-        let prefix = format!("{}\\{}", self.root, self.folder);
-        let filename = format!("{sound}.{}", self.extension);
+        self.resolve_file(vfs, &self.folder, &format!("{sound}.{}", self.extension))
+    }
+
+    fn resolve_file(&self, vfs: &Vfs, folder: &str, filename: &str) -> Result<String> {
+        let prefix = format!("{}\\{}", self.root, folder);
         let localized = format!("{prefix}\\{}\\{filename}", self.language);
         if vfs.exists(&localized) {
             return Ok(localized);
@@ -247,6 +302,8 @@ pub struct Audio<B: Backend = DefaultBackend> {
     cache: BTreeMap<String, StaticSoundData>,
     active: Vec<Voice>,
     listener: Listener,
+    speech: speech::Speech,
+    music: music::Music,
     sequence: BTreeMap<String, usize>,
     rng: u32,
 }
@@ -268,6 +325,8 @@ impl<B: Backend> Audio<B> {
             sequence: BTreeMap::new(),
             rng: 0x91ab_3d57,
             listener: Listener::default(),
+            speech: speech::Speech::default(),
+            music: music::Music::default(),
         }
     }
 
