@@ -57,6 +57,9 @@ impl<B: Backend> Audio<B> {
 
     pub fn update_media(&mut self, vfs: &Vfs, now: Duration) -> Vec<String> {
         let mut errors = vec![];
+        if let Err(e) = self.advance_voices(vfs) {
+            errors.push(format!("{e:#}"));
+        }
         if let Err(e) = self.update_speech(vfs, now) {
             errors.push(format!("{e:#}"));
         }

@@ -11,6 +11,7 @@ pub struct Feedback {
     previous: BTreeMap<u32, (f32, bool)>,
     rank: Option<i32>,
     side: Option<String>,
+    emitters: BTreeMap<u32, (String, u32)>,
 }
 
 fn side(sim: &Simulation, player: u32) -> Option<&str> {
@@ -67,6 +68,7 @@ pub fn unit_voice(
 pub fn feedback(
     audio: &mut Option<Audio>,
     sim: &Simulation,
+    vfs: &Vfs,
     previous: &mut Feedback,
     player: Option<u32>,
     now: Duration,
@@ -91,6 +93,45 @@ pub fn feedback(
             ))
         })
         .collect();
+    let mut live_emitters = std::collections::BTreeSet::new();
+    for o in sim.objects.values() {
+        let template = &sim.templates.objects[&o.template];
+        let state = o.health.as_ref().map(|h| h.state);
+        let field = if o.dead {
+            "SoundAmbientRubble"
+        } else {
+            match state {
+                Some(ih_sim::body::DamageState::ReallyDamaged) => "SoundAmbientReallyDamaged",
+                Some(ih_sim::body::DamageState::Damaged) => "SoundAmbientDamaged",
+                _ => "SoundAmbient",
+            }
+        };
+        let name = template
+            .values(field)
+            .first()
+            .or_else(|| if !o.dead { template.values("SoundAmbient").first() } else { None });
+        let Some(name) = name.filter(|n| !n.eq_ignore_ascii_case("None") && !n.eq_ignore_ascii_case("NoSound")) else {
+            continue;
+        };
+        live_emitters.insert(o.id);
+        let entry = previous.emitters.entry(o.id).or_insert((name.clone(), 0));
+        if entry.0 != *name {
+            entry.0 = name.clone();
+            entry.1 = 0;
+        }
+        if sim.frame >= entry.1 || audio.has_emitter(o.id) {
+            if let Err(e) = audio.emitter(vfs, o.id, name, o.position) {
+                eprintln!("ambient: {e:#}");
+            }
+            entry.1 = sim.frame.saturating_add(30);
+        }
+    }
+    for id in previous.emitters.keys().filter(|id| !live_emitters.contains(id)).copied().collect::<Vec<_>>() {
+        if let Err(e) = audio.stop_emitter(vfs, id, true) {
+            eprintln!("ambient stop: {e:#}");
+        }
+        previous.emitters.remove(&id);
+    }
     if sim.frame >= 2 {
         let (supply, demand) = sim.energy(player);
         if demand > supply {

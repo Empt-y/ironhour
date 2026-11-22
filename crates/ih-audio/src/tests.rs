@@ -161,3 +161,58 @@ fn fx_sounds_use_world_budget_without_consuming_ui_voices() {
     assert!(audio.play_ui(&vfs, "Click").unwrap());
     assert_eq!(audio.active.len(), 2);
 }
+
+fn finish_buffer(audio: &mut Audio<MockBackend>, vfs: &Vfs) {
+    for _ in 0..100 {
+        audio.manager.backend_mut().on_start_processing();
+        audio.manager.backend_mut().process();
+    }
+    audio.advance_voices(vfs).unwrap();
+}
+
+#[test]
+fn finite_and_infinite_emitters_follow_attack_body_decay_and_move() {
+    let (_temp, vfs) = files(false);
+    let d = definitions(
+        "AudioEvent Engine\n Type = world\n Attack = click\n Sounds = click\n Decay = click\n Control = loop\n LoopCount = 2\nEnd\nAudioEvent Infinite\n Type = world\n Sounds = click\n Decay = click\n Control = loop\n LoopCount = 0\nEnd\n",
+    );
+    let manager = AudioManager::<MockBackend>::new(AudioManagerSettings::default()).unwrap();
+    let mut a = Audio::with_manager(Catalog::load(&d, "English"), manager);
+    a.emitter(&vfs, 7, "Engine", [0.0; 3]).unwrap();
+    assert_eq!(a.active[0].phase, Phase::Attack);
+    finish_buffer(&mut a, &vfs);
+    assert_eq!(a.active[0].phase, Phase::Body);
+    a.emitter(&vfs, 7, "Engine", [20.0, 0.0, 0.0]).unwrap();
+    assert_eq!(a.active[0].spatial.unwrap().0[0], 20.0);
+    finish_buffer(&mut a, &vfs);
+    assert_eq!(a.active[0].remaining, 1);
+    finish_buffer(&mut a, &vfs);
+    assert_eq!(a.active[0].phase, Phase::Decay);
+    finish_buffer(&mut a, &vfs);
+    assert!(a.active.is_empty());
+    a.emitter(&vfs, 8, "Infinite", [0.0; 3]).unwrap();
+    for _ in 0..3 {
+        finish_buffer(&mut a, &vfs);
+        assert!(a.has_emitter(8));
+    }
+    a.stop_emitter(&vfs, 8, true).unwrap();
+    assert_eq!(a.active[0].phase, Phase::Decay);
+    finish_buffer(&mut a, &vfs);
+    assert!(a.active.is_empty());
+}
+
+#[test]
+fn higher_priority_steals_and_interrupt_replaces_the_oldest_matching_voice() {
+    let (_temp, vfs) = files(false);
+    let d = definitions(
+        "AudioSettings\n SampleCount2D = 1\nEnd\nAudioEvent Quiet\n Sounds = click\n Priority = low\nEnd\nAudioEvent Important\n Sounds = click\n Priority = critical\n Control = interrupt\nEnd\n",
+    );
+    let manager = AudioManager::<MockBackend>::new(AudioManagerSettings::default()).unwrap();
+    let mut a = Audio::with_manager(Catalog::load(&d, "English"), manager);
+    assert!(a.play_ui(&vfs, "Quiet").unwrap());
+    assert!(a.play_ui(&vfs, "Important").unwrap());
+    assert_eq!(a.active[0].name, "Important");
+    assert!(!a.play_ui(&vfs, "Quiet").unwrap());
+    assert!(a.play_ui(&vfs, "Important").unwrap());
+    assert_eq!(a.active.len(), 1);
+}

@@ -494,6 +494,7 @@ impl State {
                     audio::feedback(
                         &mut self.audio,
                         sim,
+                        vfs,
                         &mut self.feedback,
                         self.local_player,
                         self.started.elapsed(),
@@ -865,7 +866,14 @@ impl ApplicationHandler for App {
                         for _ in 0..s.clock.advance(now - s.last_frame) {
                             sim.step();
                             audio::dispatch(&mut s.audio, sim, &self.vfs, s.local_player);
-                            audio::feedback(&mut s.audio, sim, &mut s.feedback, s.local_player, s.started.elapsed());
+                            audio::feedback(
+                                &mut s.audio,
+                                sim,
+                                &self.vfs,
+                                &mut s.feedback,
+                                s.local_player,
+                                s.started.elapsed(),
+                            );
                         }
                     }
                     s.last_frame = now;

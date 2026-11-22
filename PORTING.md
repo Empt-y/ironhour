@@ -2546,3 +2546,13 @@ as listed above.
 Remaining audio parity: ambient/moving emitters, attack/body/decay loops and
 original voice stealing; complete EVA sources, long campaign speech streaming,
 adaptive music, and persistent category preferences in the options UI.
+
+### Audio completion: emitter and voice lifecycles
+
+Attack/body/decay segments now progress through finite or infinite LoopCount,
+random and ALL body selection, pre/post delays and time-of-day sound variants.
+Drawable ambient sounds track position and damage state; range culling, removal
+and event replacement release the emitter, with decay on ordinary stops. The
+bounded pool steals lower-priority voices and INTERRUPT replaces the oldest
+matching event at its limit. Mock-mixer tests exercise complete loop lifecycles,
+movement, stops and voice replacement without requiring an output device.
