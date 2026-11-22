@@ -859,7 +859,9 @@ Moved to M5, because they need weapons, bodies, containers or production:
 Your review: [the M4 checklist](docs/m4-movement.md#review-checklist), and the
 M3 visual review ([docs/map-viewer.md](docs/map-viewer.md)).
 
-## M5. Combat and economy (in progress)
+## M5. Combat and economy (logic done; in-game review pending)
+
+The summary, open gaps and review list are at the end of this section.
 
 ### Bodies, damage and death (state hash v18)
 
@@ -2160,3 +2162,65 @@ Asset-free fixtures: `955d59d4b2390e9c` (ground), `c1dc68eca8a9c275` (bridge),
 death FX pointed at the killer while an inactive one stays silent. In stock
 `m5-fight`: 69 machine-gun and 15 tank-gun fire FX, 15 shell detonations,
 and the tank and Ranger deaths.
+
+### M5 summary
+
+Every M5 system in the plan now has a deterministic logic slice with
+asset-free tests and stock scenarios. There are twenty slices, state hash v18
+to v37:
+
+| Slice | Hash |
+|---|---|
+| Bodies, damage and death | v18 |
+| Weapons and the attack order | v19 |
+| Projectiles | v20 |
+| Missiles | v21 |
+| Auto-targeting and guard | v22 |
+| Money, power and unit production | v23 |
+| Supply gathering | v24 |
+| Upgrades | v25 |
+| Construction and workers | v26 |
+| Repair and selling | v27 |
+| Transports | v28 |
+| Garrisons and passengers firing | v29 |
+| Tunnels | v30 |
+| Weapon bonuses and veterancy | v31 |
+| Object creation lists | v32 |
+| Stealth and detection | v33 |
+| Shroud and fog | v34 |
+| Sciences, ranks and special powers | v35 |
+| Crates and radar | v36 |
+| FX lists as logic events | v37 |
+
+`ih-tools sim-run` replays every scenario twice and compares each tick's hash
+and FX events. All 30 scenarios (23 stock, 7 Contra X) pass at v37.
+
+The biggest gaps left, roughly in the order the later milestones need them:
+
+- Player templates and sides (intrinsic sciences, so GLA salvage crates and
+  side-specific powers work), player types (computer players: mood matrix,
+  chasing targets, crate hunting) and teams. Needed for M7.
+- Aircraft deliveries (`DeliverPayload`, so airstrike and paradrop OCLs),
+  special abilities that walk to their target, spy vision, and the remaining
+  special power and crate modules.
+- Retaliation, `AIAttackPursueTargetState`, weapon line of sight, turrets and
+  the full "can attack" check, plus retaliation by stealthed units.
+- Disguises, slave and spawn stealth, shrouders (GPS scramblers) and spied
+  vision.
+- Damage FX, transition FX, muzzle flashes at bones, and playing FX lists at
+  all: the client still has no particle or sound system (M6).
+- `GLAInfantryRebel` never auto-targets (found while porting stealth).
+
+Review list for the in-game check (when the GPU is free), using
+`cargo run --release -p ih-game -- --profile profiles/stock.toml --scenario <file>`:
+
+1. `scenarios/m5-skirmish.toml`: order units to attack, then watch them pick
+   their own targets after a move. Since v33 they also do this after a move
+   order.
+2. `scenarios/m5-stealth.toml`: Colonel Burton should stay untouched beside
+   the Ranger until the Scout Drone arrives, then take fire.
+3. `scenarios/m5-fight.toml`: destroyed tanks leave debris (`GenericDebris`).
+4. `scenarios/m5-garrison.toml` and `scenarios/m5-tunnels.toml`: units enter,
+   fire out and leave. Passengers no longer reveal shroud from inside
+   transports.
+5. Fog is logic-only so far, so nothing draws it yet. Expect no visual change.
