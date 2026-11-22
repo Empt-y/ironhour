@@ -146,6 +146,11 @@ pub enum Command {
     Sell {
         object: u32,
     },
+    /// `setVeterancyLevel` (scripts, cheats): 0 regular to 3 heroic.
+    SetVeterancy {
+        object: u32,
+        level: u8,
+    },
     /// `aiEnter` (`MSG_ENTER`): get into a transport.
     Enter {
         object: u32,
@@ -285,6 +290,10 @@ pub struct Object {
     pub contained_by: Option<u32>,
     /// `getContainedByFrame`.
     pub contained_frame: u32,
+    /// `getWeaponBonusCondition`.
+    pub bonus_flags: u32,
+    /// `ExperienceTracker` (`veterancy`).
+    pub experience: crate::veterancy::Experience,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -684,6 +693,8 @@ impl Simulation {
                 contain,
                 contained_by: None,
                 contained_frame: 0,
+                bonus_flags: 0,
+                experience: Default::default(),
             },
         );
         // The AI state machine starts idle (AIIdleState::onEnter).
@@ -770,6 +781,7 @@ impl Simulation {
             Command::ResumeConstruction { dozer, target } => self.resume_construction(dozer, target)?,
             Command::Repair { dozer, target } => self.repair(dozer, target, true)?,
             Command::Enter { object, target } => self.begin_enter(object, target, false)?,
+            Command::SetVeterancy { object, level } => self.set_veterancy(object, level)?,
             Command::Exit { object } => self.begin_exit(object, false)?,
             Command::Evacuate { object } => self.evacuate(object, false)?,
             Command::Sell { object } => self.sell(object)?,
@@ -2316,7 +2328,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(30);
+        h.u32(31);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2602,6 +2614,12 @@ impl Simulation {
         for o in self.objects.values() {
             h.u32(o.contained_by.unwrap_or(0));
             h.u32(o.contained_frame);
+            h.u32(o.bonus_flags);
+            let e = o.experience;
+            h.u32(u32::from(e.level));
+            h.u32(e.points as u32);
+            h.float(e.scalar);
+            h.u32(e.sink.unwrap_or(0));
             h.u32(o.ai.enter.unwrap_or(0));
             h.u32(u32::from(o.contain.is_some()));
             if let Some(c) = &o.contain {
@@ -2896,6 +2914,11 @@ fn hash_command(c: &Command, h: &mut StateHash) {
         Command::Sell { object } => {
             h.u32(25);
             h.u32(*object);
+        }
+        Command::SetVeterancy { object, level } => {
+            h.u32(29);
+            h.u32(*object);
+            h.u32(u32::from(*level));
         }
         Command::Enter { object, target } => {
             h.u32(26);
@@ -3230,7 +3253,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x32914657700142db, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x03993afe03c9308d, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3466,7 +3489,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xc031b905990058b8, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x67679682a78be711, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3558,7 +3581,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x0b4350862cc4e256, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xb26043fb530c8cd4, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

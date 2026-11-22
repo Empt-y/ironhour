@@ -30,6 +30,7 @@ pub mod templates;
 pub mod terrain;
 pub mod traffic;
 pub mod upgrades;
+pub mod veterancy;
 pub mod weapons;
 pub mod zones;
 pub use simulation::{Command, LogicClock, SimError, Simulation};

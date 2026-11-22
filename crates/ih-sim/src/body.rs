@@ -517,6 +517,8 @@ impl Simulation {
                 let _ = self.rng.integer(0, 99);
             }
             if cur <= 0.0 && prev > 0.0 {
+                // Our killer gets the credit (Object::scoreTheKill).
+                self.score_the_kill(info.source, id);
                 self.on_die(id, info);
             }
         }

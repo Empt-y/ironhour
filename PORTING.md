@@ -1695,3 +1695,63 @@ Asset-free fixtures: `32914657700142db` (ground), `0b4350862cc4e256` (bridge),
 `tests/tunnels.rs` covers entering one tunnel and leaving from another, the
 shared capacity and aircraft refused, healing inside, passengers moving to
 another tunnel and dying with the last one, and matching hashes in two runs.
+
+### Weapon bonuses and veterancy (state hash v31)
+
+From `Weapon.cpp` (`WeaponBonus`, `WeaponBonusSet`, `Weapon::computeBonus`, the
+bonus-aware getters), `ExperienceTracker.cpp`, `Object::scoreTheKill`,
+`Object::onVeterancyLevelChanged`, `ActiveBody::onVeterancyLevelChanged`,
+`UpgradeCenter::init` and `ExperienceScalarUpgrade`: `crates/ih-sim/src/veterancy.rs`.
+
+- Weapon bonuses: `GameData` `WeaponBonus` lines and each weapon's own
+  `WeaponBonus` lines give, per condition, multipliers for damage, radius,
+  range, rate of fire and pre-attack delay; an object's set conditions add
+  up (each adds its multiplier minus one). They apply to attack range,
+  delays between shots, clip reloads, pre-attack delays and damage and
+  radius when a weapon hits. Conditions set so far: `VETERAN`, `ELITE`,
+  `HERO`, `GARRISONED` (inside a garrison) and `PLAYER_UPGRADE`
+  (`WeaponBonusUpgrade`). Projectiles use their launcher's bonus as it is
+  when they hit, not when they were fired.
+- Veterancy: killing an enemy of a playable side (not neutral) gives a
+  trainable killer the victim's `ExperienceValue` for its level, times the
+  killer's experience scalar (`ExperienceScalarUpgrade`'s `AddXPScalar`), or
+  passes it to an experience sink. Levels come from `ExperienceRequired`. A
+  new level runs the upgrade modules, gives the `Upgrade_Veterancy_*` object
+  upgrade, scales maximum health by `HealthBonus_*` (keeping the ratio), and
+  switches the `VETERAN`/`ELITE`/`HERO` weapon set flags and bonus
+  conditions. `set_veterancy` command (object, level 0 to 3).
+- Not yet: skill points and bounties for kills, container bonuses passed to
+  passengers, the other bonus conditions (horde, nationalism, battle plans,
+  continuous fire, enthusiasm), promotion sounds and animations.
+
+All scenarios pass with v31 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `f8784cbc1344f773` | `c0c6e0337bfb5817` |
+| AI/status orders | `53774be8af05935d` | `6a280508b7d6c120` |
+| Bridges | `bb8f59cd1224302d` | `60285e568e48b80c` |
+| Traffic, Tournament Desert | `97cd52a4568f18da` | `c71cd61cb28f3f86` |
+| Traffic, Winding River | `8d1db04ab343dec1` | `ffd2d4ec40fb7269` |
+| Long map travel | `452bce1717a30249` | `64a35b27d7c6f364` |
+| Crush enemy / crush ally | `25f0ed4a46fc9b76` / `cf41e98cfde605da` | |
+| Comanche out and back | `5fb4d8ddaf25c736` | `8b89466a271939e2` |
+| Group move (`m4-group`) | `1cd303a6af45cd02` |  |
+| `m5-construction` | `748708c6f4c6359a` | |
+| `m5-fight` | `99075682c0ecaf6a` | |
+| `m5-garrison` | `ec7409bbb8c7194b` | |
+| `m5-guard` | `511d13fa727f8481` | |
+| `m5-missiles` | `d9c4c34d595ad744` | |
+| `m5-production` | `d8e131922edeea92` | |
+| `m5-repair-sell` | `7ff39912e78c29ed` | |
+| `m5-skirmish` | `6c24156bcbf503bc` | |
+| `m5-supply` | `64bdc95dfedccd1a` | |
+| `m5-transports` | `6373ed972f2180d6` | |
+| `m5-tunnels` | `0b54258024b3bfc1` | |
+| `m5-upgrades` | `5e9585f88f2b493a` | |
+
+Asset-free fixtures: `03993afe03c9308d` (ground), `b26043fb530c8cd4` (bridge),
+`67679682a78be711` (head-on traffic), `8c4e58d12bee1dce` (AI/status orders).
+`tests/veterancy.rs` covers experience from kills, promotion with its health
+and damage bonuses, no experience for neutral kills, and the elite rate of
+fire and hero weapon set.

@@ -468,7 +468,9 @@ impl Simulation {
             // the occupants' side.
             let can_attack = crate::construction::status_bits(&["CAN_ATTACK"]);
             let p = self.objects[&container].position;
-            self.objects.get_mut(&rider).unwrap().position = p;
+            let r = self.objects.get_mut(&rider).unwrap();
+            r.position = p;
+            r.bonus_flags |= crate::veterancy::bonus_flag("GARRISONED");
             self.objects.get_mut(&container).unwrap().status |= can_attack;
             self.recalc_garrison_owner(container);
         } else if !tunnel {
@@ -718,6 +720,7 @@ impl Simulation {
         let slots = if data.garrison || data.tunnel { 1 } else { self.slots(rider) };
         if data.garrison {
             self.remove_from_point(container, rider);
+            self.objects.get_mut(&rider).unwrap().bonus_flags &= !crate::veterancy::bonus_flag("GARRISONED");
         }
         let bone = (!data.exit_bone.is_empty()).then(|| self.logical_bone(container, &data.exit_bone)).flatten();
         let frame = self.frame;

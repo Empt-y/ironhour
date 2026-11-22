@@ -97,6 +97,8 @@ pub struct WeaponTemplate {
     pub pre_attack_delay: u32,
     /// `PreAttackType` (`PER_SHOT`, `PER_ATTACK`, `PER_CLIP`).
     pub pre_attack_type: u8,
+    /// `WeaponBonus` lines of this weapon (`getExtraBonus`).
+    pub extra_bonus: crate::veterancy::BonusSet,
     pub radius_damage_angle: f32,
     pub continue_range: f32,
     pub laser: bool,
@@ -134,6 +136,7 @@ impl WeaponTemplate {
             auto_reload: true,
             pre_attack_delay: 0,
             pre_attack_type: 0,
+            extra_bonus: Default::default(),
             radius_damage_angle: std::f32::consts::PI,
             continue_range: 0.0,
             laser: false,
@@ -226,6 +229,7 @@ impl WeaponTemplate {
             "ShotsPerBarrel" => self.shots_per_barrel = real(0) as i32,
             "AutoReloadsClip" => self.auto_reload = index_of("TheWeaponReloadNames", &first()) == Some(0),
             "PreAttackDelay" => self.pre_attack_delay = duration(real(0)),
+            "WeaponBonus" => self.extra_bonus.add_line(v),
             "PreAttackType" => self.pre_attack_type = index_of("TheWeaponPrefireNames", &first()).unwrap_or(0) as u8,
             "RadiusDamageAngle" => self.radius_damage_angle = real(0).to_radians(),
             "ContinueAttackRange" => self.continue_range = real(0),
@@ -236,7 +240,11 @@ impl WeaponTemplate {
     }
     /// `getAttackRange` with `RATIONALIZE_ATTACK_RANGE`.
     pub fn attack_range(&self) -> f32 {
-        (self.attack_range - UNDERSIZE).max(0.0)
+        self.attack_range_with(1.0)
+    }
+    /// `getAttackRange(bonus)`.
+    pub fn attack_range_with(&self, range_bonus: f32) -> f32 {
+        (self.attack_range * range_bonus - UNDERSIZE).max(0.0)
     }
     /// `getMinimumAttackRange`.
     pub fn minimum_range(&self) -> f32 {
@@ -548,7 +556,8 @@ impl Simulation {
         }
         // Contact weapons against structures need touching geometry (approximated
         // by the 2D boundary distance being zero).
-        if d2 <= wt.attack_range().powi(2) {
+        let range = wt.attack_range_with(self.weapon_bonus(id, wt)[crate::veterancy::RANGE]);
+        if d2 <= range.powi(2) {
             if wt.is_contact()
                 && let Some(v) = victim
                 && self.templates.objects[&self.objects[&v].template].has_kind("STRUCTURE")
@@ -666,16 +675,26 @@ impl Simulation {
     /// `preFireWeapon`.
     pub(crate) fn pre_fire(&mut self, id: u32, victim: Option<u32>) {
         let frame = self.frame;
+        let pre_bonus = {
+            let o = &self.objects[&id];
+            let cur = o.weapon_set.current as usize;
+            o.weapon_set.weapons[cur]
+                .as_ref()
+                .and_then(|w| self.templates.weapons.get(&w.template))
+                .map_or(1.0, |wt| self.weapon_bonus(id, wt)[crate::veterancy::PRE_ATTACK])
+        };
         let o = self.objects.get_mut(&id).unwrap();
         let cur = o.weapon_set.current as usize;
         let Some(w) = o.weapon_set.weapons[cur].as_mut() else { return };
         let Some(wt) = self.templates.weapons.get(&w.template) else { return };
         // getPreAttackDelay: per shot always, per attack on the first shot at a
         // victim, per clip on a full clip.
+        // getPreAttackDelay(bonus): Int = Real truncation.
+        let pre = (wt.pre_attack_delay as f32 * pre_bonus) as u32;
         let delay = match wt.pre_attack_type {
-            0 => wt.pre_attack_delay,
-            1 if w.last_fire_frame == 0 || victim.is_none() => wt.pre_attack_delay,
-            2 if wt.clip_size > 0 && w.ammo == wt.clip_size => wt.pre_attack_delay,
+            0 => pre,
+            1 if w.last_fire_frame == 0 || victim.is_none() => pre,
+            2 if wt.clip_size > 0 && w.ammo == wt.clip_size => pre,
             _ => 0,
         };
         if delay > 0 {
@@ -695,6 +714,7 @@ impl Simulation {
             return false;
         }
         let mut reloaded = false;
+        let rof = self.weapon_bonus(id, &wt)[crate::veterancy::RATE_OF_FIRE];
         if w.ammo > 0 {
             // One barrel per model until drawables report their FIRE bones.
             if w.barrel >= 1 {
@@ -716,7 +736,8 @@ impl Simulation {
                     w.ammo = if wt.clip_size > 0 { wt.clip_size } else { 0x7fff_ffff };
                     w.status = Status::ReloadingClip;
                     w.last_reload_started = frame;
-                    w.fire_again_frame = frame + wt.clip_reload;
+                    // getClipReloadTime(bonus)
+                    w.fire_again_frame = frame + (wt.clip_reload as f32 / rof).floor() as u32;
                     reloaded = true;
                 } else {
                     w.status = Status::OutOfAmmo;
@@ -730,6 +751,8 @@ impl Simulation {
                     self.rng.integer(wt.min_delay as i32, wt.max_delay as i32)
                 };
                 w.last_reload_started = frame;
+                // getDelayBetweenShots(bonus)
+                let delay = (delay as f32 / rof).floor() as i32;
                 w.fire_again_frame = frame + delay.max(0) as u32;
             }
         }
@@ -758,7 +781,8 @@ impl Simulation {
         let source = self.objects[&id].position;
         let victim_pos = victim.map_or(pos, |v| self.objects[&v].position);
         let d2 = self.attack_distance_sqr(id, None, victim, victim_pos);
-        if d2 > wt.attack_range().powi(2) {
+        let range = wt.attack_range_with(self.weapon_bonus(id, wt)[crate::veterancy::RANGE]);
+        if d2 > range.powi(2) {
             return;
         }
         if d2 < wt.minimum_range().powi(2) && !detonation {
@@ -839,12 +863,22 @@ impl Simulation {
         let source_alive = self.objects.contains_key(&source);
         let primary = self.objects.get(&victim).map(|o| o.id);
         let pos = primary.map_or(pos, |v| self.objects[&v].position);
-        let radius = wt.primary_radius.max(wt.secondary_radius);
         // A projectile's damage is credited to its launcher.
         let credit = self.objects.get(&source).map_or(source, |o| {
             o.flight.as_ref().map(|f| f.launcher).or(o.missile.as_ref().map(|m| m.launcher)).unwrap_or(source)
         });
         let info = |amount: f32| DamageInfo::new(credit, wt.damage_type, wt.death_type, amount);
+        // The bonus of whoever fired, as it is now (projectiles do not carry it).
+        let bonus = self.weapon_bonus(credit, wt);
+        let (p_radius, s_radius) = (
+            wt.primary_radius * bonus[crate::veterancy::RADIUS],
+            wt.secondary_radius * bonus[crate::veterancy::RADIUS],
+        );
+        let (p_damage, s_damage) = (
+            wt.primary_damage * bonus[crate::veterancy::DAMAGE],
+            wt.secondary_damage * bonus[crate::veterancy::DAMAGE],
+        );
+        let radius = p_radius.max(s_radius);
         let victims: Vec<(u32, f32)> = if radius > 0.0 {
             // iterateObjectsInRange(FROM_BOUNDINGSPHERE_3D), in object order.
             self.objects
@@ -912,10 +946,10 @@ impl Simulation {
             }
             let amount = if kill_self {
                 HUGE_DAMAGE_AMOUNT
-            } else if d2 <= wt.primary_radius * wt.primary_radius {
-                wt.primary_damage
+            } else if d2 <= p_radius * p_radius {
+                p_damage
             } else {
-                wt.secondary_damage
+                s_damage
             };
             self.attempt_damage(v, info(amount));
         }

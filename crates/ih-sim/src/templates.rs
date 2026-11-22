@@ -328,6 +328,10 @@ pub struct Templates {
     /// Bones of containers' pristine, damaged and really damaged models
     /// (`contain`), loaded with assets.
     pub condition_bones: BTreeMap<String, crate::bridges::ConditionBones>,
+    /// `GameData`'s `WeaponBonus` lines.
+    pub weapon_bonus: crate::veterancy::BonusSet,
+    /// `GameData`'s `HealthBonus_*` per veterancy level (100% each by default).
+    pub health_bonus: [f32; 4],
     /// `GameData`'s `MaxTunnelCapacity` (0).
     pub max_tunnel_capacity: i32,
     /// `GameData`'s `SellPercentage` (100%).
@@ -448,6 +452,25 @@ impl Templates {
             height_variation: global(defs, "GameData", "AllowedHeightVariationForBuilding").unwrap_or(0.0),
             min_edge_distance: global(defs, "GameData", "MinDistFromEdgeOfMapForBuild").unwrap_or(0.0),
         };
+        for b in defs.all("GameData", "") {
+            for f in b.fields().filter(|f| f.name.eq_ignore_ascii_case("WeaponBonus")) {
+                out.weapon_bonus.add_line(&f.values());
+            }
+        }
+        out.health_bonus = [1.0; 4];
+        for (i, key) in ["HealthBonus_Veteran", "HealthBonus_Elite", "HealthBonus_Heroic"].into_iter().enumerate() {
+            let pct = defs
+                .all("GameData", "")
+                .iter()
+                .rev()
+                .find_map(|b| b.fields().filter(|f| f.name.eq_ignore_ascii_case(key)).last().map(|f| f.values()))
+                .and_then(|v| {
+                    v.first().and_then(|s| ih_ini::values::scan_real(s.trim_end_matches('%').as_bytes()).ok())
+                });
+            if let Some(p) = pct {
+                out.health_bonus[i + 1] = p / 100.0;
+            }
+        }
         out.max_tunnel_capacity = global(defs, "GameData", "MaxTunnelCapacity").map_or(0, |v| v as i32);
         // INI::parsePercentToReal
         out.sell_percentage = defs
@@ -496,6 +519,14 @@ impl Templates {
         for name in defs.names("Upgrade") {
             let blocks: Vec<&ih_ini::Block> = defs.all("Upgrade", name).iter().collect();
             out.upgrades.insert(name.clone(), crate::upgrades::UpgradeTemplate::parse(name, default.as_ref(), &blocks));
+        }
+        // UpgradeCenter::init: per-object veterancy upgrades.
+        for level in &crate::veterancy::LEVELS[1..] {
+            let name = format!("Upgrade_Veterancy_{level}");
+            out.upgrades.insert(
+                name.clone(),
+                crate::upgrades::UpgradeTemplate { name, object: true, build_time: 0.0, cost: 0 },
+            );
         }
         for name in defs.names("Weapon") {
             let blocks: Vec<&ih_ini::Block> = defs.all("Weapon", name).iter().collect();

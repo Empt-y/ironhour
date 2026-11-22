@@ -82,6 +82,8 @@ pub enum Effect {
     },
     GrantScience(String),
     WeaponBonus,
+    /// `ExperienceScalarUpgrade`'s `AddXPScalar`.
+    ExperienceScalar(f32),
     /// Not ported yet; the module still counts as executed.
     Other,
 }
@@ -131,6 +133,7 @@ impl UpgradeModuleDef {
         let (mut to_set, mut to_clear) = (0u64, 0u64);
         let (mut kinds, mut percent) = (vec![], 0.0);
         let mut science = String::new();
+        let mut xp = 0.0;
         for f in b.fields() {
             let v = f.values();
             let first = v.first().cloned().unwrap_or_default();
@@ -159,6 +162,7 @@ impl UpgradeModuleDef {
                     percent = ih_ini::values::scan_real(first.trim_end_matches('%').as_bytes()).unwrap_or(0.0) / 100.0
                 }
                 "GrantScience" => science = first,
+                "AddXPScalar" => xp = ih_ini::values::scan_real(first.as_bytes()).unwrap_or(0.0),
                 _ => {}
             }
         }
@@ -172,6 +176,7 @@ impl UpgradeModuleDef {
             "CostModifierUpgrade" => Effect::CostModifier { kinds, percent },
             "GrantScienceUpgrade" => Effect::GrantScience(science),
             "WeaponBonusUpgrade" => Effect::WeaponBonus,
+            "ExperienceScalarUpgrade" => Effect::ExperienceScalar(xp),
             _ => Effect::Other,
         };
         Some(d)
@@ -372,14 +377,19 @@ impl Simulation {
                 let owner = self.objects[&id].owner;
                 self.player(owner).sciences.insert(s.clone());
             }
-            Effect::WeaponBonus => self.objects.get_mut(&id).unwrap().upgrades.weapon_bonus = true,
+            Effect::WeaponBonus => {
+                let o = self.objects.get_mut(&id).unwrap();
+                o.upgrades.weapon_bonus = true;
+                o.bonus_flags |= crate::veterancy::bonus_flag("PLAYER_UPGRADE");
+            }
+            Effect::ExperienceScalar(x) => self.objects.get_mut(&id).unwrap().experience.scalar += x,
             // The power bonus is read from the executed module (`power_bonus`).
             Effect::PowerPlant | Effect::Other => {}
         }
     }
 
     /// `ActiveBody::setMaxHealth` by the upgrade's amount.
-    fn set_max_health(&mut self, id: u32, add: f32, change: HealthChange) {
+    pub(crate) fn set_max_health(&mut self, id: u32, add: f32, change: HealthChange) {
         let Some(h) = self.objects.get_mut(&id).unwrap().health.as_mut() else { return };
         let prev = h.max;
         let max = prev + add;
