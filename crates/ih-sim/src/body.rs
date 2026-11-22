@@ -345,6 +345,8 @@ pub enum DieKind {
     SlowDeath(Box<crate::death::SlowDeathData>),
     /// `CreateObjectDie`: an object creation list, optionally passing on the damage taken.
     CreateObject { mux: DieMux, ocl: String, transfer_health: bool },
+    /// `CreateCrateDie`: `CrateData` names, tried in order (`crates`).
+    CreateCrate { mux: DieMux, crates: Vec<String> },
 }
 impl DieKind {
     pub fn from_module(class: &str, block: &ih_ini::Block, templates: &crate::templates::Templates) -> Option<Self> {
@@ -359,6 +361,14 @@ impl DieKind {
                         .is_some_and(|v| v.first().is_some_and(|s| s.eq_ignore_ascii_case("yes"))),
                 })
             }
+            "CreateCrateDie" => Some(DieKind::CreateCrate {
+                mux: DieMux::parse(block),
+                crates: block
+                    .fields()
+                    .filter(|f| f.name == "CrateData")
+                    .filter_map(|f| f.values().first().cloned())
+                    .collect(),
+            }),
             "SlowDeathBehavior" => {
                 Some(DieKind::SlowDeath(Box::new(crate::death::SlowDeathData::parse(block, &|kind, name| {
                     templates.effects.contains(&(kind.to_string(), name.to_string()))
@@ -630,6 +640,10 @@ impl Simulation {
                     }
                 }
                 DieKind::CreateObject { .. } => {}
+                DieKind::CreateCrate { mux, crates } if mux.applies(info.death_type, status) => {
+                    self.create_crate_die(id, &crates, info.source);
+                }
+                DieKind::CreateCrate { .. } => {}
             }
         }
     }
@@ -671,7 +685,7 @@ pub fn module_kind(m: &crate::templates::ModuleDef) -> Option<ModuleKind> {
         return Some(ModuleKind::Body);
     }
     match m.class.as_str() {
-        "DestroyDie" | "CreateObjectDie" => Some(ModuleKind::Die),
+        "DestroyDie" | "CreateObjectDie" | "CreateCrateDie" => Some(ModuleKind::Die),
         "SlowDeathBehavior" => Some(ModuleKind::SlowDeath),
         _ => None,
     }

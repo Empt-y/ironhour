@@ -2034,3 +2034,69 @@ Asset-free fixtures: `1ff4cac75292d408` (ground), `e6e7a3fa22ae6f0d` (bridge),
 prerequisites and points, a power that needs a science and reloads, a shared
 timer across two buildings, a cash hack, a cash bounty and determinism. In
 stock `m5-fight`, player 1 earns 120 skill points from its kills.
+
+### Crates and radar (state hash v36)
+
+From `CrateSystem.cpp`, `CreateCrateDie.cpp`, `CrateCollide.cpp`,
+`MoneyCrateCollide.cpp`, `HealCrateCollide.cpp`, `UnitCrateCollide.cpp`,
+`VeterancyCrateCollide.cpp`, `ExperienceTracker::gainExpForLevel`,
+`RadarUpgrade.cpp` and `Player::addRadar`/`removeRadar`/`hasRadar`:
+`crates/ih-sim/src/crates.rs`.
+
+- `CreateCrateDie` (with its die filters) tries each `CrateData` in order,
+  unless an ally made the kill: it always draws `CreationChance`, then checks
+  `VeterancyLevel`, `KilledByType` and `KillerScience`, picks a `CrateObject`
+  by weight and places it near the body (5 then 125 units out) with a random
+  facing. Crates are neutral unless `OwnedByMaker`.
+- Anything that touches a crate tries to pick it up (crates have no
+  locomotor, so they get their own contact pass after the traffic collisions).
+  It must be non-neutral, have an AI (or be a building with
+  `BuildingPickup`), match the kind-of filters, be alive, and meet
+  `ForbidOwnerPlayer` and `PickupScience`. The crate must be on the ground
+  and its picker not a parachute. Used crates are destroyed.
+  - Money: `MoneyProvided`, plus an `UpgradedBoost` for a completed upgrade.
+  - Heal: heals every object of the player.
+  - Unit: `UnitCount` of `UnitType` around the picker.
+  - Veterancy: levels for the picker or everyone of its side within
+    `EffectRange`. As in the original, it only acts when the crate's own AI
+    is heading for that object, so only pilot-style crates work.
+- `RadarUpgrade` counts a radar for its player (`DisableProof` ones
+  separately), removed when the building goes; `has_radar` reads the count.
+- sim-run prints whether each player has radar.
+- Not yet: salvage crates (need the GLA side science from player
+  templates), shroud, sabotage and car-bomb crates, the computer player's
+  crate hunting, parachutes, FX and animations, radar loss during power
+  outages, and script-disabled radar.
+
+All scenarios pass with v36 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `851712c37617d264` | `b656dc43b686d426` |
+| AI/status orders | `29a41c8229b1474d` | `a217c92f5beeac90` |
+| Bridges | `a2abfebb3077b9da` | `ed6c63e8df113c88` |
+| Traffic, Tournament Desert | `93b78aa006ee1764` | `1012108bf20f202f` |
+| Traffic, Winding River | `810257ee392b1410` | `b10879c1ac6f34ca` |
+| Long map travel | `3e8d6a49194076ae` | `0e924ec9c61bcfd9` |
+| Crush enemy / crush ally | `6087c1b510317394` / `96fec04d0f4ab4c7` | |
+| Comanche out and back | `85d398f4e4e3fc70` | `0c79e3710c771f29` |
+| Group move (`m4-group`) | `9737715850a2809f` |  |
+| `m5-construction` | `ea5782dcf6972976` | |
+| `m5-fight` | `c09c86456fc12ac2` | |
+| `m5-garrison` | `309886b9ed359be8` | |
+| `m5-guard` | `28964f33e18f0a2b` | |
+| `m5-missiles` | `806cbcb1bca45f28` | |
+| `m5-production` | `2482ba7266e428ea` | |
+| `m5-repair-sell` | `8deddc1f3920dfc6` | |
+| `m5-skirmish` | `7406214593905de7` | |
+| `m5-stealth` | `e7da3946557882cf` | |
+| `m5-supply` | `fb1d764368f35fdc` | |
+| `m5-transports` | `527c1e3ac8eaaee2` | |
+| `m5-tunnels` | `2fca91efee3291f2` | |
+| `m5-upgrades` | `425dad8fff19bfdb` | |
+
+Asset-free fixtures: `440fe03debd2780f` (ground), `9baf5630b40e979e` (bridge),
+`c2c7d62797b37145` (head-on traffic), `359c23ced05f1d6c` (AI/status orders).
+`tests/crates.rs` covers a kill dropping a neutral money crate (and not the
+conditional ones) that pays the unit that drives over it, heal and unit
+crates, radar from an upgrade lost with its building, and determinism.

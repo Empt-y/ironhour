@@ -199,8 +199,12 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     for (id, p) in a.players.iter().filter(|(id, _)| **id != 0) {
         let g = &p.generals;
         println!(
-            "  player {id} rank {}, skill points {}, purchase points {}, sciences {:?}",
-            g.rank, g.skill_points, g.purchase_points, p.sciences
+            "  player {id} rank {}, skill points {}, purchase points {}, radar {}, sciences {:?}",
+            g.rank,
+            g.skill_points,
+            g.purchase_points,
+            a.has_radar(*id),
+            p.sciences
         );
     }
     for (id, p) in &a.players {

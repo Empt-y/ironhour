@@ -336,6 +336,8 @@ pub struct Templates {
     pub sciences: BTreeMap<String, crate::sciences::ScienceInfo>,
     /// `Rank` definitions, rank 1 first.
     pub ranks: Vec<crate::sciences::RankInfo>,
+    /// `CrateData` definitions (`crates`).
+    pub crates: BTreeMap<String, crate::crates::CrateTemplate>,
     /// `SpecialPower` definitions.
     pub special_powers: BTreeMap<String, crate::sciences::SpecialPowerTemplate>,
     /// `GameData`'s `WeaponBonus` lines.
@@ -540,6 +542,7 @@ impl Templates {
             );
         }
         (out.sciences, out.ranks, out.special_powers) = crate::sciences::load(defs);
+        out.crates = crate::crates::load(defs);
         for name in defs.names("ObjectCreationList") {
             if let Some(b) = defs.all("ObjectCreationList", name).last() {
                 out.ocls.insert(name.clone(), crate::ocl::parse(b));

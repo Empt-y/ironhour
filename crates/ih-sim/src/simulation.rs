@@ -217,6 +217,8 @@ pub enum ModuleKind {
     Stealth,
     /// A special power module (`sciences::Power`): not updated.
     SpecialPower,
+    /// A crate collide module (`crates::CrateCollide`): runs on collisions.
+    Collide,
     /// `StealthDetectorUpdate` (`stealth`).
     StealthDetector,
     Steering,
@@ -334,6 +336,8 @@ pub struct Object {
     pub look_key: Option<crate::shroud::LookKey>,
     /// Special power modules, in module order (`sciences`).
     pub powers: Vec<crate::sciences::Power>,
+    /// The crate collide module (`crates`).
+    pub crate_collide: Option<crate::crates::CrateCollide>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -578,6 +582,7 @@ impl Simulation {
         let mut modules = vec![];
         let (mut stealth, mut detector) = (None, None);
         let mut powers = vec![];
+        let mut crate_collide = None;
         for m in t.modules.iter().filter(|m| matches!(m.kind.as_str(), "Behavior" | "Body")) {
             let known = ih_ini::schema::MODULES.iter().find(|d| d.name == m.class);
             let kind = if let Some(k) = crate::body::module_kind(m) {
@@ -598,6 +603,9 @@ impl Simulation {
                 ModuleKind::Lifetime
             } else if m.class == "StealthUpdate" {
                 ModuleKind::Stealth
+            } else if let Some(c) = crate::crates::CrateCollide::from_module(&m.class, &m.block) {
+                crate_collide = Some(c);
+                ModuleKind::Collide
             } else if let Some(p) = crate::sciences::Power::from_module(&m.class, &m.block) {
                 powers.push(p);
                 ModuleKind::SpecialPower
@@ -786,6 +794,7 @@ impl Simulation {
                 reveal_all_look: None,
                 look_key: None,
                 powers,
+                crate_collide,
             },
         );
         self.stealth_created(id);
@@ -1324,7 +1333,8 @@ impl Simulation {
                 | ModuleKind::Dock
                 | ModuleKind::Contain
                 | ModuleKind::Lifetime
-                | ModuleKind::SpecialPower => 0,
+                | ModuleKind::SpecialPower
+                | ModuleKind::Collide => 0,
             };
             if !self.objects[&id].disabled.allows_module(exceptions) {
                 self.scheduler.reschedule((id, index), self.frame.saturating_add(1));
@@ -1359,7 +1369,11 @@ impl Simulation {
                 ModuleKind::Lifetime => self.lifetime_update(id),
                 ModuleKind::Stealth => self.stealth_update(id),
                 ModuleKind::StealthDetector => self.detector_update(id),
-                ModuleKind::Stub | ModuleKind::Body | ModuleKind::Die | ModuleKind::SpecialPower => FOREVER,
+                ModuleKind::Stub
+                | ModuleKind::Body
+                | ModuleKind::Die
+                | ModuleKind::SpecialPower
+                | ModuleKind::Collide => FOREVER,
             };
             self.update_pos(id);
             self.scheduler.reschedule((id, index), self.frame.saturating_add(delay.max(1)));
@@ -1907,6 +1921,25 @@ impl Simulation {
                 self.on_collide(x, y);
             }
         }
+        // CrateCollide: crates have no locomotor, so they are not traffic
+        // colliders; whatever touches one picks it up.
+        let crates: Vec<u32> = self.objects.values().filter(|o| o.crate_collide.is_some()).map(|o| o.id).collect();
+        for c in crates {
+            if !self.objects.contains_key(&c) || self.objects[&c].contained_by.is_some() {
+                continue;
+            }
+            let cc = Collider { enabled: true, ..self.collider(c) };
+            let mut touching: Vec<u32> = self
+                .nearby(c, traffic::CONTACT_RANGE)
+                .into_iter()
+                .filter(|o| self.objects[&o.id].contained_by.is_none() && traffic::contact(cc, *o))
+                .map(|o| o.id)
+                .collect();
+            touching.sort_unstable();
+            for other in touching {
+                self.crate_collide(c, other);
+            }
+        }
         for (victim, crusher) in squished {
             // SquishCollide: HUGE_DAMAGE_AMOUNT of DAMAGE_CRUSH.
             self.crushed.push((self.frame, victim, crusher));
@@ -2446,7 +2479,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(35);
+        h.u32(36);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2718,6 +2751,8 @@ impl Simulation {
                 h.u32(v as u32);
             }
             h.float(g.skill_modifier);
+            h.u32(p.radar.0 as u32);
+            h.u32(p.radar.1 as u32);
             h.float(g.cash_bounty);
             for (t, f) in &g.shared_timers {
                 h.text(t);
@@ -3426,7 +3461,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x1ff4cac75292d408, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x440fe03debd2780f, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3662,7 +3697,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xe30b8b614c47439a, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0xc2c7d62797b37145, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3754,7 +3789,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xe6e7a3fa22ae6f0d, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x9baf5630b40e979e, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

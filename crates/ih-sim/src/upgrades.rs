@@ -76,6 +76,10 @@ pub enum Effect {
         clear: u64,
     },
     PowerPlant,
+    /// `RadarUpgrade`.
+    Radar {
+        disable_proof: bool,
+    },
     CostModifier {
         kinds: Vec<String>,
         percent: f32,
@@ -134,6 +138,7 @@ impl UpgradeModuleDef {
         let (mut set, mut alt, mut trigger_alt) = (String::new(), String::new(), String::new());
         let (mut to_set, mut to_clear) = (0u64, 0u64);
         let (mut kinds, mut percent) = (vec![], 0.0);
+        let mut disable_proof = false;
         let mut science = String::new();
         let mut xp = 0.0;
         let mut ocl = String::new();
@@ -161,6 +166,7 @@ impl UpgradeModuleDef {
                 "StatusToClear" => to_clear = status_bits(&v),
                 "EffectKindOf" => kinds = v,
                 // INI::parsePercentToReal
+                "DisableProof" => disable_proof = first.eq_ignore_ascii_case("yes"),
                 "Percentage" => {
                     percent = ih_ini::values::scan_real(first.trim_end_matches('%').as_bytes()).unwrap_or(0.0) / 100.0
                 }
@@ -179,6 +185,7 @@ impl UpgradeModuleDef {
             // StealthUpgrade: the object may stealth from now on.
             "StealthUpgrade" => Effect::StatusBits { set: crate::stealth::bits().can_stealth, clear: 0 },
             "PowerPlantUpgrade" => Effect::PowerPlant,
+            "RadarUpgrade" => Effect::Radar { disable_proof },
             "CostModifierUpgrade" => Effect::CostModifier { kinds, percent },
             "GrantScienceUpgrade" => Effect::GrantScience(science),
             "WeaponBonusUpgrade" => Effect::WeaponBonus,
@@ -396,6 +403,10 @@ impl Simulation {
             }
             // The power bonus is read from the executed module (`power_bonus`).
             Effect::PowerPlant | Effect::Other => {}
+            Effect::Radar { disable_proof } => {
+                let owner = self.objects[&id].owner;
+                self.change_radar(owner, *disable_proof, true);
+            }
         }
     }
 
@@ -419,6 +430,23 @@ impl Simulation {
     pub(crate) fn upgrades_on_delete(&mut self, id: u32) {
         let Some(o) = self.objects.get(&id) else { return };
         let owner = o.owner;
+        // RadarUpgrade::onDelete (not while disabled).
+        let radars: Vec<bool> = o
+            .upgrades
+            .modules
+            .iter()
+            .zip(&o.upgrades.executed)
+            .filter_map(|(m, e)| match m.effect {
+                Effect::Radar { disable_proof } if *e => Some(disable_proof),
+                _ => None,
+            })
+            .collect();
+        if !o.disabled.any() {
+            for dp in radars {
+                self.change_radar(owner, dp, false);
+            }
+        }
+        let Some(o) = self.objects.get(&id) else { return };
         let changes: Vec<(Vec<String>, f32)> = o
             .upgrades
             .modules

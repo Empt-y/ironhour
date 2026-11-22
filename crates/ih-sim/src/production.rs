@@ -35,6 +35,8 @@ pub struct Player {
     pub tunnels: crate::contain::TunnelTracker,
     /// Rank, skill and science purchase points, shared power timers (`sciences`).
     pub generals: crate::sciences::Generals,
+    /// `m_radarCount` and `m_disableProofRadarCount` (`crates`).
+    pub radar: (i32, i32),
 }
 impl Player {
     /// `Money::withdraw`: no more than the balance; returns what was taken.
