@@ -311,6 +311,8 @@ pub struct Templates {
     pub weapons: BTreeMap<String, crate::weapons::WeaponTemplate>,
     /// `GameData`'s `PartitionCellSize` (the original's default is 0, used as 1).
     pub partition_cell_size: f32,
+    /// `GameData`'s `UnlookPersistDuration` in frames (the original's default is 30).
+    pub unlook_persist: u32,
     /// `AIData` targeting and guard values.
     pub ai: crate::targeting::AiData,
     /// `GameData` production values.
@@ -424,6 +426,7 @@ impl Templates {
             out.effects.extend(defs.names(kind).map(|n| (kind.to_string(), n.clone())));
         }
         out.partition_cell_size = global(defs, "GameData", "PartitionCellSize").unwrap_or(0.0);
+        out.unlook_persist = global(defs, "GameData", "UnlookPersistDuration").map_or(30, crate::death::duration);
         let a = crate::targeting::AiData::default();
         let ms = |key: &str, d: u32| global(defs, "AIData", key).map_or(d, crate::death::duration);
         let flag = |key: &str, d: bool| {

@@ -443,6 +443,17 @@ impl Simulation {
         }
     }
 
+    /// The same rule between two players (`Player::getRelationship`).
+    pub fn players_relationship(&self, a: u32, b: u32) -> Relationship {
+        if a == b {
+            Relationship::Allies
+        } else if a == 0 || b == 0 {
+            Relationship::Neutral
+        } else {
+            Relationship::Enemies
+        }
+    }
+
     pub(crate) fn weapon_template(&self, name: &str) -> Option<&WeaponTemplate> {
         self.templates.weapons.get(name)
     }

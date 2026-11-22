@@ -23,6 +23,7 @@ pub mod projectiles;
 pub mod rng;
 pub mod scenario;
 pub mod scheduler;
+pub mod shroud;
 pub mod simulation;
 pub mod state_hash;
 pub mod stealth;

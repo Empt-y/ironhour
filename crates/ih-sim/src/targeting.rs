@@ -195,6 +195,11 @@ impl Simulation {
             if self.hidden_from(id, other) {
                 continue;
             }
+            // FreeOfFog: a human player's units only pick targets they can see.
+            let me = self.objects[&id].owner;
+            if self.shrouded_status(other, me) != crate::shroud::Visibility::Clear {
+                continue;
+            }
             let d2 = self.attack_distance_sqr(id, None, Some(other), o.position);
             if d2 > range * range {
                 continue;

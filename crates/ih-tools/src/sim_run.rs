@@ -167,6 +167,15 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
             s.detection_expires
         );
     }
+    for (player, grid) in &a.shroud.grids {
+        let clear = grid.iter().filter(|c| c.0 < 0).count();
+        let fogged = grid.iter().filter(|c| c.0 == 0).count();
+        println!(
+            "  player {player} shroud: {clear} clear, {fogged} fogged, {} shrouded of {} cells",
+            grid.len() - clear - fogged,
+            grid.len()
+        );
+    }
     for (id, p) in a.players.iter().filter(|(_, p)| !p.tunnels.tunnels.is_empty()) {
         println!("  player {id} tunnels {:?} hold {:?}", p.tunnels.tunnels, p.tunnels.riders);
     }

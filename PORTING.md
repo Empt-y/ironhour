@@ -1892,3 +1892,69 @@ unit and refusing an order to attack it, a detector revealing it so the guard
 fires, moving and firing revealing it, and determinism. In stock
 `m5-stealth`, Colonel Burton hides from a Ranger beside him until a Scout
 Drone's detector reveals him, then takes fire.
+
+### Shroud and fog (state hash v34)
+
+From `PartitionCell::addLooker`/`removeLooker`/`getShroudStatusForPlayer`,
+`PartitionManager::doShroudReveal`, `undoShroudReveal`, `queueUndoShroudReveal`
+and `processPendingUndoShroudRevealQueue`, `DiscreteCircle.cpp`,
+`PartitionData::doCircleFill`/`doSmallFill`/`getShroudedStatus`,
+`Object::look`/`unlook`/`handleShroud`/`getShroudClearingRange`, and
+`PartitionFilterFreeOfFog`: `crates/ih-sim/src/shroud.rs`.
+
+- Each player has a level per partition cell (`PartitionCellSize`, 40 when a
+  test fixture leaves it out): 1 shrouded, 0 fogged, below 0 clear (one less
+  per looker). Every map starts shrouded.
+- An object looks over `ShroudClearingRange` (default: its vision range; its
+  bounding radius while under construction) for its owner and allies, or for
+  everyone with `REVEAL_TO_ALL`. `ShroudRevealToAllRange` reveals to
+  non-allies unless the object is stealthed and undetected. Nothing looks
+  from inside a transport or tunnel; garrisoned units do.
+- An object looks again when it enters another cell, changes owner, enters
+  or leaves a container, dies, starts or finishes construction, or changes
+  stealth status. Each old look is undone `UnlookPersistDuration` later, so
+  fog closes in behind a moving unit.
+- An object counts as clear to a player if any cell it covers is clear,
+  fogged if none is clear but some are fogged, and shrouded otherwise.
+  `ALWAYS_VISIBLE` objects and passengers are always clear.
+- Fog never blocks an attack (the original dropped that check), but a human
+  player's units only auto-target enemies that are clear to them. Every
+  player is human until player types exist.
+- sim-run prints each player's clear, fogged and shrouded cell counts.
+- Not yet: shrouders (GPS scramblers), map reveals and observers (scripts),
+  spied vision, box geometry (covered as a circle of the bounding radius),
+  threat and value maps, and the client side (drawing, ghost objects).
+
+All scenarios pass with v34 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `ed6acf9f6f0a65be` | `bef4bf9774b258a8` |
+| AI/status orders | `ec15ffa0816ddc4b` | `6b6e002a6c0e2d22` |
+| Bridges | `21ba129d1c2334db` | `c3409c8b945e3ab3` |
+| Traffic, Tournament Desert | `7e23eae6df473589` | `dea5bdf21d619086` |
+| Traffic, Winding River | `3148663b5eeccf07` | `69068354c58320d7` |
+| Long map travel | `78b67274b6a152c3` | `3ade076c00f9741c` |
+| Crush enemy / crush ally | `0ec4a25a2507d6a1` / `bd36a15e2190da7d` | |
+| Comanche out and back | `a0daa5a6b8394d66` | `e44fc1c7914eb29d` |
+| Group move (`m4-group`) | `e12a76290d20fe2b` |  |
+| `m5-construction` | `703ccc470ca18495` | |
+| `m5-fight` | `884e69494b9a7494` | |
+| `m5-garrison` | `58ac686fa3fd376e` | |
+| `m5-guard` | `ac46aa6b7f0780c5` | |
+| `m5-missiles` | `a18964a8d4742426` | |
+| `m5-production` | `13f577fa2e215289` | |
+| `m5-repair-sell` | `277b16fdb945e315` | |
+| `m5-skirmish` | `de46e4cdd6eaa8c2` | |
+| `m5-stealth` | `771488d73ba4b3a2` | |
+| `m5-supply` | `e84b45763409b8b2` | |
+| `m5-transports` | `c7ec8d55c2e8fbfb` | |
+| `m5-tunnels` | `d8397ae2cf1b9946` | |
+| `m5-upgrades` | `1bcc653dc70eaea4` | |
+
+Asset-free fixtures: `7ca735eeb9c78ead` (ground), `1b9523b623e4838c` (bridge),
+`9698feb644191d73` (head-on traffic), `7be23028ea7345a2` (AI/status orders).
+`tests/shroud.rs` covers the discrete circle, clearing for one side only,
+fog returning after the persist time, auto-targeting only what the side can
+see (until an allied scout reveals it), and determinism. The garrison test's
+transport gained a vision range, since passengers see through their transport.

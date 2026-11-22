@@ -467,7 +467,7 @@ impl Simulation {
                     o.id != id
                         && !o.dead
                         && o.modules.iter().any(|m| m.kind == ModuleKind::Steering)
-                        && self.player_relationship(o.owner, self.objects[&id].owner) == Relationship::Enemies
+                        && self.players_relationship(o.owner, self.objects[&id].owner) == Relationship::Enemies
                 })
                 .map(|o| o.id)
                 .collect();

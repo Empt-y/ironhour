@@ -306,6 +306,11 @@ pub struct Object {
     pub stealth: Option<crate::stealth::Stealth>,
     /// `StealthDetectorUpdate`.
     pub detector: Option<crate::stealth::Detector>,
+    /// `m_partitionLastLook` and `m_partitionRevealAllLastLook` (`shroud`).
+    pub look: Option<crate::shroud::Look>,
+    pub reveal_all_look: Option<crate::shroud::Look>,
+    /// What the last look was taken with (`shroud::LookKey`).
+    pub look_key: Option<crate::shroud::LookKey>,
 }
 impl Object {
     pub fn is_idle(&self) -> bool {
@@ -348,10 +353,16 @@ pub struct Simulation {
     pub sell_list: Vec<(u32, u32)>,
     /// Players by index (`production::Player`), created on first use.
     pub players: BTreeMap<u32, crate::production::Player>,
+    /// Every player's shroud (`shroud`).
+    pub shroud: crate::shroud::Shroud,
 }
 impl Simulation {
     pub fn new(map: Arc<Map>, templates: Arc<Templates>, seed: u32) -> Self {
         let grid = Terrain::from_map(&map, &templates);
+        let shroud = crate::shroud::Shroud::new(
+            templates.partition_cell_size,
+            [grid.width as f32 * CELL, grid.height as f32 * CELL],
+        );
         // One view per distinct locomotor surface mask that sees the cells differently.
         let mut views = BTreeMap::new();
         for t in templates.objects.values() {
@@ -465,6 +476,7 @@ impl Simulation {
             delayed_damage: Vec::new(),
             players: BTreeMap::new(),
             sell_list: Vec::new(),
+            shroud,
         }
     }
     pub fn spawn(&mut self, name: &str, p: [f32; 2], owner: u32) -> Result<u32, SimError> {
@@ -743,6 +755,9 @@ impl Simulation {
                 die_frame: None,
                 stealth,
                 detector,
+                look: None,
+                reveal_all_look: None,
+                look_key: None,
             },
         );
         self.stealth_created(id);
@@ -1234,6 +1249,7 @@ impl Simulation {
             self.upgrades_on_delete(id);
             self.remove_from_pathfind_map(id);
         }
+        self.shroud_on_remove(id);
         let o = self.objects.remove(&id).ok_or_else(|| SimError(format!("object {id} is missing")))?;
         for i in 0..o.modules.len() {
             self.scheduler.remove((id, i));
@@ -1311,6 +1327,8 @@ impl Simulation {
             self.update_pos(id);
             self.scheduler.reschedule((id, index), self.frame.saturating_add(delay.max(1)));
         }
+        // ThePartitionManager->update(): looks, then due un-looks.
+        self.update_shroud();
         let mut awakened = Vec::new();
         for o in self.objects.values_mut() {
             if o.disabled.expire(self.frame) && o.ai.active() {
@@ -2391,13 +2409,24 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(33);
+        h.u32(34);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
         h.u64(self.sequence);
         h.u32(self.failed_orders);
         h.u32(self.move_asides);
+        for (p, g) in &self.shroud.grids {
+            h.u32(*p);
+            for (c, a) in g {
+                h.u32(*c as u32);
+                h.u32(*a as u32);
+            }
+        }
+        h.u64(self.shroud.pending.len() as u64);
+        for (f, _) in &self.shroud.pending {
+            h.u32(*f);
+        }
         h.u64(self.crushed.len() as u64);
         for (f, v, c) in &self.crushed {
             h.u32(*f);
@@ -3326,7 +3355,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0xc0152113b75327cd, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0x7ca735eeb9c78ead, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3562,7 +3591,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xa8e0f2f6de2e439d, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x9698feb644191d73, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3654,7 +3683,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0xcbde734037fae148, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0x1b9523b623e4838c, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

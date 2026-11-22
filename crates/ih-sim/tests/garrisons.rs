@@ -10,7 +10,7 @@ Object House\nKindOf = STRUCTURE IMMOBILE\nGeometry = BOX\nGeometryMajorRadius =
 Body = ActiveBody Body\nMaxHealth = 1000\nInitialHealth = 1000\nEnd\n\
 Behavior = GarrisonContain Garrison\nContainMax = 2\nDamagePercentToUnits = 10%\nEnd\n\
 Behavior = DestroyDie Die\nEnd\nEnd\n\
-Object Humvee\nKindOf = VEHICLE TRANSPORT\nLocomotor = SET_NORMAL L\nGeometryMajorRadius = 10\n\
+Object Humvee\nKindOf = VEHICLE TRANSPORT\nLocomotor = SET_NORMAL L\nGeometryMajorRadius = 10\nVisionRange = 200\n\
 Behavior = AIUpdateInterface AI\nEnd\nBehavior = PhysicsBehavior P\nEnd\n\
 Behavior = TransportContain Contain\nSlots = 5\nPassengersAllowedToFire = Yes\nEnd\nEnd\n\
 Object Soldier\nKindOf = INFANTRY\nTransportSlotCount = 1\nLocomotor = SET_NORMAL L\nGeometryMajorRadius = 3\nVisionRange = 200\n\
