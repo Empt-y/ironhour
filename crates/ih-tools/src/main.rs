@@ -498,7 +498,15 @@ fn main() -> Result<()> {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
             let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
-            let images = ih_ui::draw::mapped_images(&defs);
+            let (strings, _) = load_strings(&vfs, &language)?;
+            let fallback = Installs::locate().zero_hour.clone();
+            let mut res = ih_ui::draw::Resources {
+                images: ih_ui::draw::mapped_images(&defs),
+                headers: ih_ui::draw::header_templates(&defs),
+                strings: Box::new(move |l| strings.text(l).map_or_else(|| format!("MISSING: '{l}'"), str::to_string)),
+                fonts: ih_ui::text::Fonts::new(ih_ui::text::system_font_source(fallback)),
+                default_font: ih_ui::text::FontSpec { name: "Times New Roman".into(), points: 14, bold: false },
+            };
             let path = if name.to_ascii_lowercase().starts_with("window\\") {
                 name.clone()
             } else {
@@ -508,15 +516,16 @@ fn main() -> Result<()> {
             let layout = ih_formats::wnd::parse(&bytes)?;
             let mut ui = ih_ui::WindowManager::new([*width as i32, *height as i32]);
             ui.load(&layout);
-            let list = ui.draw_list(&images);
+            let list = ui.draw_list(&mut res);
+            let images = &res.images;
             let quads: Vec<ih_render::ui::UiQuad> = list
                 .iter()
                 .map(|c| match c {
-                    ih_ui::draw::DrawCmd::Image { texture, uv, rect } => ih_render::ui::UiQuad {
+                    ih_ui::draw::DrawCmd::Image { texture, uv, rect, color } => ih_render::ui::UiQuad {
                         texture: Some(texture.clone()),
-                        rect: rect.map(|v| v as f32),
+                        rect: *rect,
                         uv: *uv,
-                        color: [1.0; 4],
+                        color: color.map(|c| f32::from(c) / 255.0),
                     },
                     ih_ui::draw::DrawCmd::Fill { rect, color } => ih_render::ui::UiQuad {
                         texture: None,
@@ -528,6 +537,8 @@ fn main() -> Result<()> {
                 .collect();
             let mut assets = ih_render::Assets::new(&vfs, &language);
             let mut r = ih_render::Renderer::new()?;
+            let size = res.fonts.atlas_size;
+            r.set_texture_rgba(ih_ui::text::ATLAS, size, size, res.fonts.atlas.clone());
             let rgba = r.render_ui(&mut assets, &quads, (*width, *height));
             write_png(out, *width, *height, &rgba)?;
             let images_drawn = list.iter().filter(|c| matches!(c, ih_ui::draw::DrawCmd::Image { .. })).count();

@@ -25,6 +25,7 @@ winreg = "0.55"
 tempfile = "3"
 png = "0.17"
 miniz_oxide = "0.8"
+fontdue = "0.9"
 
 [profile.dev.package."*"]
 opt-level = 2

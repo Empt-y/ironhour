@@ -2306,3 +2306,32 @@ From `W3DGameWinDefaultDraw` (`W3DGameWindow.cpp`), `Image.cpp`
 - Not yet: text and fonts, the gadgets' own drawing (push button end caps,
   check boxes, sliders, list and combo boxes), menu draw callbacks such as
   `W3DMainMenuDraw`, the highlight state, input and the in-game window.
+
+### Text, fonts and push buttons
+
+From `render2dsentence.cpp` (`Render2DSentenceClass::Initialize_GDI_Font`),
+`W3DDisplayString`, `GlobalLanguage::adjustFontSize`, `HeaderTemplate.cpp`,
+`W3DPushButton.cpp` and `W3DStaticText.cpp`: `crates/ih-ui/src/text.rs` and
+`draw.rs`.
+
+- Fonts are TrueType files rasterised by `fontdue` into one glyph atlas, which
+  the renderer takes as a texture.
+  - A window's font is its header template's, else its own `FONT`, else the
+    default window font (Times New Roman 14).
+  - Sizes grow with the display width (`ResolutionFontAdjustment`, between
+    1x and 2x), then convert at 96 dots per inch.
+  - "Generals" is Arial squeezed to a 40% average width, as the original does.
+  - A border colour draws a one-pixel drop shadow, and `&` hotkey marks are not
+    drawn.
+  - Families come from the Windows font folder (or common Linux and macOS
+    folders), falling back to the game's own `GenArial.ttf`.
+- Push buttons draw three images (left, tiled middle cropped at the end,
+  right) when they have a middle image, otherwise one image or colours. Their
+  text is centred in the state's colours.
+- Static text draws its colours or image, then its text vertically centred,
+  either centred or 7 pixels in, wrapped 10 pixels short of the width.
+- Check boxes, radio buttons and entry fields draw as plain windows plus text
+  for now. Window text comes from the string table.
+- The main menu's button column renders with its labels in the right place.
+  The faction and load-game sub-buttons also show, because the original hides
+  them in `MainMenuInit` (still to come).

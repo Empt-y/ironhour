@@ -482,6 +482,14 @@ impl Renderer {
             .clone()
     }
 
+    /// Sets (or replaces) a texture from RGBA8 pixels under `name`, such as the
+    /// interface's glyph atlas.
+    pub fn set_texture_rgba(&mut self, name: &str, width: u32, height: u32, rgba: Vec<u8>) {
+        let img = Image { width, height, levels: vec![rgba], has_alpha: true };
+        let view = Arc::new(upload(&self.device, &self.queue, &img));
+        self.textures.insert(name.to_ascii_lowercase(), view);
+    }
+
     /// The 1x1 white texture (flat colours).
     pub(crate) fn white_texture(&self) -> Arc<wgpu::TextureView> {
         self.white.clone()

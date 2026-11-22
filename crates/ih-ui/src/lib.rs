@@ -14,6 +14,13 @@
 use ih_formats::wnd;
 
 pub mod draw;
+pub mod text;
+
+pub mod state {
+    //! `WIN_STATE_*` bits.
+    pub const SELECTED: u32 = 1 << 0;
+    pub const HILITED: u32 = 1 << 1;
+}
 
 pub mod status {
     //! `WIN_STATUS_*` bits, in `wnd::STATUS_NAMES` order.
@@ -39,6 +46,10 @@ pub struct Window {
     pub kind: String,
     pub name: Option<String>,
     pub status: u32,
+    /// `WIN_STATE_*` bits (`state`): highlighted, selected.
+    pub state: u32,
+    /// Text set at run time (`GadgetStaticTextSetText`), over the script's label.
+    pub text: Option<String>,
     pub style: u32,
     /// `m_region.lo`: relative to the parent (to the screen for top-level windows).
     pub position: [i32; 2],
@@ -87,6 +98,8 @@ impl WindowManager {
             kind: w.kind.clone(),
             name: w.name().map(str::to_string),
             status: w.status(),
+            state: 0,
+            text: None,
             style: w.style(),
             position: [lo[0] - origin[0], lo[1] - origin[1]],
             size: [hi[0] - lo[0], hi[1] - lo[1]],
