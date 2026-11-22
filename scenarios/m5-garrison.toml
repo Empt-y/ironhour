@@ -1,0 +1,44 @@
+# Garrisons on Tournament Desert: two Rangers (1, 2) garrison the industrial
+# building near the centre (map object 140), take it for owner 1 and shoot an
+# enemy Ranger (3) that comes into range from its fire points, then leave.
+map = "Tournament Desert"
+seed = 29
+frames = 1500
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1230.0, 1229.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1230.0, 1260.0]
+owner = 1
+
+[[spawn]]
+template = "AmericaInfantryRanger"
+position = [1600.0, 1229.0]
+owner = 2
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 1
+target = 140
+
+[[commands]]
+frame = 1
+kind = "enter"
+object = 2
+target = 140
+
+[[commands]]
+frame = 300
+kind = "move"
+object = 3
+target = [1400.0, 1229.0]
+
+[[commands]]
+frame = 1100
+kind = "evacuate"
+object = 140

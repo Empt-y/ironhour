@@ -152,7 +152,7 @@ pub fn run(vfs: &Vfs, language: &str, path: &Path, trace: Option<&Path>, watch: 
     let money: Vec<(u32, u32)> = a.players.iter().map(|(id, p)| (*id, p.money)).collect();
     println!("money (player, amount): {money:?}");
     for o in a.objects.values().filter(|o| o.contain.as_ref().is_some_and(|c| !c.riders.is_empty())) {
-        println!("  {} {} carries {:?}", o.id, o.template, o.contain.as_ref().unwrap().riders);
+        println!("  {} {} (owner {}) carries {:?}", o.id, o.template, o.owner, o.contain.as_ref().unwrap().riders);
     }
     for o in a.objects.values().filter(|o| o.owner != 0) {
         if let Some(h) = o.health.as_ref().filter(|h| h.current < h.max || o.sole_healer.is_some()) {

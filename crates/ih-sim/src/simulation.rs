@@ -1327,11 +1327,12 @@ impl Simulation {
         if o.ai.dead {
             return self.update_dead(id);
         }
-        // A passenger is held, but its exit state still runs.
+        // A passenger is held, but its AI still runs (it cannot move).
         if o.ai.state == AiState::Exit && o.disabled.names() == [DisabledReason::Held] {
             return self.update_exit(id);
         }
-        if o.disabled.any() {
+        let passenger = o.contained_by.is_some() && o.disabled.names() == [DisabledReason::Held];
+        if o.disabled.any() && !passenger {
             return if o.ai.active() { 1 } else { FOREVER };
         }
         if o.ai.move_out.is_some() {
@@ -1433,6 +1434,12 @@ impl Simulation {
     /// `AIUpdateInterface::doLocomotor` for path following: collisions found last
     /// frame block this frame's drive, capped to how fast the blocker moves away.
     pub(crate) fn drive(&mut self, id: u32) {
+        if self.objects[&id].contained_by.is_some() {
+            let o = self.objects.get_mut(&id).unwrap();
+            o.target = None;
+            o.path.clear();
+            return;
+        }
         let t = &self.templates.objects[&self.objects[&id].template];
         if t.locomotor().and_then(|n| self.templates.locomotors.get(n)).is_none() {
             return;
@@ -2304,7 +2311,7 @@ impl Simulation {
     }
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHash::default();
-        h.u32(28);
+        h.u32(29);
         h.u64(self.setup_hash);
         h.u32(self.frame);
         h.u32(self.next_id);
@@ -2596,6 +2603,10 @@ impl Simulation {
                 h.u32(u32::from(c.payload_created));
                 for v in c.rally.unwrap_or_default() {
                     h.float(v);
+                }
+                h.u32(c.original_owner.unwrap_or(u32::MAX));
+                for p in &c.points {
+                    h.u32(p.unwrap_or(0));
                 }
             }
             let (healer, until) = o.sole_healer.unwrap_or_default();
@@ -3202,7 +3213,7 @@ mod tests {
         }
         assert!((a.objects[&1].position[0] - snapped(&a, 1, [125.0, 0.0])[0]).abs() < 0.5);
         assert!(a.objects[&1].target.is_none());
-        assert_eq!(a.state_hash(), 0x1167296da13d34e1, "portable synthetic movement fixture changed");
+        assert_eq!(a.state_hash(), 0xa1e524c895c5bcea, "portable synthetic movement fixture changed");
         b.rng.next_u32();
         assert_ne!(a.state_hash(), b.state_hash());
     }
@@ -3438,7 +3449,7 @@ End
         assert!(a.objects.values().all(|o| o.target.is_none()), "{:?}", a.objects);
         // The deadlocked lower-priority tank gets out of the way (aiMoveAwayFromUnit).
         assert!(a.move_asides > 0, "{:?}", a.objects);
-        assert_eq!(a.state_hash(), 0xebcef21670040b2a, "portable traffic fixture changed");
+        assert_eq!(a.state_hash(), 0x90b1dcb6d0ca1643, "portable traffic fixture changed");
     }
     #[test]
     fn faster_follower_keeps_spacing_and_destroy_releases_blocker() {
@@ -3530,7 +3541,7 @@ End
         assert!(a.objects[&1].target.is_none());
         assert_eq!(a.objects[&1].layer, 1);
         assert!((a.objects[&1].position[0] - 105.0).abs() < 0.5);
-        assert_eq!(a.state_hash(), 0x38c394d1f1d637d0, "portable bridge fixture changed");
+        assert_eq!(a.state_hash(), 0xa88dd0018e8bfa5b, "portable bridge fixture changed");
     }
     #[test]
     fn clock_does_not_depend_on_render_frame_partition() {

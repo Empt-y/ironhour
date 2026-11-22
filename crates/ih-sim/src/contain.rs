@@ -30,6 +30,16 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContainData {
     pub class: String,
+    /// `GarrisonContain` (else `TransportContain`).
+    pub garrison: bool,
+    pub passengers_fire: bool,
+    pub mobile_garrison: bool,
+    /// `HealObjects`.
+    pub heal: bool,
+    /// `TimeForFullHeal`, in frames.
+    pub heal_frames: f32,
+    pub roster: Option<(String, u32)>,
+    pub enclosing: bool,
     /// `ContainMax`, or `Slots` for transports.
     pub capacity: i32,
     pub damage_percent: f32,
@@ -54,15 +64,25 @@ pub struct ContainData {
 }
 impl ContainData {
     pub fn from_module(class: &str, b: &ih_ini::Block) -> Option<Self> {
-        if class != "TransportContain" {
-            return None;
-        }
+        let garrison = match class {
+            "TransportContain" => false,
+            "GarrisonContain" => true,
+            _ => return None,
+        };
         let mut d = Self {
             class: class.into(),
+            garrison,
+            passengers_fire: false,
+            mobile_garrison: false,
+            heal: false,
+            heal_frames: 0.0,
+            roster: None,
+            enclosing: true,
             capacity: 0,
             damage_percent: 0.0,
             burned_death: true,
-            allow_inside: Some(vec!["INFANTRY".into()]),
+            // OpenContain allows everything; transports only infantry.
+            allow_inside: (!garrison).then(|| vec!["INFANTRY".into()]),
             forbid_inside: vec![],
             exit_paths: 1,
             door_open_time: 1,
@@ -85,7 +105,18 @@ impl ContainData {
             let yes = first.eq_ignore_ascii_case("yes");
             let num = || ih_ini::values::scan_real(first.trim_end_matches('%').as_bytes()).unwrap_or(0.0);
             match f.name.as_str() {
-                "Slots" => d.capacity = num() as i32,
+                "Slots" if !garrison => d.capacity = num() as i32,
+                "ContainMax" if garrison => d.capacity = num() as i32,
+                "PassengersAllowedToFire" => d.passengers_fire = yes,
+                "MobileGarrison" => d.mobile_garrison = yes,
+                "HealObjects" => d.heal = yes,
+                // INI::parseDurationReal
+                "TimeForFullHeal" => d.heal_frames = num() * 30.0 / 1000.0,
+                "InitialRoster" => {
+                    let n = v.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+                    d.roster = Some((first.clone(), n));
+                }
+                "IsEnclosingContainer" => d.enclosing = yes,
                 "DamagePercentToUnits" => d.damage_percent = num() / 100.0,
                 "BurnedDeathToUnits" => d.burned_death = yes,
                 "AllowInsideKindOf" => d.allow_inside = Some(v),
@@ -128,7 +159,13 @@ pub struct Contain {
     pub which_exit: i32,
     pub payload_created: bool,
     pub rally: Option<[f32; 2]>,
+    /// `m_originalTeam`'s player while garrisoned.
+    pub original_owner: Option<u32>,
+    /// `m_garrisonPointData`: who stands at each of the 40 fire points.
+    pub points: Vec<Option<u32>>,
 }
+/// `MAX_GARRISON_POINTS`.
+pub const GARRISON_POINTS: usize = 40;
 impl Contain {
     pub fn new(data: ContainData) -> Self {
         Self {
@@ -140,6 +177,8 @@ impl Contain {
             which_exit: 1,
             payload_created: false,
             rally: None,
+            original_owner: None,
+            points: vec![None; GARRISON_POINTS],
         }
     }
 }
@@ -174,7 +213,23 @@ impl Simulation {
             Relationship::Enemies => c.data.allow_enemies,
             Relationship::Neutral => c.data.allow_neutral,
         };
-        if !allowed || self.objects[&rider].owner != self.objects[&container].owner {
+        if !allowed {
+            return false;
+        }
+        if c.data.garrison {
+            // GarrisonContain::isValidContainerFor
+            let k = &self.objects[&container];
+            let Some(h) = k.health.as_ref() else { return false };
+            let kt = &self.templates.objects[&k.template];
+            if h.current <= 0.0
+                || (h.state == crate::body::DamageState::ReallyDamaged && !kt.has_kind("GARRISONABLE_UNTIL_DESTROYED"))
+                || t.has_kind("NO_GARRISON")
+            {
+                return false;
+            }
+            return !check_capacity || (c.riders.len() as i32) < c.data.capacity;
+        }
+        if self.objects[&rider].owner != self.objects[&container].owner {
             return false;
         }
         let slots = self.slots(rider);
@@ -205,6 +260,7 @@ impl Simulation {
         // With stealth garrisons (not ported) a foreign container could skip the capacity check.
         let check = check_capacity;
         if t.owner != o.owner {
+            // Someone else's occupied building (no stealth garrisons yet).
             if !c.riders.is_empty() {
                 return false;
             }
@@ -315,7 +371,10 @@ impl Simulation {
         let slots = self.slots(rider);
         let c = self.contain_mut(container);
         c.riders.push(rider);
-        c.extra_slots += slots - 1;
+        let garrison = c.data.garrison;
+        if !garrison {
+            c.extra_slots += slots - 1;
+        }
         // addOrRemoveObjFromWorld(false): out of the partition and the pathfinder.
         self.forget_cells(rider);
         let frame = self.frame;
@@ -328,8 +387,245 @@ impl Simulation {
         o.path.clear();
         o.speed = 0.0;
         o.velocity = [0.0; 2];
+        if garrison {
+            // GarrisonContain::onContaining: the building can attack and takes
+            // the occupants' side.
+            let can_attack = crate::construction::status_bits(&["CAN_ATTACK"]);
+            let p = self.objects[&container].position;
+            self.objects.get_mut(&rider).unwrap().position = p;
+            self.objects.get_mut(&container).unwrap().status |= can_attack;
+            self.recalc_garrison_owner(container);
+        } else {
+            self.redeploy_occupants(container);
+        }
         self.rebuild_partition_now();
         self.riders_upgrade_weapon_set(container);
+    }
+
+    /// `recalcApparentControllingPlayer`: a garrisoned building belongs to its
+    /// first occupant's player, and goes back when empty.
+    fn recalc_garrison_owner(&mut self, container: u32) {
+        let owner = self.objects[&container].owner;
+        let c = self.contain_mut(container);
+        if c.original_owner.is_none() {
+            c.original_owner = Some(owner);
+        }
+        let first = c.riders.first().copied();
+        let original = c.original_owner;
+        let new = match first {
+            Some(r) => self.objects[&r].owner,
+            None => {
+                self.contain_mut(container).original_owner = None;
+                original.unwrap_or(owner)
+            }
+        };
+        self.objects.get_mut(&container).unwrap().owner = new;
+    }
+
+    /// `OpenContain::redeployOccupants` / `putObjAtNextFirePoint`: riders sit at the
+    /// transport's `FIREPOINTnn` bones, or at its centre.
+    fn redeploy_occupants(&mut self, container: u32) {
+        let points: Vec<[f32; 3]> =
+            (1..=99).map_while(|i| self.logical_bone(container, &format!("firepoint{i:02}"))).collect();
+        let pos = self.objects[&container].position;
+        let riders = self.contain(container).unwrap().riders.clone();
+        for (n, r) in riders.iter().rev().enumerate() {
+            let p = if points.is_empty() { pos } else { points[n % points.len()] };
+            self.objects.get_mut(r).unwrap().position = p;
+        }
+    }
+
+    // --- garrisons ---
+
+    /// `findConditionIndex`: fire points for pristine, damaged and really damaged models.
+    fn garrison_condition(&self, container: u32) -> usize {
+        match self.objects[&container].health.as_ref().map(|h| h.state) {
+            Some(crate::body::DamageState::Damaged) => 1,
+            Some(crate::body::DamageState::ReallyDamaged | crate::body::DamageState::Rubble) => 2,
+            _ => 0,
+        }
+    }
+    /// `loadGarrisonPoints`: the `FIREPOINTnn` bones of the model for that
+    /// condition; points without a bone are at the building's position.
+    fn garrison_point(&self, container: u32, condition: usize, i: usize) -> [f32; 3] {
+        let o = &self.objects[&container];
+        let bone = self
+            .templates
+            .condition_bones
+            .get(&o.template)
+            .and_then(|b| b[condition].get(&format!("firepoint{:02}", i + 1)));
+        bone.map_or(o.position, |p| crate::production::transform(o.position, o.angle, *p))
+    }
+    /// `findClosestFreeGarrisonPointIndex`.
+    fn closest_free_point(&self, container: u32, target: [f32; 3]) -> Option<usize> {
+        let c = self.contain(container)?;
+        let condition = self.garrison_condition(container);
+        let mut best: Option<(usize, f32)> = None;
+        for (i, used) in c.points.iter().enumerate() {
+            if used.is_some() {
+                continue;
+            }
+            let p = self.garrison_point(container, condition, i);
+            let d = (p[0] - target[0]).powi(2) + (p[1] - target[1]).powi(2) + (p[2] - target[2]).powi(2);
+            if best.is_none_or(|(_, b)| d < b) {
+                best = Some((i, d));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+    /// `calcBestGarrisonPosition`: where a garrisoned unit would fire from at this target.
+    pub(crate) fn garrison_fire_position(&self, rider: u32, target: [f32; 3]) -> Option<[f32; 2]> {
+        let k = self.objects.get(&rider)?.contained_by?;
+        let c = self.contain(k)?;
+        if !c.data.garrison || !c.data.enclosing {
+            return None;
+        }
+        // Already at a point: that is where it fires from.
+        if let Some(i) = c.points.iter().position(|p| *p == Some(rider)) {
+            let p = self.garrison_point(k, self.garrison_condition(k), i);
+            let free =
+                self.closest_free_point(k, target).map(|j| self.garrison_point(k, self.garrison_condition(k), j));
+            let d = |a: [f32; 3]| (a[0] - target[0]).powi(2) + (a[1] - target[1]).powi(2) + (a[2] - target[2]).powi(2);
+            let best = free.filter(|f| d(*f) < d(p)).unwrap_or(p);
+            return Some([best[0], best[1]]);
+        }
+        let i = self.closest_free_point(k, target)?;
+        let p = self.garrison_point(k, self.garrison_condition(k), i);
+        Some([p[0], p[1]])
+    }
+    fn put_at_point(&mut self, container: u32, rider: u32, i: usize) {
+        let p = self.garrison_point(container, self.garrison_condition(container), i);
+        self.contain_mut(container).points[i] = Some(rider);
+        self.objects.get_mut(&rider).unwrap().position = p;
+    }
+    fn remove_from_point(&mut self, container: u32, rider: u32) {
+        let Some(c) = self.objects.get_mut(&container).and_then(|o| o.contain.as_mut()) else { return };
+        if let Some(i) = c.points.iter().position(|p| *p == Some(rider)) {
+            c.points[i] = None;
+            let p = self.objects[&container].position;
+            self.objects.get_mut(&rider).unwrap().position = p;
+        }
+    }
+    /// A garrisoned unit's current target position, if it is attacking.
+    fn rider_target(&self, rider: u32) -> Option<[f32; 3]> {
+        let m = self.objects[&rider].ai.attack.as_ref()?;
+        match m.victim {
+            Some(v) => self.objects.get(&v).map(|o| o.position),
+            None => Some(m.position),
+        }
+    }
+    /// `matchObjectsToGarrisonPoints`: attackers take the free fire point
+    /// nearest their target, others go back to the centre.
+    fn match_garrison_points(&mut self, container: u32) {
+        let c = self.contain(container).unwrap();
+        if !c.data.enclosing {
+            return;
+        }
+        // removeInvalidObjectsFromGarrisonPoints
+        for i in 0..GARRISON_POINTS {
+            let Some(r) = self.contain(container).unwrap().points[i] else { continue };
+            let attacking = matches!(self.objects[&r].ai.state, AiState::AttackObject | AiState::AttackPosition);
+            let valid = attacking
+                && self.objects[&r].ai.attack.as_ref().is_some_and(|m| {
+                    m.victim.is_none_or(|v| {
+                        self.objects.contains_key(&v) && {
+                            let cur = self.objects[&r].weapon_set.current as usize;
+                            self.within_attack_range(r, cur, None, Some(v), self.objects[&v].position)
+                        }
+                    })
+                });
+            if !valid {
+                self.remove_from_point(container, r);
+            }
+        }
+        // addValidObjectsToGarrisonPoints, then trackTargets.
+        for r in self.contain(container).unwrap().riders.clone() {
+            let Some(target) = self.rider_target(r) else { continue };
+            let at = self.contain(container).unwrap().points.iter().position(|p| *p == Some(r));
+            match at {
+                None => {
+                    if let Some(i) = self.closest_free_point(container, target) {
+                        self.put_at_point(container, r, i);
+                    }
+                }
+                Some(i) => {
+                    let Some(j) = self.closest_free_point(container, target) else { continue };
+                    let cond = self.garrison_condition(container);
+                    let d = |a: [f32; 3]| {
+                        (a[0] - target[0]).powi(2) + (a[1] - target[1]).powi(2) + (a[2] - target[2]).powi(2)
+                    };
+                    let here = self.objects[&r].position;
+                    if d(self.garrison_point(container, cond, j)) < d(here) {
+                        self.contain_mut(container).points[i] = None;
+                        self.put_at_point(container, r, j);
+                    }
+                }
+            }
+        }
+    }
+    /// `GarrisonContain::update` after `OpenContain::update`.
+    fn garrison_update(&mut self, id: u32) {
+        let c = self.contain(id).unwrap();
+        if let Some((name, n)) = c.data.roster.clone().filter(|_| !c.payload_created) {
+            // onObjectCreated: the initial roster.
+            self.contain_mut(id).payload_created = true;
+            let (p, layer, owner) = (self.objects[&id].position, self.objects[&id].layer, self.objects[&id].owner);
+            for _ in 0..n {
+                if let Ok(r) = self.create_object(&name, p, 0.0, layer, owner)
+                    && self.valid_container_for(id, r, true)
+                {
+                    self.add_to_contain(id, r);
+                }
+            }
+        }
+        for r in self.contain(id).unwrap().riders.clone() {
+            if self.objects.get(&r).is_none_or(|o| o.dead) {
+                self.remove_from_contain(id, r);
+            }
+        }
+        self.match_garrison_points(id);
+        // healObjects: a full heal over TimeForFullHeal.
+        let c = self.contain(id).unwrap();
+        if c.data.heal && c.data.heal_frames > 0.0 {
+            let frames = c.data.heal_frames;
+            for r in c.riders.clone() {
+                if let Some(h) = self.objects[&r].health.as_ref()
+                    && h.current < h.max
+                {
+                    let amount = h.max / frames;
+                    self.attempt_healing(r, amount, id);
+                }
+            }
+        }
+        let c = self.contain(id).unwrap();
+        if c.data.mobile_garrison && self.has_ai(id) {
+            let p = self.objects[&id].position;
+            for r in c.riders.clone() {
+                self.objects.get_mut(&r).unwrap().position = p;
+            }
+        }
+    }
+    /// `GarrisonContain::onBodyDamageStateChange`: a really damaged building is abandoned.
+    pub(crate) fn garrison_damage_state(&mut self, id: u32, state: crate::body::DamageState) {
+        let Some(c) = self.contain(id) else { return };
+        if !c.data.garrison || c.riders.is_empty() || state != crate::body::DamageState::ReallyDamaged {
+            return;
+        }
+        if self.templates.objects[&self.objects[&id].template].has_kind("GARRISONABLE_UNTIL_DESTROYED") {
+            return;
+        }
+        let _ = self.evacuate(id, true);
+    }
+    /// `isPassengerAllowedToFire`.
+    pub(crate) fn passenger_allowed_to_fire(&self, rider: u32) -> bool {
+        let Some(k) = self.objects.get(&rider).and_then(|o| o.contained_by) else { return true };
+        let Some(c) = self.contain(k) else { return false };
+        if c.data.garrison {
+            return !self.objects[&k].disabled.has(DisabledReason::Subdued);
+        }
+        c.data.passengers_fire
+            && self.templates.objects[&self.objects[&rider].template].has_kind("INFANTRY")
+            && self.objects[&k].contained_by.is_none()
     }
 
     /// `removeFromContainViaIterator` and `TransportContain::onRemoving`: the rider
@@ -343,7 +639,10 @@ impl Simulation {
             let k = &self.objects[&container];
             (k.position, k.angle, k.layer, k.dead)
         };
-        let slots = self.slots(rider);
+        let slots = if data.garrison { 1 } else { self.slots(rider) };
+        if data.garrison {
+            self.remove_from_point(container, rider);
+        }
         let bone = (!data.exit_bone.is_empty()).then(|| self.logical_bone(container, &data.exit_bone)).flatten();
         let frame = self.frame;
         let bits = crate::construction::status_bits(&["UNSELECTABLE", "MASKED"]);
@@ -360,6 +659,16 @@ impl Simulation {
         let c = self.contain_mut(container);
         c.extra_slots -= slots - 1;
         c.exit_not_busy = frame + data.exit_delay;
+        if data.garrison {
+            // GarrisonContain::onRemoving: back to its own side once empty.
+            if c.riders.is_empty() {
+                let can_attack = crate::construction::status_bits(&["CAN_ATTACK"]);
+                self.objects.get_mut(&container).unwrap().status &= !can_attack;
+            }
+            let z = self.map.ground_height(pos[0], pos[1]);
+            self.objects.get_mut(&rider).unwrap().position[2] = z;
+            self.recalc_garrison_owner(container);
+        }
         self.rebuild_partition_now();
         self.update_pos(rider);
         if dead {
@@ -393,13 +702,14 @@ impl Simulation {
     /// `getSingleLogicalBonePosition`: a bone of the default model in the world.
     fn logical_bone(&self, id: u32, name: &str) -> Option<[f32; 3]> {
         let o = &self.objects[&id];
-        let p = self.templates.bones.get(&o.template)?.get(&name.to_ascii_lowercase())?;
+        let p = self.templates.condition_bones.get(&o.template)?[0].get(&name.to_ascii_lowercase())?;
         Some(crate::production::transform(o.position, o.angle, *p))
     }
 
     /// `TransportContain::isSpecificRiderFreeToExit`.
     fn rider_free_to_exit(&self, container: u32, rider: u32) -> bool {
-        if self.airborne_now(container) {
+        // Only transports can refuse (OpenContain says yes).
+        if self.contain(container).is_some_and(|c| c.data.garrison) || self.airborne_now(container) {
             return true;
         }
         if !self.has_ai(rider) {
@@ -480,6 +790,9 @@ impl Simulation {
 
     /// `OpenContain::exitObjectViaDoor`.
     fn exit_object_via_door(&mut self, container: u32, rider: u32) {
+        if self.contain(container).is_some_and(|c| c.data.garrison) {
+            return self.garrison_exit(container, rider);
+        }
         self.remove_from_contain(container, rider);
         let c = self.contain_mut(container);
         c.door_countdown = c.data.door_open_time;
@@ -523,6 +836,48 @@ impl Simulation {
         }
     }
 
+    /// `GarrisonContain::exitObjectViaDoor` (`EVAC_BURST_FROM_CENTER`): out of the
+    /// building's centre, or its front or back if the centre is not walkable.
+    fn garrison_exit(&mut self, container: u32, rider: u32) {
+        self.remove_from_contain(container, rider);
+        let k = &self.objects[&container];
+        let (kp, angle) = (k.position, k.angle);
+        let kt = &self.templates.objects[&k.template];
+        let offset = kt.number("GeometryMajorRadius", 5.0) * kt.number("Scale", 1.0);
+        let walkable = |s: &Self, p: [f32; 2]| {
+            let t = &s.templates.objects[&s.objects[&rider].template];
+            let Some(l) = t.locomotor().and_then(|n| s.templates.locomotors.get(n)) else { return true };
+            let terrain = s.views.get(&crate::simulation::view_key(t, l)).unwrap_or(&s.grid);
+            let (x, y) = terrain.world_to_cell(p);
+            terrain.cell_at(0, x, y).is_some_and(|c| !terrain.ground.blocked[c.node.unwrap()])
+        };
+        let (c, s) = (ih_math::cos(angle), ih_math::sin(angle));
+        let mut start = [kp[0], kp[1]];
+        if self.has_ai(rider) && !walkable(self, start) {
+            start = [kp[0] - offset * c, kp[1] - offset * s];
+            if !walkable(self, start) {
+                start = [start[0] + 2.0 * offset * c, start[1] + 2.0 * offset * s];
+                if !walkable(self, start) {
+                    start = [kp[0], kp[1]];
+                }
+            }
+        }
+        let z = self.map.ground_height(start[0], start[1]);
+        let o = self.objects.get_mut(&rider).unwrap();
+        o.position = [start[0], start[1], z];
+        o.previous_position = o.position;
+        o.angle = angle;
+        if !self.has_ai(rider) {
+            return;
+        }
+        let mut end = start;
+        let l = self.grid.destination(&self.map, end).layer;
+        self.adjust_destination(rider, &mut end, l);
+        if self.begin_move_ignoring(rider, end, AiState::FollowPath, [end].into(), Some(container)).is_ok() {
+            self.objects.get_mut(&rider).unwrap().ai.cmd_from_ai = true;
+        }
+    }
+
     /// `TransportContain::letRidersUpgradeWeaponSet`.
     fn riders_upgrade_weapon_set(&mut self, container: u32) {
         let Some(c) = self.contain(container) else { return };
@@ -549,6 +904,12 @@ impl Simulation {
     /// `TransportContain::update`: the initial payload, health regeneration and the door.
     pub(crate) fn contain_update(&mut self, id: u32) -> u32 {
         let Some(c) = self.contain(id) else { return 1 };
+        if c.data.garrison {
+            self.garrison_update(id);
+            let c = self.contain_mut(id);
+            c.door_countdown = c.door_countdown.saturating_sub(1);
+            return 1;
+        }
         if !c.payload_created {
             let payload = c.data.payload.clone();
             self.contain_mut(id).payload_created = true;
@@ -575,6 +936,8 @@ impl Simulation {
                 }
             }
         }
+        // containReactToTransformChange: riders follow the transport.
+        self.redeploy_occupants(id);
         let c = self.contain_mut(id);
         if c.door_countdown > 0 {
             c.door_countdown -= 1;

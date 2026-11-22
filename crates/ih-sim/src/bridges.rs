@@ -380,30 +380,52 @@ pub fn dock_bones(
 }
 /// Every bone of the default model, by lower-case name, for templates with a
 /// container (`getSingleLogicalBonePosition` for exits).
+/// Bones of the pristine, damaged and really damaged models (a missing
+/// damaged model uses the one before it).
+pub type ConditionBones = [BTreeMap<String, [f32; 3]>; 3];
 pub fn logical_bones(
     templates: &crate::templates::Templates,
     vfs: &Vfs,
     language: &str,
-) -> BTreeMap<String, BTreeMap<String, [f32; 3]>> {
+) -> BTreeMap<String, ConditionBones> {
     let mut files = Files { vfs, language, files: BTreeMap::new() };
     let mut out = BTreeMap::new();
     for (name, t) in &templates.objects {
-        if !t.modules.iter().any(|m| m.class == "TransportContain") {
+        if !t.modules.iter().any(|m| matches!(m.class.as_str(), "TransportContain" | "GarrisonContain")) {
             continue;
         }
         let scale = t.number("Scale", 1.0);
-        let mut bones = BTreeMap::new();
-        for model in t.modules.iter().filter(|m| m.kind == "Draw").filter_map(|m| default_model(&m.block)) {
-            let Some(h) = files.hierarchy(&model) else { continue };
-            for (i, p) in h.pivots.iter().enumerate().skip(1) {
-                if let Ok(v) = posed_point(&h, i, [0.0; 3]) {
-                    bones.entry(p.name.to_ascii_lowercase()).or_insert([v[0] * scale, v[1] * scale, v[2] * scale]);
+        let mut all: ConditionBones = Default::default();
+        for (c, condition) in [None, Some("DAMAGED"), Some("REALLYDAMAGED")].into_iter().enumerate() {
+            let mut bones = BTreeMap::new();
+            for d in t.modules.iter().filter(|m| m.kind == "Draw") {
+                let model = match condition {
+                    None => default_model(&d.block),
+                    Some(cond) => condition_model(&d.block, cond).or_else(|| default_model(&d.block)),
+                };
+                let Some(h) = model.and_then(|m| files.hierarchy(&m)) else { continue };
+                for (i, p) in h.pivots.iter().enumerate().skip(1) {
+                    if let Ok(v) = posed_point(&h, i, [0.0; 3]) {
+                        bones.entry(p.name.to_ascii_lowercase()).or_insert([v[0] * scale, v[1] * scale, v[2] * scale]);
+                    }
                 }
             }
+            all[c] = if bones.is_empty() && c > 0 { all[c - 1].clone() } else { bones };
         }
-        out.insert(name.clone(), bones);
+        out.insert(name.clone(), all);
     }
     out
+}
+/// The `Model` of the condition state for exactly this one condition.
+fn condition_model(b: &ih_ini::Block, condition: &str) -> Option<String> {
+    let state = b.blocks().find(|s| {
+        s.kind == "ConditionState" && {
+            let a = s.args();
+            a.len() == 1 && a[0].eq_ignore_ascii_case(condition)
+        }
+    })?;
+    let model = state.fields().find(|f| f.name.eq_ignore_ascii_case("Model"))?.values().first()?.clone();
+    (!model.eq_ignore_ascii_case("NONE")).then_some(model)
 }
 /// The `Model` of a draw module's default condition state.
 fn default_model(b: &ih_ini::Block) -> Option<String> {

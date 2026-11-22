@@ -568,7 +568,10 @@ impl Simulation {
 
     /// `onBodyDamageStateChange` listeners and `evaluateVisualCondition`: the
     /// client reads the state from the body; no damage modules are ported yet.
-    fn events_damage_state(&mut self, _id: u32, _state: DamageState) {}
+    fn events_damage_state(&mut self, id: u32, state: DamageState) {
+        // GarrisonContain::onBodyDamageStateChange
+        self.garrison_damage_state(id, state);
+    }
 
     /// `Object::onDie`: each die module in order.
     pub(crate) fn on_die(&mut self, id: u32, info: DamageInfo) {

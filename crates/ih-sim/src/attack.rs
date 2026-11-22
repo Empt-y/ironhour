@@ -215,7 +215,9 @@ impl Simulation {
     }
     fn in_range(&self, id: u32, m: &AttackMachine) -> bool {
         let cur = self.objects[&id].weapon_set.current as usize;
-        self.within_attack_range(id, cur, None, m.victim, self.victim_pos(m))
+        // attemptBestFirePointPosition: garrisoned units fire from a fire point.
+        let from = self.garrison_fire_position(id, self.victim_pos(m));
+        self.within_attack_range(id, cur, from, m.victim, self.victim_pos(m))
     }
 
     /// `StateMachine::updateStateMachine` for the attack machine: the state's

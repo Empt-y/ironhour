@@ -325,8 +325,9 @@ pub struct Templates {
     pub command_button_upgrades: BTreeMap<String, String>,
     /// `GameData` building placement values.
     pub build: BuildSettings,
-    /// Default-model bones of containers (`contain`), loaded with assets.
-    pub bones: BTreeMap<String, BTreeMap<String, [f32; 3]>>,
+    /// Bones of containers' pristine, damaged and really damaged models
+    /// (`contain`), loaded with assets.
+    pub condition_bones: BTreeMap<String, crate::bridges::ConditionBones>,
     /// `GameData`'s `SellPercentage` (100%).
     pub sell_percentage: f32,
     /// `GameData`'s `BaseValuePerSupplyBox` (100).
@@ -393,7 +394,7 @@ impl Templates {
         let mut out = Self::from_definitions(defs);
         out.bridges = crate::bridges::load(map, defs, vfs, language)?;
         out.dock_bones = crate::bridges::dock_bones(&out, vfs, language);
-        out.bones = crate::bridges::logical_bones(&out, vfs, language);
+        out.condition_bones = crate::bridges::logical_bones(&out, vfs, language);
         Ok(out)
     }
     pub fn from_definitions(defs: &Definitions) -> Self {

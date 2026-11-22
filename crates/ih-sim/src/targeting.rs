@@ -108,8 +108,8 @@ impl Simulation {
             || o.disabled.has(crate::disabled::DisabledReason::Subdued)
             || self.under_construction(id)
             || o.status & sold != 0
-            // Passengers do not fire (PassengersAllowedToFire is not ported).
-            || o.contained_by.is_some()
+            // Passengers fire only where the container lets them.
+            || (o.contained_by.is_some() && !self.passenger_allowed_to_fire(id))
         {
             return false;
         }
@@ -196,9 +196,11 @@ impl Simulation {
                 continue;
             }
             // WithinAttackRange: any weapon.
+            // A garrisoned unit measures range from its best fire point.
+            let from = self.garrison_fire_position(id, o.position);
             let in_range = (0..SLOTS).any(|i| {
                 self.objects[&id].weapon_set.weapons[i].is_some()
-                    && self.within_attack_range(id, i, None, Some(other), self.objects[&other].position)
+                    && self.within_attack_range(id, i, from, Some(other), self.objects[&other].position)
             });
             if !in_range {
                 continue;

@@ -1564,3 +1564,76 @@ Asset-free fixtures: `1167296da13d34e1` (ground), `38c394d1f1d637d0` (bridge),
 `tests/transports.rs` covers getting in, riding and evacuating with the exit
 delay; slots, kinds and owners; a dying transport's damage to passengers; an
 initial payload; and matching hashes in two runs.
+
+### Garrisons and passengers firing (state hash v29)
+
+From `GarrisonContain.cpp` (`isValidContainerFor`, `onContaining`,
+`onRemoving`, `recalcApparentControllingPlayer`, `exitObjectViaDoor`,
+`update`, `matchObjectsToGarrisonPoints` with `removeInvalidObjectsFromGarrisonPoints`,
+`addValidObjectsToGarrisonPoints` and `trackTargets`,
+`findClosestFreeGarrisonPointIndex`, `calcBestGarrisonPosition`,
+`loadGarrisonPoints`, `healObjects`, `moveObjectsWithMe`,
+`onBodyDamageStateChange`, `onObjectCreated`), `OpenContain::isPassengerAllowedToFire`,
+`redeployOccupants`/`putObjAtNextFirePoint`, and the fire-point range tests in
+`AIAttackAimAtTargetState` and `WeaponSet`: `crates/ih-sim/src/contain.rs`.
+
+- Any unit not `NO_GARRISON` can garrison a building with `GarrisonContain`
+  up to `ContainMax`, while the building is not really damaged (unless
+  `GARRISONABLE_UNTIL_DESTROYED`) and not occupied by someone else. The
+  building takes its first occupant's side and can attack, and goes back to
+  its own side when empty.
+- Garrisoned units keep their AI but cannot move. An attacking occupant takes
+  the free `FIREPOINTnn` closest to its target (bones of the pristine,
+  damaged or really damaged model; a model without them puts every point at
+  the centre), moves to a closer free one as the target moves, and goes back
+  to the centre when it stops attacking. Range for picking and keeping
+  targets is measured from that point.
+- Units leave from the centre, or a major radius to the front or back when
+  the centre cannot be walked. A building that becomes really damaged throws
+  everyone out. `HealObjects` heals occupants over `TimeForFullHeal`;
+  `InitialRoster` fills it on creation; `MobileGarrison` keeps occupants
+  with a moving garrison.
+- Transport passengers fire when `PassengersAllowedToFire` is set and they
+  are infantry. Riders sit at the transport's `FIREPOINTnn` bones (or its
+  centre) and follow it as it moves.
+- `m5-garrison` (stock): two Rangers take the industrial warehouse in the
+  middle of Tournament Desert (its model has no fire point bones), kill an
+  enemy Ranger from inside and come back out.
+- Not yet: weapon bonuses for garrisoned units, clearing buildings
+  (`ImmuneToClearBuildingAttacks`), stealth garrisons and hiding the
+  garrisoned state from enemies, non-enclosing containers (station points,
+  Fire Base), evacuation to the left or right, the garrison gun effect,
+  turret passengers, tunnels, Overlord and Helix containers. The range test
+  places the occupant at its fire point between frames rather than inside it.
+
+All scenarios pass with v29 hashes:
+
+| Scenario | Stock | Contra |
+|---|---|---|
+| Desert (`m4-desert` / `m4-contra`) | `2ef77a9b18e56fa5` | `39b58a2b2e60bdc9` |
+| AI/status orders | `86d9c52f45a0b8a3` | `245aa1c3027c9ed2` |
+| Bridges | `94809991c57e5faf` | `6bc06abd4aa7bcae` |
+| Traffic, Tournament Desert | `2d64d32eb1f4c709` | `fdafdfb518b1e99d` |
+| Traffic, Winding River | `266876dac28f29af` | `cdc0960d32e595b7` |
+| Long map travel | `4564132f89e87783` | `51d993120e7b51ce` |
+| Crush enemy / crush ally | `be948f9871a090a9` / `adfcd9292e3968f0` | |
+| Comanche out and back | `e0d32089c80e00c1` | `7f1bd557c1530e05` |
+| Group move (`m4-group`) | `2995fd03450083b4` | |
+| Fight (`m5-fight`) | `af1083263bd6dd98` | |
+| Missiles (`m5-missiles`) | `9bf138d8c9d34774` | |
+| Guard (`m5-guard`) | `dc14469214d4d267` | |
+| Skirmish (`m5-skirmish`) | `f5ff9a1bd6783fe3` | |
+| Production (`m5-production`) | `81810e9c13b248d4` | |
+| Supply (`m5-supply`) | `a975df879492d59c` | |
+| Upgrades (`m5-upgrades`) | `ba2f7cdb22706b49` | |
+| Construction (`m5-construction`) | `3cc15e22ebabccdd` | |
+| Repair and selling (`m5-repair-sell`) | `f3d25b4881cca38f` | |
+| Transports (`m5-transports`) | `674480bf40d74dd4` | |
+| Garrison (`m5-garrison`) | `79167e46fa881fda` | |
+
+Asset-free fixtures: `a1e524c895c5bcea` (ground), `a88dd0018e8bfa5b` (bridge),
+`90b1dcb6d0ca1643` (head-on traffic), `6571b9e6225414fd` (AI/status orders).
+`tests/garrisons.rs` covers taking a building over, shooting out and leaving;
+`NO_GARRISON` units and enemies being refused; a really damaged building
+being abandoned and refusing occupants; infantry firing from a transport;
+and matching hashes in two runs.
