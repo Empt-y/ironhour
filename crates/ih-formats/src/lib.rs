@@ -3,6 +3,7 @@
 
 pub mod compression;
 pub mod map;
+pub mod scripts;
 pub mod strings;
 pub mod texture;
 pub mod w3d;

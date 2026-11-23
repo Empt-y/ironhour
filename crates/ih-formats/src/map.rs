@@ -275,6 +275,8 @@ pub struct Map {
     pub triggers: Vec<PolygonTrigger>,
     pub lighting: Option<Lighting>,
     pub sides: SidesList,
+    /// Each side's scripts (`PlayerScriptsList`, nested in the sides).
+    pub scripts: Vec<crate::scripts::ScriptList>,
     /// Every top-level chunk, in order.
     pub chunks: Vec<ChunkSummary>,
     /// Problems the original tolerates (debug asserts, patched indexes).
@@ -570,6 +572,14 @@ impl Map {
                 self.sides.teams.push(d);
             }
         }
+        // The nested PlayerScriptsList: one script list per side.
+        while r.remaining() >= CHUNK_HEADER {
+            let chunk = r.open_chunk(toc)?;
+            if chunk.label == "PlayerScriptsList" {
+                let mut c = chunk.reader;
+                self.scripts = crate::scripts::player_scripts(&mut c, toc)?;
+            }
+        }
         Ok(())
     }
 
@@ -651,11 +661,11 @@ impl Map {
     }
 }
 
-const CHUNK_HEADER: usize = 10;
+pub(crate) const CHUNK_HEADER: usize = 10;
 
-type Toc = HashMap<u32, String>;
+pub(crate) type Toc = HashMap<u32, String>;
 
-fn read_toc(data: &[u8]) -> Result<(Toc, usize), MapError> {
+pub(crate) fn read_toc(data: &[u8]) -> Result<(Toc, usize), MapError> {
     if data.len() < 8 || &data[..4] != b"CkMp" {
         return Err(MapError::NotChunky);
     }
@@ -671,14 +681,14 @@ fn read_toc(data: &[u8]) -> Result<(Toc, usize), MapError> {
     Ok((toc, r.pos))
 }
 
-struct Chunk<'a> {
-    label: String,
-    version: u16,
+pub(crate) struct Chunk<'a> {
+    pub(crate) label: String,
+    pub(crate) version: u16,
     size: u32,
-    reader: Reader<'a>,
+    pub(crate) reader: Reader<'a>,
 }
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
     end: usize,
@@ -686,6 +696,12 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    pub(crate) fn new(data: &'a [u8], pos: usize) -> Self {
+        Reader { data, pos, end: data.len(), label: String::new() }
+    }
+    pub(crate) fn remaining(&self) -> usize {
+        self.end - self.pos
+    }
     fn truncated(&self) -> MapError {
         MapError::Truncated(self.label.clone())
     }
@@ -700,16 +716,16 @@ impl<'a> Reader<'a> {
         self.pos += n;
         Ok(b)
     }
-    fn u8(&mut self) -> Result<u8, MapError> {
+    pub(crate) fn u8(&mut self) -> Result<u8, MapError> {
         Ok(self.bytes(1)?[0])
     }
     fn u16(&mut self) -> Result<u16, MapError> {
         Ok(u16::from_le_bytes(self.bytes(2)?.try_into().unwrap()))
     }
-    fn i32(&mut self) -> Result<i32, MapError> {
+    pub(crate) fn i32(&mut self) -> Result<i32, MapError> {
         Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap()))
     }
-    fn f32(&mut self) -> Result<f32, MapError> {
+    pub(crate) fn f32(&mut self) -> Result<f32, MapError> {
         Ok(f32::from_le_bytes(self.bytes(4)?.try_into().unwrap()))
     }
     fn i16s(&mut self, n: usize) -> Result<Vec<i16>, MapError> {
@@ -717,7 +733,7 @@ impl<'a> Reader<'a> {
         Ok(b.as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c)).collect())
     }
     /// `readAsciiString`: u16 length, then bytes.
-    fn ascii(&mut self) -> Result<String, MapError> {
+    pub(crate) fn ascii(&mut self) -> Result<String, MapError> {
         let n = self.u16()? as usize;
         Ok(String::from_utf8_lossy(self.bytes(n)?).into_owned())
     }
@@ -747,7 +763,7 @@ impl<'a> Reader<'a> {
         }
         Ok(Dict(d))
     }
-    fn open_chunk(&mut self, toc: &Toc) -> Result<Chunk<'a>, MapError> {
+    pub(crate) fn open_chunk(&mut self, toc: &Toc) -> Result<Chunk<'a>, MapError> {
         let id = self.i32()? as u32;
         let version = self.u16()?;
         let size = self.i32()?;

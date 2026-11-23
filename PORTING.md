@@ -2679,3 +2679,35 @@ random pick lands on one of them.
   12 of them `Silence1.mp3` placeholders. That file ships only in the optional
   Enhanced and The Score music packs, which the profile leaves out, so those
   tracks are silent in the game too.
+
+## M7. Script engine and skirmish AI (in progress)
+
+### Script files
+
+From `Scripts.cpp` (the `PlayerScriptsList`, `ScriptList`, `ScriptGroup`,
+`Script`, `OrCondition`, `Condition`, `ScriptAction` and `ScriptActionFalse`
+chunk readers, `Parameter::ReadParameter`), `DataChunkInput::readNameKey` and
+`SidesList::ParseSidesDataChunk`: `crates/ih-formats/src/scripts.rs`.
+
+- `.scb` files and maps parse into per-player script lists: loose scripts and
+  groups. Each script has its flags (active, one-shot, the difficulties it runs
+  at, subroutine, evaluation delay), OR-ed lists of AND-ed conditions, actions
+  and "if false" actions. Parameters keep their type, int, real and string, or a
+  coordinate.
+- Newer chunks (condition 4, action 2) store a name key: the internal name's
+  id in the file's name table, shifted past a type byte as dictionary keys are.
+  The name, such as `TEAM_DESTROYED`, is the identity. Older chunks keep only
+  the enum index; coverage names them from entries that store both.
+- In maps the scripts nest at the end of `SidesList`, after the teams.
+- `ih-tools scripts [source] [--all]` parses the two `.scb` files and every map
+  and counts each action and condition by name, skirmish scripts first. Stock:
+  152 sources, 0 errors, 3,983 scripts in `.scb` files and 23,906 in maps. The
+  skirmish and multiplayer scripts use 60 action and 36 condition types (maps
+  add 233 and 49 more). Contra: 335 sources, 0 errors, the same 60 and 36.
+  Most used: `OBJECTLIST_ADDOBJECTTYPE`, `SET_ATTACK_PRIORITY_THING`,
+  `ENABLE_SCRIPT`, `TEAM_GUARD_AREA`, `SET_FLAG`, `SKIRMISH_BUILD_BUILDING`;
+  conditions `FLAG`, `COUNTER`, `PLAYER_HAS_OBJECT_COMPARISON`,
+  `CONDITION_TRUE`, `NAMED_NOT_DESTROYED`. The full list is in
+  `docs/coverage/m7-scripts.md` and sets the porting order.
+- Not yet: the `.scb` file's players and teams (`ScriptsPlayers`,
+  `ScriptTeams`), the old-version parameter fix-ups, and the engine itself.

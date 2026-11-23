@@ -150,6 +150,15 @@ enum Cmd {
         /// Layout file (e.g. Menus\MainMenu.wnd or Window\Menus\MainMenu.wnd). Omit to scan all.
         name: Option<String>,
     },
+    /// Script coverage: actions and conditions used by the skirmish and multiplayer
+    /// scripts (.scb) and every map, by internal name.
+    Scripts {
+        /// Only this .scb (e.g. Data\Scripts\SkirmishScripts.scb) or map name.
+        source: Option<String>,
+        /// List every name with its count instead of a summary.
+        #[arg(long)]
+        all: bool,
+    },
     /// Read map files: describe one (name or path) or scan every map.
     Maps {
         /// Map name (e.g. "Tournament Desert") or path. Omit to scan all.
@@ -683,6 +692,7 @@ fn main() -> Result<()> {
         }
         Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
         Cmd::Wnd { name } => wnd(&mount(&cli)?, name.as_deref())?,
+        Cmd::Scripts { source, all } => scripts(&mount(&cli)?, source.as_deref(), *all)?,
         Cmd::Shell { clicks, out, width, height } => {
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
@@ -1112,6 +1122,89 @@ fn draw_ui_png(
         println!("  warning: {w}");
     }
     Ok(quads.len())
+}
+
+fn scripts(vfs: &Vfs, source: Option<&str>, all: bool) -> Result<()> {
+    use ih_formats::scripts::{Call, ScriptList};
+    use std::collections::BTreeMap;
+    let mut sources: Vec<(String, Vec<ScriptList>)> = vec![];
+    let scbs = [r"Data\Scripts\SkirmishScripts.scb", r"Data\Scripts\MultiplayerScripts.scb"];
+    let wanted = |p: &str| source.is_none_or(|s| p.to_ascii_lowercase().contains(&s.to_ascii_lowercase()));
+    let mut errors = 0;
+    for p in scbs.iter().filter(|p| wanted(p)) {
+        let Some(b) = vfs.read(p)? else { continue };
+        match ih_formats::scripts::parse_scb(&b) {
+            Ok(l) => sources.push((p.to_string(), l)),
+            Err(e) => {
+                errors += 1;
+                println!("{p}: {e}");
+            }
+        }
+    }
+    for p in vfs.list("Maps", "*.map", true).into_iter().filter(|p| wanted(p)) {
+        let Some(b) = vfs.read(&p)? else { continue };
+        match ih_formats::map::Map::parse(&b) {
+            Ok(m) => sources.push((p, m.scripts)),
+            Err(e) => {
+                errors += 1;
+                println!("{p}: {e}");
+            }
+        }
+    }
+    // name -> (uses in .scb, uses in maps)
+    let mut actions: BTreeMap<String, [usize; 2]> = BTreeMap::new();
+    let mut conditions: BTreeMap<String, [usize; 2]> = BTreeMap::new();
+    // Older chunks store only the enum index: name them from entries that store both.
+    let (mut action_names, mut condition_names) = (BTreeMap::new(), BTreeMap::new());
+    for s in sources.iter().flat_map(|(_, l)| l.iter().flat_map(|l| l.all())) {
+        for c in s.conditions.iter().flatten() {
+            if let Some(n) = &c.name {
+                condition_names.entry(c.index).or_insert_with(|| n.clone());
+            }
+        }
+        for a in s.actions.iter().chain(&s.false_actions) {
+            if let Some(n) = &a.name {
+                action_names.entry(a.index).or_insert_with(|| n.clone());
+            }
+        }
+    }
+    let name_of = |c: &Call, table: &BTreeMap<i32, String>| {
+        c.name.clone().or_else(|| table.get(&c.index).cloned()).unwrap_or_else(|| format!("#{}", c.index))
+    };
+    let mut scripts_n = [0usize; 2];
+    for (path, lists) in &sources {
+        let k = usize::from(!path.to_ascii_lowercase().ends_with(".scb"));
+        for s in lists.iter().flat_map(|l| l.all()) {
+            scripts_n[k] += 1;
+            for c in s.conditions.iter().flatten() {
+                conditions.entry(name_of(c, &condition_names)).or_default()[k] += 1;
+            }
+            for a in s.actions.iter().chain(&s.false_actions) {
+                actions.entry(name_of(a, &action_names)).or_default()[k] += 1;
+            }
+        }
+    }
+    println!(
+        "{} sources ({} errors): {} scripts in .scb files, {} in maps; {} action types, {} condition types",
+        sources.len(),
+        errors,
+        scripts_n[0],
+        scripts_n[1],
+        actions.len(),
+        conditions.len()
+    );
+    for (what, table) in [("actions", &actions), ("conditions", &conditions)] {
+        let mut v: Vec<(&String, &[usize; 2])> = table.iter().collect();
+        // Skirmish scripts first, then map use.
+        v.sort_by(|a, b| b.1[0].cmp(&a.1[0]).then(b.1[1].cmp(&a.1[1])).then(a.0.cmp(b.0)));
+        let in_scb = v.iter().filter(|(_, c)| c[0] > 0).count();
+        println!("{what}: {} used by .scb scripts, {} only by maps", in_scb, v.len() - in_scb);
+        for (name, c) in v.iter().take(if all { usize::MAX } else { 15 }) {
+            println!("  {name}: {} in .scb, {} in maps", c[0], c[1]);
+        }
+    }
+    anyhow::ensure!(errors == 0, "{errors} script sources failed to parse");
+    Ok(())
 }
 
 fn wnd(vfs: &Vfs, name: Option<&str>) -> Result<()> {
