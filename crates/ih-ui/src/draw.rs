@@ -452,6 +452,19 @@ impl WindowManager {
                     let t = self.windows[id].gadget.entry.clone();
                     self.text_str(&mut out, res, id, rect, false, 4, 0, Some(&t));
                 }
+                "PROGRESSBAR" => {
+                    self.default_window(&mut out, res, id, rect);
+                    let fraction = (w.gadget.value as f32 / 100.0).clamp(0.0, 1.0);
+                    out.push(DrawCmd::Fill {
+                        rect: [
+                            rect[0] + 1,
+                            rect[1] + 1,
+                            rect[0] + 1 + ((rect[2] - rect[0] - 2) as f32 * fraction) as i32,
+                            rect[3] - 1,
+                        ],
+                        color: [55, 195, 110, 240],
+                    });
+                }
                 "HORZSLIDER" | "VERTSLIDER" => self.slider(&mut out, res, id, rect),
                 "SCROLLLISTBOX" => {
                     self.default_window(&mut out, res, id, rect);

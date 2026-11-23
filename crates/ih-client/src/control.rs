@@ -174,7 +174,7 @@ impl Controls {
         else {
             return false;
         };
-        if o.disabled.any() {
+        if o.disabled.any() || (o.construction.is_some() && b.command != "SELL") {
             return false;
         }
         match b.command.as_str() {
@@ -297,6 +297,10 @@ mod tests {
         assert!(c.selection(&sim, &[enemy], 1).iter().all(Option::is_none));
         let orders = c.orders(&c.buttons["Build"], &sim, &[enemy, own], 1, None, None, 0.0);
         assert!(matches!(&orders[..],[Command::Produce{factory,template}] if *factory==own&&template=="Soldier"));
+        let stop = Button { command: "STOP".into(), ..Default::default() };
+        assert!(c.available(&stop, &sim, &[own], 1));
+        sim.objects.get_mut(&own).unwrap().construction = Some(25.0);
+        assert!(!c.available(&stop, &sim, &[own], 1));
     }
 
     #[test]

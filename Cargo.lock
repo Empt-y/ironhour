@@ -919,6 +919,8 @@ dependencies = [
  "ih-vfs",
  "png",
  "pollster",
+ "serde",
+ "tempfile",
  "toml",
  "wgpu",
  "winit",

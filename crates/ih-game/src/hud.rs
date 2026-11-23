@@ -36,7 +36,11 @@ pub struct Hud {
     pub camera_target: Option<[f32; 2]>,
     map_frame: u32,
     pub generals: bool,
+    general_page: usize,
+    general_pages: usize,
     pub groups: [Vec<u32>; 10],
+    pub views: [Option<ih_client::TacticalCamera>; 10],
+    pub camera_keys: std::collections::BTreeMap<String, String>,
     slots: Vec<Option<String>>,
     cursor_images: std::collections::BTreeMap<String, String>,
     science_sets: std::collections::BTreeMap<String, Vec<String>>,
@@ -119,7 +123,11 @@ impl Hud {
             camera_target: None,
             map_frame: u32::MAX,
             generals: false,
+            general_page: 0,
+            general_pages: 1,
             groups: Default::default(),
+            views: Default::default(),
+            camera_keys: Default::default(),
             slots: vec![None; 14],
             cursor_images,
             science_sets,
@@ -195,13 +203,14 @@ impl Hud {
                 .find(|o| o.owner == player && !o.dead)
                 .and_then(|o| sim.templates.objects[&o.template].values("Side").first());
             if let Some(sets) = side.and_then(|s| self.science_sets.get(s)) {
-                self.slots = sets
+                let choices: Vec<_> = sets
                     .iter()
                     .filter_map(|s| self.controls.sets.get(s))
                     .flat_map(|s| s.iter().filter_map(Clone::clone))
-                    .take(14)
-                    .map(Some)
                     .collect();
+                self.general_pages = choices.len().div_ceil(14).max(1);
+                self.general_page %= self.general_pages;
+                self.slots = choices.into_iter().skip(self.general_page * 14).take(14).map(Some).collect();
                 self.slots.resize(14, None);
             }
         }
@@ -316,6 +325,7 @@ impl Hud {
             return false;
         }
         if let Input::LeftDown(p) = input
+            && sim.has_radar(player)
             && let Some(r) = self.rect("LeftHUD")
             && p[0] as f32 >= r[0]
             && (p[0] as f32) < r[2]
@@ -358,7 +368,14 @@ impl Hud {
                 } else if name.ends_with(":ButtonOptions") {
                     self.menu = true;
                 } else if name.ends_with(":ButtonGeneral") {
-                    self.generals = !self.generals;
+                    if !self.generals {
+                        self.generals = true;
+                        self.general_page = 0;
+                    } else if self.general_page + 1 < self.general_pages {
+                        self.general_page += 1;
+                    } else {
+                        self.generals = false;
+                    }
                 } else if name.ends_with(":ButtonIdleWorker") {
                     self.action = Some("worker".into());
                 }
@@ -450,7 +467,7 @@ impl Hud {
                 for (window, key) in [
                     ("ButtonOptions", "OptionsButtonEnable"),
                     ("ButtonIdleWorker", "IdleWorkerButtonEnable"),
-                    ("ButtonGeneral", "GenBarButtonOn"),
+                    ("ButtonGeneral", "GeneralButtonEnable"),
                 ] {
                     if let Some(name) = scheme.icons.get(key)
                         && let Some(r) = self.rect(window)
@@ -488,7 +505,16 @@ impl Hud {
                             list.push(DrawCmd::Fill { rect: r.map(|v| v as i32), color: [20, 35, 55, 240] });
                             self.text(
                                 &mut list,
-                                &format!("{}\n{:.0}%", e.template, e.percent * 100.0),
+                                &format!(
+                                    "{}\n{:.0}%",
+                                    sim.templates
+                                        .objects
+                                        .get(&e.template)
+                                        .and_then(|t| t.values("DisplayName").first())
+                                        .map(|n| (self.layer.res.strings)(n))
+                                        .unwrap_or_else(|| e.template.clone()),
+                                    e.percent * 100.0
+                                ),
                                 r[0],
                                 r[1],
                                 r[2] - r[0],
@@ -506,7 +532,12 @@ impl Hud {
                     factory.health.as_ref().map(|h| format!("  {:.0}/{:.0}", h.current, h.max)).unwrap_or_default();
                 self.text(
                     &mut list,
-                    &format!("{}{}", label, health),
+                    &format!(
+                        "{}{}{}",
+                        label,
+                        health,
+                        factory.construction.map(|p| format!("\nConstruction: {:.0}%", p.max(0.0))).unwrap_or_default()
+                    ),
                     self.size.0 as f32 * 0.69,
                     self.size.1 as f32 * 0.90,
                     self.size.0 as f32 * 0.30,
@@ -540,6 +571,7 @@ impl Hud {
             }
         }
         if self.visible
+            && sim.has_radar(player)
             && let Some(r) = self.rect("LeftHUD")
         {
             if self.map_frame == u32::MAX || sim.frame.saturating_sub(self.map_frame) >= 3 {
@@ -582,6 +614,28 @@ impl Hud {
                 rect: r,
                 color: [255; 4],
             });
+        }
+        if self.visible
+            && !sim.has_radar(player)
+            && let Some(r) = self.rect("LeftHUD")
+        {
+            list.push(DrawCmd::Fill { rect: r.map(|v| v as i32), color: [5, 10, 15, 255] });
+            self.text(&mut list, "Radar offline", r[0] + 5.0, r[1] + 20.0, r[2] - r[0] - 10.0, [145, 155, 160, 255]);
+        }
+        if self.generals {
+            let text = format!(
+                "General powers {}/{} - click General to change page",
+                self.general_page + 1,
+                self.general_pages
+            );
+            self.text(
+                &mut list,
+                &text,
+                self.size.0 as f32 * 0.28,
+                self.size.1 as f32 * 0.64,
+                self.size.0 as f32 * 0.70,
+                [255, 240, 180, 255],
+            );
         }
         if let Some(button) = self.pending.as_ref().and_then(|n| self.controls.buttons.get(n))
             && button.command == "DOZER_CONSTRUCT"
@@ -646,12 +700,56 @@ impl Hud {
             }
         }
         if let Some(p) = cursor {
-            let cursor_name = self
-                .pending
-                .as_ref()
-                .and_then(|n| self.controls.buttons.get(n))
-                .map(|b| if b.cursor.is_empty() { "Target" } else { &b.cursor })
-                .unwrap_or("Arrow");
+            let hover = if p[1] < self.size.1 as f32 * 416.0 / 600.0 {
+                sim.objects
+                    .values()
+                    .filter(|o| !o.dead)
+                    .filter_map(|o| {
+                        let q = self.view_projection * glam::Vec3::from(o.position).extend(1.0);
+                        if q.w <= 0.0 {
+                            return None;
+                        }
+                        let ndc = q.truncate() / q.w;
+                        let dx = (ndc.x + 1.0) * 0.5 * self.size.0 as f32 - p[0];
+                        let dy = (1.0 - ndc.y) * 0.5 * self.size.1 as f32 - p[1];
+                        Some((dx * dx + dy * dy, o))
+                    })
+                    .filter(|(d, _)| *d < 24.0 * 24.0)
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, o)| o)
+            } else {
+                None
+            };
+            let cursor_name = if self.menu || self.score || p[1] >= self.size.1 as f32 * 416.0 / 600.0 {
+                "Arrow"
+            } else if let Some(b) = self.pending.as_ref().and_then(|n| self.controls.buttons.get(n)) {
+                if b.command == "DOZER_CONSTRUCT"
+                    && self.ground.is_some_and(|point| {
+                        sim.location_legal_to_build(&b.object, point, self.angle, selected.first().copied())
+                            != ih_sim::construction::LegalBuild::Ok
+                    })
+                {
+                    "GenericInvalid"
+                } else if b.cursor.is_empty() {
+                    "Target"
+                } else {
+                    &b.cursor
+                }
+            } else if selected.iter().any(|id| sim.objects.get(id).is_some_and(|o| o.owner == player)) {
+                if hover.is_some_and(|o| o.owner != player && o.owner != 0) {
+                    "AttackObj"
+                } else if hover.is_some() {
+                    "Select"
+                } else if self.ground.is_some() {
+                    "Move"
+                } else {
+                    "GenericInvalid"
+                }
+            } else if hover.is_some() {
+                "Select"
+            } else {
+                "Arrow"
+            };
             if let Some(image) = self.cursor_images.get(cursor_name).or_else(|| self.cursor_images.get("Arrow")) {
                 self.mapped(&mut list, image, [p[0], p[1], p[0] + 32.0, p[1] + 32.0], [255; 4]);
             }

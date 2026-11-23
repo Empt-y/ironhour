@@ -301,6 +301,28 @@ END
     }
 
     #[test]
+    fn resizing_preserves_gadget_values_and_round_trips_original_coordinates() {
+        let layout = ih_formats::wnd::parse(
+            br#"WINDOW
+WINDOWTYPE = ENTRYFIELD;
+SCREENRECT = UPPERLEFT: 10 20, BOTTOMRIGHT: 110 40, CREATIONRESOLUTION: 800 600;
+NAME = "Entry";
+STATUS = ENABLED;
+END
+"#,
+        )
+        .unwrap();
+        let mut m = WindowManager::new([800, 600]);
+        m.load(&layout);
+        m.windows[0].gadget.entry = "Commander".into();
+        m.resize([1600, 1200]);
+        assert_eq!(m.windows[0].position, [20, 40]);
+        m.resize([800, 600]);
+        assert_eq!(m.windows[0].position, [10, 20]);
+        assert_eq!(m.windows[0].gadget.entry, "Commander");
+    }
+
+    #[test]
     fn rects_scale_to_the_display_and_children_are_parent_relative() {
         let m = manager([1600, 1200]);
         let front = m.find("m.wnd:front").unwrap();

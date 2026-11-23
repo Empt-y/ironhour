@@ -602,6 +602,16 @@ impl Simulation {
     /// `Object::onDie`: each die module in order.
     pub(crate) fn on_die(&mut self, id: u32, info: DamageInfo) {
         let Some(o) = self.objects.get(&id) else { return };
+        let t = &self.templates.objects[&o.template];
+        if t.has_kind("STRUCTURE") || t.has_kind("VEHICLE") || t.has_kind("INFANTRY") || t.has_kind("AIRCRAFT") {
+            self.notices.push(crate::notices::Notice::ObjectDied {
+                object: id,
+                player: o.owner,
+                killer: self.objects.get(&info.source).map(|o| o.owner),
+                building: t.has_kind("STRUCTURE"),
+                sold: o.status & crate::stealth::bits().sold != 0,
+            });
+        }
         let dies: Vec<(usize, Option<DieKind>)> = o
             .modules
             .iter()

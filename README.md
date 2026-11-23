@@ -19,11 +19,13 @@ Command logs replay with identical per-tick state hashes. The
 review checklist.
 
 M5 now has deterministic combat and economy logic slices (with gameplay and
-visual gaps recorded in PORTING.md). M6 is in progress: the original WND menus
-can start a skirmish, including map previews and chosen start positions. UI
-clicks, positional combat sounds, unit responses, initial EVA alerts and streaming
-shell/faction music use the game's mounted assets. Ambient/movement loops, streaming dialogue and saved volume sliders are implemented.
-The remaining M6 interface work and M7 script/AI dependencies are recorded in PORTING.md. Skirmish AI is M7.
+visual gaps recorded in PORTING.md). M6's interface/audio slice is implemented:
+original WND menus start a sandbox skirmish with loading and score screens,
+faction control bars, command buttons, hotkeys, cursors and saved options.
+UI clicks, positional sounds, unit responses, EVA, ambient/movement loops,
+streaming dialogue and shell/faction music use mounted game assets.
+Stock and Contra menu-to-game smoke checks pass. Remaining gameplay dependencies
+and human review items are recorded in PORTING.md. Script execution and skirmish AI are M7.
 
 ## You need the game
 

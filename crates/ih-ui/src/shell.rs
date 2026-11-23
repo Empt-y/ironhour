@@ -178,10 +178,13 @@ impl GameSetup {
 pub enum ShellEvent {
     StartGame(GameSetup),
     Quit,
+    ReturnToMain,
     /// An interface sound to play.
     Sound(String),
     AudioPreview([u8; 3]),
     AudioSave([u8; 3]),
+    InterfacePreview([u32; 3]),
+    InterfaceSave([u32; 3]),
 }
 
 /// Data the menus offer.
@@ -257,6 +260,9 @@ struct Screen {
 /// `TheShell`.
 pub struct Shell {
     pub audio_volumes: [u8; 3],
+    pub interface_options: [u32; 3],
+    interface_original: [u32; 3],
+    resolutions: Vec<[u32; 2]>,
     options_original: [u8; 3],
     pub ui: WindowManager,
     pub setup: GameSetup,
@@ -292,6 +298,17 @@ impl Shell {
         };
         let mut s = Shell {
             audio_volumes: [80, 70, 55],
+            interface_options: [1280, 800, 50],
+            interface_original: [1280, 800, 50],
+            resolutions: vec![
+                [800, 600],
+                [1024, 768],
+                [1280, 720],
+                [1280, 800],
+                [1600, 900],
+                [1920, 1080],
+                [2560, 1440],
+            ],
             options_original: [80, 70, 55],
             ui: WindowManager::new(display),
             setup,
@@ -385,6 +402,57 @@ impl Shell {
             MAP_SELECT => self.map_select_init(),
             "Menus/OptionsMenu.wnd" => {
                 self.options_original = self.audio_volumes;
+                self.interface_original = self.interface_options;
+                let current = [self.interface_options[0], self.interface_options[1]];
+                if !self.resolutions.contains(&current) {
+                    self.resolutions.push(current);
+                }
+                let row = self.resolutions.iter().position(|r| *r == current).unwrap_or(0);
+                self.rows(
+                    "OptionsMenu.wnd:ComboBoxResolution",
+                    self.resolutions.iter().map(|r| format!("{} x {}", r[0], r[1])).collect(),
+                    row,
+                );
+                if let Some(id) = self.find("OptionsMenu.wnd:SliderScrollSpeed") {
+                    let g = &mut self.ui.windows[id].gadget;
+                    g.min = 0;
+                    g.max = 100;
+                    g.value = self.interface_options[2] as i32;
+                }
+                if let Some(id) = self.find("OptionsMenu.wnd:NetworkParent") {
+                    self.ui.hide(id, true);
+                }
+                for w in &mut self.ui.windows {
+                    if w.name.as_deref().is_some_and(|n| n.starts_with("OptionsMenu.wnd:"))
+                        && matches!(
+                            w.kind.as_str(),
+                            "HORZSLIDER"
+                                | "VERTSLIDER"
+                                | "COMBOBOX"
+                                | "CHECKBOX"
+                                | "RADIOBUTTON"
+                                | "PUSHBUTTON"
+                                | "ENTRYFIELD"
+                        )
+                    {
+                        let n = w.name.as_deref().unwrap();
+                        let enabled = [
+                            "SliderVoiceVolume",
+                            "SliderMusicVolume",
+                            "SliderSFXVolume",
+                            "SliderScrollSpeed",
+                            "ComboBoxResolution",
+                            "ButtonAccept",
+                            "ButtonBack",
+                            "ButtonDefaults",
+                        ]
+                        .iter()
+                        .any(|key| n.ends_with(&format!(":{key}")));
+                        if !enabled {
+                            w.status &= !crate::status::ENABLED;
+                        }
+                    }
+                }
                 for (name, value) in
                     ["SliderSFXVolume", "SliderVoiceVolume", "SliderMusicVolume"].into_iter().zip(self.audio_volumes)
                 {
@@ -590,6 +658,19 @@ impl Shell {
         }
     }
 
+    fn read_interface_options(&mut self) -> [u32; 3] {
+        if let Some(id) = self.find("OptionsMenu.wnd:SliderScrollSpeed") {
+            self.interface_options[2] = self.ui.windows[id].gadget.value.clamp(0, 100) as u32;
+        }
+        if let Some(id) = self.find("OptionsMenu.wnd:ComboBoxResolution")
+            && let Some(r) = self.ui.windows[id].gadget.selected.and_then(|i| self.resolutions.get(i))
+        {
+            self.interface_options[0] = r[0];
+            self.interface_options[1] = r[1];
+        }
+        self.interface_options
+    }
+
     fn read_audio_options(&mut self) -> [u8; 3] {
         for (i, name) in ["SliderSFXVolume", "SliderVoiceVolume", "SliderMusicVolume"].into_iter().enumerate() {
             if let Some(id) = self.find(&format!("OptionsMenu.wnd:{name}")) {
@@ -610,6 +691,8 @@ impl Shell {
                 {
                     let values = self.read_audio_options();
                     out.push(ShellEvent::AudioPreview(values));
+                    let values = self.read_interface_options();
+                    out.push(ShellEvent::InterfacePreview(values));
                 }
                 UiEvent::System { message: Message::Selected(control), .. } => {
                     if let Some(name) = self.ui.windows[control].name.clone() {
@@ -644,13 +727,29 @@ impl Shell {
             "mainmenu.wnd:buttonoptions" => self.push("Menus/OptionsMenu.wnd"),
             "mainmenu.wnd:buttoncredits" => self.push("Menus/CreditsMenu.wnd"),
             "mainmenu.wnd:buttonexit" => out.push(ShellEvent::Quit),
+            "scorescreen.wnd:buttonok" | "scorescreen.wnd:buttoncontinue" => out.push(ShellEvent::ReturnToMain),
+            "optionsmenu.wnd:buttondefaults" => {
+                self.audio_volumes = [80, 70, 55];
+                self.interface_options = [1280, 800, 50];
+                let original = self.options_original;
+                let interface = self.interface_original;
+                self.init("Menus/OptionsMenu.wnd");
+                self.options_original = original;
+                self.interface_original = interface;
+                out.push(ShellEvent::AudioPreview(self.audio_volumes));
+                out.push(ShellEvent::InterfacePreview(self.interface_options));
+            }
             "optionsmenu.wnd:buttonaccept" => {
                 let values = self.read_audio_options();
                 out.push(ShellEvent::AudioSave(values));
+                let values = self.read_interface_options();
+                out.push(ShellEvent::InterfaceSave(values));
                 self.pop();
             }
             "optionsmenu.wnd:buttonback" => {
                 self.audio_volumes = self.options_original;
+                self.interface_options = self.interface_original;
+                out.push(ShellEvent::InterfacePreview(self.interface_options));
                 out.push(ShellEvent::AudioPreview(self.audio_volumes));
                 self.pop();
             }

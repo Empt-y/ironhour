@@ -545,6 +545,7 @@ impl Simulation {
                 t.boxes = 0;
                 if value > 0 {
                     self.player(owner).deposit(value);
+                    self.notices.push(crate::notices::Notice::SuppliesDeposited { player: owner, amount: value });
                 }
                 false
             }

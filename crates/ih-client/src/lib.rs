@@ -15,3 +15,5 @@ pub use defs::Definitions;
 pub use world::{World, WorldError, find_map};
 
 pub mod control;
+
+pub mod score;

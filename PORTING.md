@@ -2604,10 +2604,8 @@ The remaining M6 audio infrastructure is implemented for the current engine:
   produced non-silent PCM; `audio-device-check` opened the native device and
   submitted a GUI click. A human listening review remains a review task.
 
-Next in the plan: finish M6's interface (the in-game control bar and command
-buttons for build/production/upgrades/powers, CommandMap hotkeys and cursors,
-loading/score screens and remaining options/menu integration), then review a
-menu-started sandbox with full UI and sound. M7 follows: SCB script execution,
+The interface closure below completes the current M6 implementation slice.
+M7 follows: SCB script execution,
 skirmish build lists and teams, AI and victory conditions. Its first-playable
 check is complete matches against every AI general at each difficulty.
 
@@ -2630,3 +2628,31 @@ bar visibility. Pause/options and returning to the main menu are connected.
 Windows recompute from creation coordinates on resize without losing entry or
 slider state. The native smoke check clicks a production cameo and verifies its
 queue and cost, then captures the world and HUD together.
+
+### M6 interface closure and verification
+
+Loading and score screens use the original WND layouts. Loading shows active
+players, map preview and start markers; scores collect production, casualties,
+kills and deposited supplies without changing deterministic simulation hashes.
+The pause menu opens saved audio/display/scroll options, ends a sandbox into
+scores, or returns to the main menu. Resolution changes resize the live UI;
+cancel restores previews. Interface settings use a separate user file beside
+audio preferences. Unsupported graphics/network settings are disabled.
+
+Context cursors use Mouse.ini assets. Localized camera keys, saved views,
+selection groups, general-power pages and command targeting are connected.
+Radar interaction requires the simulation's radar capability; absent RadarUpdate
+behavior remains an explicit gameplay dependency. Unfinished buildings display
+construction progress and cannot issue regular production commands.
+
+Workspace tests, strict Clippy and release simulation checks pass. Native stock
+and Contra smoke flows click through menus, load a skirmish, queue and cancel
+production through real HUD hit regions, verify cost/refund, open scores and
+return to the main menu. Captured HUD/loading/score screens were visually checked.
+This is sandbox verification; human play/listening review remains outstanding.
+
+M6 does not implement missing simulation commands: attack-move, dedicated
+construction cancellation and unported module actions remain disabled. Existing
+M4/M5 visual/gameplay gaps still apply. M7 must connect script music/dialogue/EVA
+requests and implement SCB execution, skirmish build lists/teams, AI and victory
+conditions before complete matches against computer generals are possible.

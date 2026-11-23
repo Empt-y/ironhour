@@ -198,3 +198,127 @@ pub fn scenario_for(
     }
     Ok(toml + &commands)
 }
+
+/// Populate the original score layout from client-side match counters.
+pub fn populate_scores(layer: &mut UiLayer, scores: &ih_client::score::Scores) {
+    let ui = &mut layer.shell.ui;
+    for w in &mut ui.windows {
+        if w.name.as_deref().is_some_and(|n| {
+            n.starts_with("ScoreScreen.wnd:StaticTextObserver") || n.starts_with("ScoreScreen.wnd:GameWindowWinner")
+        }) {
+            w.status |= ih_ui::status::HIDDEN;
+        }
+    }
+    for name in [
+        "ButtonBuddy",
+        "ButtonSaveReplay",
+        "ButtonEmote",
+        "TextEntryChat",
+        "ListboxChatWindowScoreScreen",
+        "ListboxWarschoolAdvice",
+        "StaticTextWarSchool",
+        "BigPortrait",
+        "GeneralRemarks",
+        "ChallengeWinLossText",
+        "StaticTextGameSaveComplete",
+    ] {
+        if let Some(id) = ui.find(&format!("ScoreScreen.wnd:{name}")) {
+            ui.hide(id, true);
+        }
+    }
+    let mut rows: Vec<_> = ui
+        .windows
+        .iter()
+        .filter_map(|w| {
+            let n = w.name.as_deref()?.strip_prefix("ScoreScreen.wnd:StaticTextPlayer")?;
+            let index = n.parse::<usize>().ok()?;
+            Some((ui.screen_position(w.id)[1], index))
+        })
+        .collect();
+    rows.sort();
+    let players: Vec<_> = scores.players.iter().filter(|(id, _)| **id > 0).collect();
+    for (row, (_, suffix)) in rows.iter().enumerate() {
+        let stats = players.get(row);
+        for (prefix, value) in [
+            (
+                "StaticTextPlayer",
+                stats.map(|(id, _)| scores.names.get(id).cloned().unwrap_or_else(|| format!("Army {}", row + 1))),
+            ),
+            ("StaticTextUnitsBuilt", stats.map(|(_, s)| s.units_built.to_string())),
+            ("StaticTextUnitsLost", stats.map(|(_, s)| s.units_lost.to_string())),
+            ("StaticTextUnitsDestroyed", stats.map(|(_, s)| s.units_destroyed.to_string())),
+            ("StaticTextBuildingsBuilt", stats.map(|(_, s)| s.buildings_built.to_string())),
+            ("StaticTextBuildingsLost", stats.map(|(_, s)| s.buildings_lost.to_string())),
+            ("StaticTextBuildingsDestroyed", stats.map(|(_, s)| s.buildings_destroyed.to_string())),
+            ("StaticTextResources", stats.map(|(_, s)| s.supplies.to_string())),
+        ] {
+            if let Some(id) = ui.find(&format!("ScoreScreen.wnd:{prefix}{suffix}")) {
+                ui.hide(id, value.is_none());
+                ui.windows[id].text = value;
+            }
+        }
+    }
+}
+
+pub fn loading_progress(layer: &mut UiLayer, setup: &GameSetup, value: i32) {
+    let ui = &mut layer.shell.ui;
+    for w in &mut ui.windows {
+        if w.kind == "STATICTEXT" && w.text.is_none() && w.script.text().is_some_and(|t| !t.contains(':')) {
+            w.text = Some(if w.script.rect.upper_left[1] < 100 { "Loading game".into() } else { String::new() });
+        }
+    }
+    if let Some(id) = ui.find("MultiplayerLoadScreen.wnd:StaticTextProgressTitle") {
+        ui.windows[id].text = Some(format!("Loading: {value}%"));
+    }
+    for (i, slot) in setup.slots.iter().enumerate() {
+        let active = !matches!(slot.kind, SlotKind::Open | SlotKind::Closed);
+        for prefix in ["ProgressLoad", "StaticTextPlayer", "StaticTextTeam", "StaticTextSide"] {
+            if let Some(id) = ui.find(&format!("MultiplayerLoadScreen.wnd:{prefix}{i}")) {
+                ui.hide(id, !active);
+                if prefix == "ProgressLoad" {
+                    ui.windows[id].gadget.value = value;
+                } else if prefix == "StaticTextPlayer" {
+                    ui.windows[id].text =
+                        Some(if i == 0 { setup.player_name.clone() } else { format!("Army {}", i + 1) });
+                } else if prefix == "StaticTextSide" {
+                    ui.windows[id].text = Some(slot.side.clone().unwrap_or_else(|| "Random".into()));
+                } else {
+                    ui.windows[id].text = Some(slot.team.map(|t| t.to_string()).unwrap_or_else(|| "None".into()));
+                }
+            }
+        }
+    }
+    if let Some(map) = &setup.map
+        && let Some(id) = ui.find("MultiplayerLoadScreen.wnd:WinMapPreview")
+    {
+        let size = ui.windows[id].size;
+        let origin = ui.screen_position(id);
+        let extent = [(map.extent[2] - map.extent[0]).max(1.0), (map.extent[3] - map.extent[1]).max(1.0)];
+        let scale = (size[0] as f32 / extent[0]).min(size[1] as f32 / extent[1]);
+        let w = extent[0] * scale;
+        let h = extent[1] * scale;
+        let left = (size[0] as f32 - w) * 0.5;
+        let top = (size[1] as f32 - h) * 0.5;
+        ui.windows[id].image = Some(format!("Maps\\{}\\{}.tga", map.folder(), map.folder()));
+        ui.windows[id].image_rect = [left as i32, top as i32, (left + w) as i32, (top + h) as i32];
+        let assignments = setup.assigned_starts(map.players as usize).unwrap_or_default();
+        for n in 0..8 {
+            if let Some(marker) = ui.find(&format!("MultiplayerLoadScreen.wnd:ButtonMapStartPosition{n}")) {
+                if let Some(p) = map.starts.get(n) {
+                    ui.hide(marker, false);
+                    let parent = ui.windows[marker].parent.map_or([0, 0], |p| ui.screen_position(p));
+                    let s = ui.windows[marker].size;
+                    ui.windows[marker].position = [
+                        origin[0] + left as i32 + ((p[0] - map.extent[0]) * scale) as i32 - parent[0] - s[0] / 2,
+                        origin[1] + top as i32 + (h - (p[1] - map.extent[1]) * scale) as i32 - parent[1] - s[1] / 2,
+                    ];
+                    ui.windows[marker].text = Some(
+                        assignments.iter().position(|p| *p == Some(n)).map(|i| (i + 1).to_string()).unwrap_or_default(),
+                    );
+                } else {
+                    ui.hide(marker, true);
+                }
+            }
+        }
+    }
+}
