@@ -91,6 +91,30 @@ impl WindowManager {
         layout.windows.iter().map(|w| self.create(w, None)).collect()
     }
 
+    /// Recompute layout rectangles from their creation resolution, without
+    /// resetting gadget values or accumulating rounding errors across resizes.
+    pub fn resize(&mut self, display: [i32; 2]) {
+        if display.iter().any(|v| *v <= 0) {
+            return;
+        }
+        self.display = display;
+        let rects: Vec<_> = self.windows.iter().map(|w| self.screen_rect(&w.script.rect)).collect();
+        for i in 0..self.windows.len() {
+            let (lo, hi) = rects[i];
+            let parent = self.windows[i].parent.map_or([0, 0], |p| rects[p].0);
+            let old = self.windows[i].size;
+            let size = [hi[0] - lo[0], hi[1] - lo[1]];
+            for (n, value) in self.windows[i].image_rect.iter_mut().enumerate() {
+                let axis = n % 2;
+                *value = (*value as i64 * size[axis] as i64 / old[axis].max(1) as i64) as i32;
+            }
+            self.windows[i].position = [lo[0] - parent[0], lo[1] - parent[1]];
+            self.windows[i].size = size;
+        }
+        self.input_state.captor = None;
+        self.input_state.under = None;
+    }
+
     fn screen_rect(&self, r: &wnd::ScreenRect) -> ([i32; 2], [i32; 2]) {
         // parseScreenRect: scale by display / creation resolution, truncating.
         let res = [r.creation_resolution[0].max(1), r.creation_resolution[1].max(1)];

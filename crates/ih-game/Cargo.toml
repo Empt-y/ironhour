@@ -14,6 +14,7 @@ ih-sim.workspace = true
 ih-ui.workspace = true
 ih-formats.workspace = true
 toml.workspace = true
+png.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 glam = "0.34"

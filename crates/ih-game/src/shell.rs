@@ -19,7 +19,7 @@ use ih_vfs::Vfs;
 
 pub struct UiLayer {
     pub shell: Shell,
-    res: Resources,
+    pub(crate) res: Resources,
     pass: UiPass,
 }
 
@@ -84,6 +84,20 @@ impl UiLayer {
         size: (u32, u32),
     ) {
         let list = self.shell.ui.draw_list(&mut self.res);
+        self.paint(renderer, vfs, language, enc, view, size, &list);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        &mut self,
+        renderer: &mut Renderer,
+        vfs: &Vfs,
+        language: &str,
+        enc: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size: (u32, u32),
+        list: &[DrawCmd],
+    ) {
         if self.res.fonts.dirty {
             let s = self.res.fonts.atlas_size;
             renderer.set_texture_rgba(ih_ui::text::ATLAS, s, s, self.res.fonts.atlas.clone());
@@ -169,6 +183,13 @@ pub fn scenario_for(
             let len = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1.0);
             let p = [at[0] + d[0] / len * 90.0, at[1] + d[1] / len * 90.0];
             toml += &format!("\n[[spawn]]\ntemplate = {u:?}\nposition = [{:.1}, {:.1}]\nowner = {owner}\n", p[0], p[1]);
+        }
+        if let Some(sciences) = defs.data.field("PlayerTemplate", &side, "IntrinsicSciences") {
+            for science in sciences.into_iter().filter(|s| !s.eq_ignore_ascii_case("None")) {
+                commands += &format!(
+                    "\n[[commands]]\nframe = 0\nkind = \"grant_science\"\nplayer = {owner}\nscience = {science:?}\n"
+                );
+            }
         }
         commands += &format!(
             "\n[[commands]]\nframe = 0\nkind = \"deposit\"\nplayer = {owner}\namount = {}\n",

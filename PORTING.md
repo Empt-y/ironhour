@@ -2610,3 +2610,23 @@ loading/score screens and remaining options/menu integration), then review a
 menu-started sandbox with full UI and sound. M7 follows: SCB script execution,
 skirmish build lists and teams, AI and victory conditions. Its first-playable
 check is complete matches against every AI general at each difficulty.
+
+### M6 control bar and command routing
+
+The native game now loads ControlBar.wnd, CommandSet/CommandButton definitions,
+faction ControlBarScheme images and localized CommandMap bindings. Owned
+selection drives command cameos; production, construction, research, science
+purchases, special powers, repair, sell, guard, rally and container commands route
+through simulation commands. Unsupported simulation commands stay disabled.
+Prerequisites, money, science points and recharge state gate available buttons.
+The setup grants the chosen side's intrinsic sciences before play.
+
+HUD state includes production cancellation/progress, selection health, money,
+power, general points, tooltips, faction art and a shroud-aware radar. Targeted
+building placement previews the footprint and legality, supports wheel rotation
+and Shift repeat placement; Escape cancels targeting. The original localized
+hotkeys drive stop/scatter, selection, control groups, camera reset, options and
+bar visibility. Pause/options and returning to the main menu are connected.
+Windows recompute from creation coordinates on resize without losing entry or
+slider state. The native smoke check clicks a production cameo and verifies its
+queue and cost, then captures the world and HUD together.

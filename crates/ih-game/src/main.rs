@@ -8,6 +8,7 @@ use ih_render::{Assets, Renderer, Scene, Targets};
 use ih_vfs::{Installs, ModProfile, Vfs};
 
 mod audio;
+mod hud;
 mod shell;
 use std::{
     collections::HashSet,
@@ -42,6 +43,9 @@ struct Cli {
     /// Verify window/surface setup, resize and rendering without displaying a window.
     #[arg(long)]
     smoke: bool,
+    /// Save the hidden-window M6 control-bar review image.
+    #[arg(long)]
+    capture: Option<PathBuf>,
     /// Load a recorded M4 movement scenario; its map replaces the positional map.
     #[arg(long)]
     scenario: Option<PathBuf>,
@@ -132,6 +136,8 @@ struct State {
     paused: bool,
     /// The menus, while they are up.
     ui: Option<shell::UiLayer>,
+    hud: Option<hud::Hud>,
+    overlay_options: bool,
     audio: Option<ih_audio::Audio>,
     local_player: Option<u32>,
     feedback: audio::Feedback,
@@ -212,6 +218,8 @@ impl App {
             feedback: audio::Feedback::default(),
             local_player: self.scenario.as_ref().and_then(|s| s.spawn.first()).map(|s| s.owner),
             ui: None,
+            hud: None,
+            overlay_options: false,
             audio: if self.cli.no_audio || self.cli.smoke {
                 None
             } else {
@@ -233,6 +241,16 @@ impl App {
                 }
             },
         });
+        if self.state.as_ref().unwrap().simulation.is_some() {
+            let st = self.state.as_mut().unwrap();
+            st.hud = Some(hud::Hud::new(
+                &self.vfs,
+                &self.language,
+                &self.defs,
+                &st.renderer,
+                (st.config.width, st.config.height),
+            )?);
+        }
         if self.cli.shell {
             let st = self.state.as_mut().unwrap();
             let size = (st.config.width, st.config.height);
@@ -272,6 +290,70 @@ impl App {
             let sim = s.simulation.as_mut().context("no simulation")?;
             for _ in 0..60 {
                 sim.step();
+            }
+            let player = s.local_player.unwrap_or(1);
+            let command_center = sim
+                .objects
+                .values()
+                .find(|o| o.owner == player && sim.templates.objects[&o.template].has_kind("COMMANDCENTER"))
+                .map(|o| o.id)
+                .context("no human command center")?;
+            s.selected = vec![command_center];
+            let hud = s.hud.as_mut().context("no M6 control bar")?;
+            hud.update(sim, &s.selected, player);
+            let produce = hud
+                .controls
+                .selection(sim, &s.selected, player)
+                .iter()
+                .position(|name| {
+                    name.as_ref().and_then(|n| hud.controls.buttons.get(n)).is_some_and(|b| b.command == "UNIT_BUILD")
+                })
+                .context("command center has no production command")?;
+            let id = hud
+                .layer
+                .shell
+                .ui
+                .find(&format!("ControlBar.wnd:ButtonCommand{:02}", produce + 1))
+                .context("no command window")?;
+            let pos = hud.layer.shell.ui.screen_position(id);
+            let size = hud.layer.shell.ui.windows[id].size;
+            let at = [pos[0] + size[0] / 2, pos[1] + size[1] / 2];
+            let before = sim.money(player);
+            hud.input(&ih_ui::input::Input::LeftDown(at), sim, &s.selected, player);
+            hud.input(&ih_ui::input::Input::LeftUp(at), sim, &s.selected, player);
+            sim.step();
+            anyhow::ensure!(sim.money(player) < before, "HUD production did not spend money");
+            anyhow::ensure!(
+                sim.objects[&command_center].production.as_ref().is_some_and(|p| !p.queue.is_empty()),
+                "HUD production did not queue"
+            );
+            hud.update(sim, &s.selected, player);
+            s.renderer.render_scene_overlay(
+                &s.scene,
+                &s.camera.camera(&self.world.map),
+                &self.world.object_lights(),
+                (s.config.width, s.config.height),
+                [0.0, 0.0, 0.0, 1.0],
+                0.0,
+                |r, e, v| hud.draw(r, &self.vfs, &self.language, e, v, sim, &s.selected, player, Some([10.0, 10.0])),
+            );
+            if let Some(path) = &self.cli.capture {
+                let rgba = s.renderer.render_scene_overlay(
+                    &s.scene,
+                    &s.camera.camera(&self.world.map),
+                    &self.world.object_lights(),
+                    (s.config.width, s.config.height),
+                    [0.0, 0.0, 0.0, 1.0],
+                    0.0,
+                    |r, e, v| {
+                        hud.draw(r, &self.vfs, &self.language, e, v, sim, &s.selected, player, Some([10.0, 10.0]))
+                    },
+                );
+                let file = std::fs::File::create(path)?;
+                let mut encoder = png::Encoder::new(file, s.config.width, s.config.height);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder.write_header()?.write_image_data(&rgba)?;
             }
             let owned: Vec<(u32, String)> =
                 sim.objects.values().filter(|o| o.map_index.is_none()).map(|o| (o.owner, o.template.clone())).collect();
@@ -471,6 +553,8 @@ impl App {
         st.selected.clear();
         st.ui = None;
         st.feedback = audio::Feedback::default();
+        st.hud = Some(hud::Hud::new(&self.vfs, &self.language, &self.defs, &st.renderer, size)?);
+        st.window.set_cursor_visible(false);
         if let Some(audio) = &mut st.audio {
             audio.reload_catalog(ih_audio::Catalog::load(&self.defs.data, &self.language), st.preferences)?;
         }
@@ -490,6 +574,96 @@ impl App {
         Ok(())
     }
 
+    fn hud_action(&mut self, event_loop: &ActiveEventLoop, action: &str) {
+        let Some(st) = &mut self.state else { return };
+        match action {
+            "resume" => {
+                if let Some(h) = &mut st.hud {
+                    h.menu = false;
+                    h.score = false;
+                }
+                st.paused = false;
+            }
+            "quit" => event_loop.exit(),
+            "options" => {
+                let result = shell::UiLayer::new(
+                    &self.vfs,
+                    &self.language,
+                    &self.defs,
+                    &st.renderer,
+                    (st.config.width, st.config.height),
+                    Installs::locate().zero_hour,
+                );
+                match result {
+                    Ok(mut ui) => {
+                        ui.shell.audio_volumes = [st.preferences.effects, st.preferences.speech, st.preferences.music];
+                        ui.shell.push("Menus/OptionsMenu.wnd");
+                        st.ui = Some(ui);
+                        st.overlay_options = true;
+                        st.window.set_cursor_visible(true);
+                    }
+                    Err(e) => eprintln!("options: {e:#}"),
+                }
+            }
+            "score" => {
+                st.paused = true;
+                if let Some(h) = &mut st.hud {
+                    h.menu = false;
+                    h.score = true;
+                }
+            }
+            "worker" => {
+                if let Some(sim) = &st.simulation
+                    && let Some(o) = sim.objects.values().find(|o| {
+                        Some(o.owner) == st.local_player
+                            && !o.dead
+                            && o.ai.state == ih_sim::ai::AiState::Idle
+                            && sim.templates.objects[&o.template].has_kind("DOZER")
+                    })
+                {
+                    st.selected = vec![o.id];
+                    st.camera.center = Vec2::new(o.position[0], o.position[1]);
+                }
+            }
+            "main" => {
+                let result = shell::UiLayer::new(
+                    &self.vfs,
+                    &self.language,
+                    &self.defs,
+                    &st.renderer,
+                    (st.config.width, st.config.height),
+                    Installs::locate().zero_hour,
+                );
+                match result {
+                    Ok(mut ui) => {
+                        ui.shell.audio_volumes = [st.preferences.effects, st.preferences.speech, st.preferences.music];
+                        st.ui = Some(ui);
+                        st.hud = None;
+                        st.simulation = None;
+                        st.sim_draw = None;
+                        st.paused = false;
+                        st.overlay_options = false;
+                        st.selected.clear();
+                        st.window.set_cursor_visible(true);
+                        if let Some(audio) = &mut st.audio {
+                            audio
+                                .reload_catalog(
+                                    ih_audio::Catalog::load(&self.defs.data, &self.language),
+                                    st.preferences,
+                                )
+                                .ok();
+                            if !self.cli.no_music {
+                                audio.play_music(&self.vfs, "Shell").ok();
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("main menu: {e:#}"),
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn fail(&mut self, event_loop: &ActiveEventLoop, e: anyhow::Error) {
         self.error = Some(e);
         event_loop.exit();
@@ -506,6 +680,12 @@ impl State {
         self.config.height = size.height;
         self.surface.configure(&self.renderer.device, &self.config);
         self.targets = self.renderer.targets((size.width, size.height));
+        if let Some(hud) = &mut self.hud {
+            hud.resize((size.width, size.height));
+        }
+        if let Some(ui) = &mut self.ui {
+            ui.shell.resize([size.width as i32, size.height as i32]);
+        }
     }
     fn render(&mut self, world: &World, vfs: &Vfs, language: &str) -> Result<()> {
         if self.size.width == 0 || self.size.height == 0 {
@@ -548,6 +728,9 @@ impl State {
             }
             for event in sim.events.drain(..) {
                 eprintln!("rejected: {event}");
+                if let Some(hud) = &mut self.hud {
+                    hud.toast = event;
+                }
             }
         }
         let key = |keys: &[KeyCode]| f32::from(u8::from(keys.iter().any(|k| self.keys.contains(k))));
@@ -604,6 +787,27 @@ impl State {
             [0.0, 0.0, 0.0, 1.0],
             self.started.elapsed().as_secs_f32() * 1000.0,
         );
+        if let (Some(hud), Some(sim)) = (&mut self.hud, &self.simulation) {
+            hud.update(sim, &self.selected, self.local_player.unwrap_or(1));
+            hud.ground = self
+                .cursor
+                .and_then(|p| {
+                    self.camera.surface_at_pixel(&world.map, &sim.grid, [self.size.width, self.size.height], p)
+                })
+                .map(|p| p.to_array());
+            hud.view_projection = camera.view_proj(self.size.width as f32 / self.size.height.max(1) as f32);
+            hud.draw(
+                &mut self.renderer,
+                vfs,
+                language,
+                &mut enc,
+                &view,
+                sim,
+                &self.selected,
+                self.local_player.unwrap_or(1),
+                self.cursor.map(|c| c.to_array()),
+            );
+        }
         if let Some(ui) = &mut self.ui {
             let size = (self.config.width, self.config.height);
             ui.draw(&mut self.renderer, vfs, language, &mut enc, &view, size);
@@ -695,7 +899,96 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                if let Some(st) = &mut self.state
+                    && st.overlay_options
+                    && st.ui.as_ref().is_some_and(|u| u.shell.top() == Some("Menus/MainMenu.wnd"))
+                {
+                    st.ui = None;
+                    st.overlay_options = false;
+                    st.window.set_cursor_visible(false);
+                }
                 return;
+            }
+        }
+        if let Some(st) = &mut self.state {
+            if let WindowEvent::CursorMoved { position, .. } = &event {
+                st.cursor = Some(Vec2::new(position.x as f32, position.y as f32));
+            }
+            let input = match &event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    Some(ih_ui::input::Input::MouseMove([position.x as i32, position.y as i32]))
+                }
+                WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => st.cursor.map(|p| {
+                    if state.is_pressed() {
+                        ih_ui::input::Input::LeftDown([p.x as i32, p.y as i32])
+                    } else {
+                        ih_ui::input::Input::LeftUp([p.x as i32, p.y as i32])
+                    }
+                }),
+                _ => None,
+            };
+            if let (Some(input), Some(hud), Some(sim)) = (input, &mut st.hud, &mut st.simulation) {
+                hud.update(sim, &st.selected, st.local_player.unwrap_or(1));
+                if hud.input(&input, sim, &st.selected, st.local_player.unwrap_or(1)) {
+                    if let Some(audio) = &mut st.audio {
+                        for sound in hud.sounds.drain(..) {
+                            audio.play_ui(&self.vfs, &sound).ok();
+                        }
+                    }
+                    if let Some(point) = hud.camera_target.take() {
+                        st.camera.center = Vec2::from(point);
+                    }
+                    let action = hud.action.take();
+                    st.paused = hud.menu || hud.score;
+                    if let Some(action) = action {
+                        self.hud_action(event_loop, &action);
+                    }
+                    return;
+                }
+                if matches!(input, ih_ui::input::Input::LeftUp(_)) && hud.pending.is_some() {
+                    if let Some(cursor) = st.cursor
+                        && let Some(point) = st.camera.surface_at_pixel(
+                            &self.world.map,
+                            &sim.grid,
+                            [st.size.width, st.size.height],
+                            cursor,
+                        )
+                    {
+                        let vp = st
+                            .camera
+                            .camera(&self.world.map)
+                            .view_proj(st.size.width as f32 / st.size.height.max(1) as f32);
+                        let target = sim
+                            .objects
+                            .values()
+                            .filter(|o| !o.dead)
+                            .filter_map(|o| {
+                                let p = vp * glam::Vec3::from(o.position).extend(1.0);
+                                if p.w <= 0.0 {
+                                    return None;
+                                }
+                                let ndc = p.truncate() / p.w;
+                                let screen = Vec2::new(
+                                    (ndc.x + 1.0) * 0.5 * st.size.width as f32,
+                                    (1.0 - ndc.y) * 0.5 * st.size.height as f32,
+                                );
+                                Some((screen.distance_squared(cursor), o.id))
+                            })
+                            .filter(|(d, _)| *d < 24.0 * 24.0)
+                            .min_by(|a, b| a.0.total_cmp(&b.0))
+                            .map(|(_, id)| id);
+                        hud.target(
+                            sim,
+                            &st.selected,
+                            st.local_player.unwrap_or(1),
+                            point.to_array(),
+                            target,
+                            st.keys.contains(&KeyCode::ShiftLeft),
+                        );
+                    }
+                    st.left_start = None;
+                    return;
+                }
             }
         }
         let Some(s) = &mut self.state else { return };
@@ -719,12 +1012,159 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if event.state.is_pressed() {
                         s.keys.insert(code);
+                        if let (Some(hud), Some(sim)) = (&mut s.hud, &mut s.simulation) {
+                            let held = |a, b| s.keys.contains(&a) || s.keys.contains(&b);
+                            let shift = held(KeyCode::ShiftLeft, KeyCode::ShiftRight);
+                            let ctrl = held(KeyCode::ControlLeft, KeyCode::ControlRight);
+                            let alt = held(KeyCode::AltLeft, KeyCode::AltRight);
+                            let key = match code {
+                                KeyCode::Escape => "KEY_ESC".into(),
+                                KeyCode::ArrowUp => "KEY_UP".into(),
+                                KeyCode::ArrowDown => "KEY_DOWN".into(),
+                                KeyCode::ArrowLeft => "KEY_LEFT".into(),
+                                KeyCode::ArrowRight => "KEY_RIGHT".into(),
+                                _ => {
+                                    let text = format!("{code:?}");
+                                    format!(
+                                        "KEY_{}",
+                                        text.strip_prefix("Key")
+                                            .or_else(|| text.strip_prefix("Digit"))
+                                            .unwrap_or(&text)
+                                            .to_ascii_uppercase()
+                                    )
+                                }
+                            };
+                            let action = hud.controls.hotkey(&key, shift, ctrl, alt, true).map(str::to_string);
+                            let player = s.local_player.unwrap_or(1);
+                            if let Some(action) = action {
+                                let number = action.chars().last().and_then(|c| c.to_digit(10)).map(|v| v as usize);
+                                if action.starts_with("CREATE_TEAM") {
+                                    if let Some(i) = number {
+                                        hud.groups[i] = s.selected.clone();
+                                    }
+                                } else if action.starts_with("SELECT_TEAM") || action.starts_with("ADD_TEAM") {
+                                    if let Some(i) = number {
+                                        let group: Vec<_> = hud.groups[i]
+                                            .iter()
+                                            .copied()
+                                            .filter(|id| {
+                                                sim.objects.get(id).is_some_and(|o| o.owner == player && !o.dead)
+                                            })
+                                            .collect();
+                                        if action.starts_with("ADD_TEAM") {
+                                            for id in group {
+                                                if !s.selected.contains(&id) {
+                                                    s.selected.push(id);
+                                                }
+                                            }
+                                        } else {
+                                            s.selected = group;
+                                        }
+                                    }
+                                } else {
+                                    match action.as_str() {
+                                        "STOP" => {
+                                            for &object in &s.selected {
+                                                sim.enqueue(sim.frame, ih_sim::Command::Stop { object }).ok();
+                                            }
+                                        }
+                                        "SCATTER" => {
+                                            for (i, &object) in s.selected.iter().enumerate() {
+                                                if let Some(o) = sim.objects.get(&object) {
+                                                    let a = i as f32 * 2.4;
+                                                    let target = [
+                                                        o.position[0] + a.cos() * 60.0,
+                                                        o.position[1] + a.sin() * 60.0,
+                                                    ];
+                                                    sim.enqueue(sim.frame, ih_sim::Command::Move { object, target })
+                                                        .ok();
+                                                }
+                                            }
+                                        }
+                                        "SELECT_ALL" | "SELECT_ALL_AIRCRAFT" => {
+                                            s.selected = sim
+                                                .objects
+                                                .values()
+                                                .filter(|o| {
+                                                    o.owner == player
+                                                        && !o.dead
+                                                        && !sim.templates.objects[&o.template].has_kind("STRUCTURE")
+                                                        && (action == "SELECT_ALL"
+                                                            || sim.templates.objects[&o.template].has_kind("AIRCRAFT"))
+                                                })
+                                                .map(|o| o.id)
+                                                .collect();
+                                        }
+                                        "SELECT_NEXT_WORKER" | "SELECT_PREV_WORKER" => {
+                                            hud.action = Some("worker".into());
+                                        }
+                                        "SELECT_HERO" | "VIEW_COMMAND_CENTER" => {
+                                            if let Some(o) = sim.objects.values().find(|o| {
+                                                o.owner == player
+                                                    && !o.dead
+                                                    && sim.templates.objects[&o.template].has_kind(
+                                                        if action == "SELECT_HERO" { "HERO" } else { "COMMANDCENTER" },
+                                                    )
+                                            }) {
+                                                s.selected = vec![o.id];
+                                                s.camera.center = Vec2::new(o.position[0], o.position[1]);
+                                            }
+                                        }
+                                        "OPTIONS" => {
+                                            if hud.pending.take().is_none() {
+                                                hud.menu = !hud.menu;
+                                                s.paused = hud.menu;
+                                            }
+                                        }
+                                        "TOGGLE_CONTROL_BAR" => hud.visible = !hud.visible,
+                                        "CAMERA_RESET" => s.camera = s.reset_camera.clone(),
+                                        _ => {
+                                            if let Some(i) = number
+                                                && action.starts_with("VIEW_TEAM")
+                                                && let Some(o) =
+                                                    hud.groups[i].first().and_then(|id| sim.objects.get(id))
+                                            {
+                                                s.camera.center = Vec2::new(o.position[0], o.position[1]);
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(action) = hud.action.take() {
+                                    self.hud_action(event_loop, &action);
+                                    return;
+                                }
+                                if !action.starts_with("BEGIN_") && !action.starts_with("END_") {
+                                    s.keys.remove(&code);
+                                    return;
+                                }
+                            } else if !ctrl
+                                && !alt
+                                && !event.repeat
+                                && event
+                                    .text
+                                    .as_ref()
+                                    .and_then(|t| t.chars().next())
+                                    .is_some_and(|key| hud.button_hotkey(key, sim, &s.selected, player))
+                            {
+                                s.keys.remove(&code);
+                                return;
+                            }
+                        }
                         match code {
-                            KeyCode::Escape => event_loop.exit(),
+                            KeyCode::Escape => {
+                                if let Some(hud) = &mut s.hud {
+                                    if hud.pending.take().is_none() {
+                                        hud.menu = !hud.menu;
+                                        s.paused = hud.menu;
+                                    }
+                                } else {
+                                    event_loop.exit();
+                                }
+                            }
                             KeyCode::Home => s.camera = s.reset_camera.clone(),
                             KeyCode::KeyO => s.camera.overview(),
                             KeyCode::Space if !event.repeat => s.paused = !s.paused,
-                            KeyCode::KeyX if !event.repeat => {
+                            KeyCode::KeyX if !event.repeat && s.hud.is_none() => {
                                 if let Some(sim) = &mut s.simulation {
                                     for &object in &s.selected {
                                         sim.enqueue(sim.frame, ih_sim::Command::Stop { object }).ok();
@@ -895,6 +1335,15 @@ impl ApplicationHandler for App {
                 MouseButton::Middle => s.orbit_drag = state.is_pressed(),
                 _ => {}
             },
+            WindowEvent::MouseWheel { delta, .. } if s.hud.as_ref().is_some_and(|h| h.pending.is_some()) => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 60.0,
+                };
+                if let Some(hud) = &mut s.hud {
+                    hud.angle = (hud.angle + amount * std::f32::consts::PI / 12.0).rem_euclid(std::f32::consts::TAU);
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => s.camera.zoom(match delta {
                 MouseScrollDelta::LineDelta(_, y) => y,
                 MouseScrollDelta::PixelDelta(p) => p.y as f32 / 60.0,

@@ -1041,6 +1041,20 @@ impl Renderer {
         clear: [f64; 4],
         time_ms: f32,
     ) -> Vec<u8> {
+        self.render_scene_overlay(scene, camera, lights, size, clear, time_ms, |_, _, _| {})
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_overlay(
+        &mut self,
+        scene: &Scene,
+        camera: &Camera,
+        lights: &Lights,
+        size: (u32, u32),
+        clear: [f64; 4],
+        time_ms: f32,
+        overlay: impl FnOnce(&mut Self, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Vec<u8> {
         let (w, h) = size;
         let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
         let resolve = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1058,6 +1072,7 @@ impl Renderer {
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.draw(&mut enc, scene, camera, lights, &targets, &resolve_view, clear, time_ms);
 
+        overlay(self, &mut enc, &resolve_view);
         self.read_back(enc, &resolve, size)
     }
 

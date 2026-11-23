@@ -917,6 +917,7 @@ dependencies = [
  "ih-sim",
  "ih-ui",
  "ih-vfs",
+ "png",
  "pollster",
  "toml",
  "wgpu",

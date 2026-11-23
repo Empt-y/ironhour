@@ -13,3 +13,5 @@ pub mod world;
 pub use camera::TacticalCamera;
 pub use defs::Definitions;
 pub use world::{World, WorldError, find_map};
+
+pub mod control;

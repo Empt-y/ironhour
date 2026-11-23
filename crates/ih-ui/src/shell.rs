@@ -306,6 +306,13 @@ impl Shell {
     }
 
     /// The layout on top (`Menus/MainMenu.wnd`).
+    pub fn resize(&mut self, display: [i32; 2]) {
+        self.ui.resize(display);
+        if self.top() == Some(SKIRMISH) {
+            self.skirmish_show_map();
+        }
+    }
+
     pub fn top(&self) -> Option<&str> {
         self.stack.last().map(|s| s.init.as_str())
     }
