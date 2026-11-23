@@ -27,6 +27,7 @@ pub mod rng;
 pub mod scenario;
 pub mod scheduler;
 pub mod sciences;
+pub mod script_engine;
 pub mod shroud;
 pub mod simulation;
 pub mod state_hash;

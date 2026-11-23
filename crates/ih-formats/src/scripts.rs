@@ -175,20 +175,104 @@ pub(crate) fn player_scripts(r: &mut Reader, toc: &Toc) -> Result<Vec<ScriptList
     Ok(lists)
 }
 
-/// A `.scb` file (`SkirmishScripts.scb`): its player script lists.
-pub fn parse_scb(raw: &[u8]) -> Result<Vec<ScriptList>, MapError> {
+/// A player of a `.scb` file (`ScriptsPlayers`): the name its script list is for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScbPlayer {
+    /// `SkirmishAmerica`, matched against the skirmish sides' player names.
+    pub name: String,
+    /// The side dictionary (`playerFaction` and others), when stored.
+    pub dict: crate::map::Dict,
+}
+
+/// A `.scb` file: its script lists and, in the same order, their players.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScbFile {
+    pub lists: Vec<ScriptList>,
+    pub players: Vec<ScbPlayer>,
+}
+
+/// A `.scb` file (`SkirmishScripts.scb`), as `SidesList::prepareForMP_or_Skirmish`
+/// reads it: `PlayerScriptsList` and `ScriptsPlayers` (`ParsePlayersDataChunk`).
+pub fn parse_scb(raw: &[u8]) -> Result<ScbFile, MapError> {
     let data = crate::compression::decompress(raw)?;
     let (toc, start) = read_toc(&data)?;
     let mut r = Reader::new(&data, start);
-    let mut lists = vec![];
+    let mut out = ScbFile::default();
     while r.remaining() >= crate::map::CHUNK_HEADER {
         let chunk = r.open_chunk(&toc)?;
-        if chunk.label == "PlayerScriptsList" {
-            let mut c = chunk.reader;
-            lists = player_scripts(&mut c, &toc)?;
+        let mut c = chunk.reader;
+        match chunk.label.as_str() {
+            "PlayerScriptsList" => out.lists = player_scripts(&mut c, &toc)?,
+            "ScriptsPlayers" => {
+                let dicts = chunk.version >= 2 && c.i32()? != 0;
+                let n = c.i32()?;
+                for _ in 0..n.max(0) {
+                    let name = c.ascii()?;
+                    let dict = if dicts { c.dict(&toc)? } else { Default::default() };
+                    out.players.push(ScbPlayer { name, dict });
+                }
+            }
+            _ => {}
         }
     }
-    Ok(lists)
+    Ok(out)
+}
+
+/// `THIS_TEAM`, which qualifying leaves alone.
+pub const THIS_TEAM: &str = "<This Team>";
+
+impl Parameter {
+    /// `Parameter::qualify`.
+    fn qualify(&mut self, qualifier: &str, template_player: &str, new_player: &str) {
+        const SCRIPT: i32 = 2;
+        const TEAM: i32 = 3;
+        const COUNTER: i32 = 4;
+        const FLAG: i32 = 5;
+        const SIDE: i32 = 11;
+        const SCRIPT_SUBROUTINE: i32 = 13;
+        match self.kind {
+            SIDE => {
+                if format!("{}{qualifier}", self.string) == template_player {
+                    self.string = new_player.to_string();
+                }
+            }
+            TEAM if self.string == THIS_TEAM => {}
+            TEAM | SCRIPT | COUNTER | FLAG | SCRIPT_SUBROUTINE => self.string.push_str(qualifier),
+            _ => {}
+        }
+    }
+}
+
+impl ScriptList {
+    /// `ScriptList::duplicateAndQualify`: script and group names, and the script,
+    /// team, counter, flag and subroutine parameters, get the qualifier (a
+    /// player's start index); side parameters naming the template player become
+    /// the new player.
+    pub fn qualified(&self, qualifier: &str, template_player: &str, new_player: &str) -> ScriptList {
+        let q = |s: &Script| {
+            let mut s = s.clone();
+            s.name.push_str(qualifier);
+            for c in s.conditions.iter_mut().flatten().chain(s.actions.iter_mut()).chain(s.false_actions.iter_mut()) {
+                for p in &mut c.params {
+                    p.qualify(qualifier, template_player, new_player);
+                }
+            }
+            s
+        };
+        ScriptList {
+            scripts: self.scripts.iter().map(q).collect(),
+            groups: self
+                .groups
+                .iter()
+                .map(|g| ScriptGroup {
+                    name: format!("{}{qualifier}", g.name),
+                    active: g.active,
+                    subroutine: g.subroutine,
+                    scripts: g.scripts.iter().map(q).collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,7 +354,7 @@ mod tests {
         let group = w.chunk("ScriptGroup", 2, &group);
         let list = w.chunk("ScriptList", 1, &group);
         let psl = w.chunk("PlayerScriptsList", 5, &list);
-        let lists = parse_scb(&w.file(&psl)).unwrap();
+        let lists = parse_scb(&w.file(&psl)).unwrap().lists;
         assert_eq!(lists.len(), 1);
         let g = &lists[0].groups[0];
         assert_eq!((g.name.as_str(), g.active), ("Economy", true));

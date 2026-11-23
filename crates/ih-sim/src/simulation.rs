@@ -385,6 +385,8 @@ pub struct Simulation {
     /// FX lists played this frame, for the client (`fx`; not hashed).
     pub fx_events: Vec<crate::fx::FxEvent>,
     pub notices: Vec<crate::notices::Notice>,
+    /// The map and skirmish scripts (`script_engine`).
+    pub script_engine: Option<crate::script_engine::ScriptEngine>,
 }
 impl Simulation {
     pub fn new(map: Arc<Map>, templates: Arc<Templates>, seed: u32) -> Self {
@@ -509,6 +511,7 @@ impl Simulation {
             shroud,
             fx_events: Vec::new(),
             notices: Vec::new(),
+            script_engine: None,
         }
     }
     pub fn spawn(&mut self, name: &str, p: [f32; 2], owner: u32) -> Result<u32, SimError> {
@@ -1320,6 +1323,8 @@ impl Simulation {
                 self.events.push(format!("frame {frame} command {seq}: {e}"));
             }
         }
+        // TheScriptEngine->UPDATE() runs before the objects.
+        self.update_scripts();
         self.halt_all_docks();
         self.wake_forced();
         while let Some((id, index)) = self.scheduler.due(self.frame) {
@@ -2503,6 +2508,27 @@ impl Simulation {
         h.u64(self.shroud.pending.len() as u64);
         for (f, _) in &self.shroud.pending {
             h.u32(*f);
+        }
+        if let Some(e) = &self.script_engine {
+            for (n, c) in &e.counters {
+                h.text(n);
+                h.u32(c.value as u32);
+                h.u32(u32::from(c.timer));
+            }
+            for (n, f) in &e.flags {
+                h.text(n);
+                h.u32(u32::from(*f));
+            }
+            for side in &e.sides {
+                h.u32(side.player);
+                for g in &side.groups {
+                    h.u32(u32::from(g.active));
+                }
+                for sc in side.scripts.iter().chain(side.groups.iter().flat_map(|g| g.scripts.iter())) {
+                    h.u32(u32::from(sc.active));
+                    h.u32(sc.next_frame);
+                }
+            }
         }
         h.u64(self.crushed.len() as u64);
         for (f, v, c) in &self.crushed {

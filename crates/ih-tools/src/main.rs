@@ -159,6 +159,18 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Run the skirmish AI scripts headless: an AI general on a map, for a while.
+    SkirmishScripts {
+        #[arg(default_value = "Tournament Desert")]
+        map: String,
+        /// The AI's PlayerTemplate.
+        #[arg(long, default_value = "FactionAmerica")]
+        faction: String,
+        #[arg(long, default_value = "normal")]
+        difficulty: String,
+        #[arg(long, default_value_t = 1800)]
+        frames: u32,
+    },
     /// Read map files: describe one (name or path) or scan every map.
     Maps {
         /// Map name (e.g. "Tournament Desert") or path. Omit to scan all.
@@ -692,6 +704,87 @@ fn main() -> Result<()> {
         }
         Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
         Cmd::Wnd { name } => wnd(&mount(&cli)?, name.as_deref())?,
+        Cmd::SkirmishScripts { map, faction, difficulty, frames } => {
+            use ih_sim::script_engine::{Difficulty, ScriptEngine, SkirmishPlayer, skirmish_sides};
+            let vfs = mount(&cli)?;
+            let language = Installs::locate().language;
+            let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
+            let path = find_map(&vfs, map).with_context(|| format!("{map}: no such map"))?;
+            let parsed = ih_formats::map::Map::parse(&vfs.read(&path)?.context("map")?)?;
+            let scb = vfs
+                .read(r"Data\Scripts\SkirmishScripts.scb")?
+                .map(|b| ih_formats::scripts::parse_scb(&b))
+                .transpose()?;
+            let side_of = |f: &str| -> Option<String> {
+                defs.get("PlayerTemplate", f).and_then(|b| {
+                    b.fields().filter(|x| x.name == "Side").last().and_then(|x| x.values().first().cloned())
+                })
+            };
+            let ai_side = side_of(faction).with_context(|| format!("{faction}: no such PlayerTemplate"))?;
+            let difficulty = match difficulty.to_ascii_lowercase().as_str() {
+                "easy" => Difficulty::Easy,
+                "hard" => Difficulty::Hard,
+                _ => Difficulty::Normal,
+            };
+            let players_list = ih_sim::map_objects::players(&parsed);
+            let civilian = players_list.iter().position(|p| p == "PlyrCivilian").unwrap_or(1) as u32;
+            let base = players_list.len() as u32;
+            let players = [
+                SkirmishPlayer { player: base, side: "America".into(), start: 0, ai: None, name: "player0".into() },
+                SkirmishPlayer {
+                    player: base + 1,
+                    side: ai_side.clone(),
+                    start: 1,
+                    ai: Some(difficulty),
+                    name: "player1".into(),
+                },
+            ];
+            let sides = skirmish_sides(&parsed, scb.as_ref(), &players, &side_of, civilian);
+            let summary: Vec<String> = sides
+                .iter()
+                .map(|s| {
+                    format!(
+                        "player {}: {} scripts, {} groups",
+                        s.player,
+                        s.scripts.len() + s.groups.iter().map(|g| g.scripts.len()).sum::<usize>(),
+                        s.groups.len()
+                    )
+                })
+                .collect();
+            println!("{path}: AI {faction} ({ai_side}) at {difficulty:?}; {summary:?}");
+            let templates =
+                std::sync::Arc::new(ih_sim::templates::Templates::for_map(&defs, &parsed, &vfs, &language)?);
+            let mut sim = ih_sim::Simulation::new(std::sync::Arc::new(parsed), templates, 1);
+            sim.load_map_objects()?;
+            sim.start_scripts(ScriptEngine::new(sides));
+            for _ in 0..*frames {
+                sim.step();
+            }
+            let e = sim.script_engine.as_ref().unwrap();
+            let active: usize = e
+                .sides
+                .iter()
+                .map(|s| {
+                    s.scripts
+                        .iter()
+                        .chain(s.groups.iter().filter(|g| g.active).flat_map(|g| g.scripts.iter()))
+                        .filter(|x| x.active)
+                        .count()
+                })
+                .sum();
+            println!(
+                "after {frames} frames: {} counters, {} flags ({} set), {active} active scripts",
+                e.counters.len(),
+                e.flags.len(),
+                e.flags.values().filter(|f| **f).count()
+            );
+            let mut u: Vec<(&String, &u64)> = e.unhandled.iter().collect();
+            u.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            println!("{} unported conditions and actions met:", u.len());
+            for (n, c) in u {
+                println!("  {n}: {c}");
+            }
+        }
         Cmd::Scripts { source, all } => scripts(&mount(&cli)?, source.as_deref(), *all)?,
         Cmd::Shell { clicks, out, width, height } => {
             let vfs = mount(&cli)?;
@@ -1134,7 +1227,15 @@ fn scripts(vfs: &Vfs, source: Option<&str>, all: bool) -> Result<()> {
     for p in scbs.iter().filter(|p| wanted(p)) {
         let Some(b) = vfs.read(p)? else { continue };
         match ih_formats::scripts::parse_scb(&b) {
-            Ok(l) => sources.push((p.to_string(), l)),
+            Ok(f) => {
+                let players: Vec<String> = f
+                    .players
+                    .iter()
+                    .map(|pl| format!("{}={}", pl.name, pl.dict.ascii("playerFaction").unwrap_or("?")))
+                    .collect();
+                println!("{p}: {} lists for {players:?}", f.lists.len());
+                sources.push((p.to_string(), f.lists));
+            }
             Err(e) => {
                 errors += 1;
                 println!("{p}: {e}");

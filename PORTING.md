@@ -2711,3 +2711,59 @@ chunk readers, `Parameter::ReadParameter`), `DataChunkInput::readNameKey` and
   `docs/coverage/m7-scripts.md` and sets the porting order.
 - Not yet: the `.scb` file's players and teams (`ScriptsPlayers`,
   `ScriptTeams`), the old-version parameter fix-ups, and the engine itself.
+
+### The script engine core
+
+From `ScriptEngine.cpp` (`update`, `executeScripts`, `executeScript`,
+`evaluateConditions`, `executeActions`, `newMap` and
+`checkConditionsForTeamNames`, the flag, counter and timer functions,
+`enableScript`, `disableScript`, `callSubroutine`), `Scripts.cpp`
+(`duplicateAndQualify`, `Parameter::qualify`), `SidesList.cpp`
+(`prepareForMP_or_Skirmish`, `ParsePlayersDataChunk`) and
+`Player::initFromDict`: `crates/ih-sim/src/script_engine.rs` and
+`crates/ih-formats/src/scripts.rs`.
+
+- Each frame, before the objects, countdown timers tick. Then each side runs
+  its loose scripts, then its active non-subroutine groups.
+- A script runs when active, allowed at the side's difficulty, and past its
+  next evaluation frame. A delay moves that frame on, and the first frame for
+  delayed scripts is drawn at random within the first two seconds.
+- Conditions are an OR of AND lists, short-circuited. True runs the actions,
+  and false runs the "if false" actions. One-shot scripts then switch off.
+- Ported conditions: `CONDITION_TRUE`, `CONDITION_FALSE`, `FLAG`, `COUNTER`
+  and `TIMER_EXPIRED`.
+- Ported actions:
+  - flags and counters (set, increment, decrement);
+  - timers: seconds, milliseconds, random, stop, restart, add and subtract;
+  - `ENABLE_SCRIPT` and `DISABLE_SCRIPT` for scripts and groups;
+  - `CALL_SUBROUTINE` for subroutine groups and scripts;
+  - `NO_OP`.
+- Anything else evaluates false or does nothing, and is counted in
+  `unhandled`. Engine state (counters, flags, active and next-frame) is in the
+  state hash. No scenario has scripts yet, so no scenario hash changes.
+- Skirmish assignment:
+  - The map's civilian side keeps its scripts.
+  - When no other map side has scripts, `SkirmishScripts.scb` gives each
+    skirmish side its list by player name, using the file's `ScriptsPlayers`
+    chunk.
+  - Each AI player gets a copy of the list of the first skirmish side whose
+    faction has its `PlayerTemplate` `Side`; human players get the civilian
+    list. Each general has its own side and list.
+  - Copies are qualified with the start index: script and group names, and
+    script, team, counter, flag and subroutine parameters, gain the suffix.
+    Side parameters naming the template player are renamed to the player.
+- `ih-tools skirmish-scripts [map] --faction --difficulty --frames` runs a
+  human and one AI general on a map headless.
+  - On stock Tournament Desert (USA, Normal, 1,800 frames) the AI gets 323
+    scripts in 32 groups, and the run ends with 78 counters and 15 flags.
+  - It reaches 20 unported entries, the next porting order. Most met:
+    `MUSIC_TRACK_HAS_COMPLETED`, `SKIRMISH_PLAYER_FACTION`, `BUILT_BY_PLAYER`,
+    `PLAYER_LOST_OBJECT_TYPE`, `SKIRMISH_SPECIAL_POWER_READY`,
+    `PLAYER_HAS_OBJECT_COMPARISON`.
+  - Actions reached: `OBJECTLIST_ADDOBJECTTYPE`, `SET_ATTACK_PRIORITY_THING`,
+    `SKIRMISH_BUILD_BUILDING`, `PLAYER_GIVE_MONEY` and others.
+- Not yet: condition teams (`conditionTeamName`), UI-interaction flags,
+  sequential scripts, fades, every other condition and action, script team
+  definitions (`ScriptTeams`), and wiring the engine into skirmish starts in
+  the game. Whether the civilian list should also stay with the civilian
+  player once a human takes a copy needs checking against the original.

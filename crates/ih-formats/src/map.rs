@@ -745,7 +745,7 @@ impl<'a> Reader<'a> {
         Ok(String::from_utf16_lossy(&units))
     }
     /// `readDict`: u16 count, then `(nameId << 8 | type)` and the value.
-    fn dict(&mut self, toc: &Toc) -> Result<Dict, MapError> {
+    pub(crate) fn dict(&mut self, toc: &Toc) -> Result<Dict, MapError> {
         let n = self.u16()?;
         let mut d = Vec::with_capacity(n as usize);
         for _ in 0..n {
