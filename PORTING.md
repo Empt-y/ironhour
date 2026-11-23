@@ -2656,3 +2656,26 @@ construction cancellation and unported module actions remain disabled. Existing
 M4/M5 visual/gameplay gaps still apply. M7 must connect script music/dialogue/EVA
 requests and implement SCB execution, skirmish build lists/teams, AI and victory
 conditions before complete matches against computer generals are possible.
+
+### Clips the game data does not ship
+
+Checking every audio event found 19 clips that the stock (and Contra) sound
+definitions name but no archive contains. All are retail data mistakes:
+`Voice.ini` lists `irancl` beside `irancla`..`irancld`, `iworre` beside
+`iworrea`..`iworref`, `vsupspe`, `vlisata`..`vlisate`, and `ucheer` where
+the file is `ucheergl`. The original's Miles playback plays nothing when a
+random pick lands on one of them.
+
+- `ih_audio::MissingClip` marks these. Playback treats a missing pick as
+  silence (UI, world, emitter and decay segments alike) and records it in
+  `Audio::missing`, instead of returning an error the game logged on every
+  pick.
+- `ih-tools audio-check` counts them as "not in the game data" and fails only
+  on real decode errors: stock 525 events, 1,666 clips, 19 missing, 0 failures;
+  Contra 1,190 events, 5,053 clips, 19 missing, 0 failures.
+- `ih-tools music-check` now probes every named track and reports missing
+  files the same way. Stock: 68 tracks, 2 missing (the `Silence` placeholder
+  `NoFilename` and an unused `Cin_USA_05_Test`). Contra: 119 tracks, 14 missing,
+  12 of them `Silence1.mp3` placeholders. That file ships only in the optional
+  Enhanced and The Score music packs, which the profile leaves out, so those
+  tracks are silent in the game too.

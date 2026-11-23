@@ -317,10 +317,25 @@ impl Catalog {
             return Ok(localized);
         }
         let generic = format!("{prefix}\\{filename}");
-        ensure!(vfs.exists(&generic), "sound not found: {localized} or {generic}");
+        if !vfs.exists(&generic) {
+            return Err(MissingClip(format!("{localized} or {generic}")).into());
+        }
         Ok(generic)
     }
 }
+
+/// A clip the audio definitions name but the game data does not ship. Retail
+/// data has a few (`Voice.ini` lists `irancl` beside `irancla`..`irancld`); the
+/// original's Miles playback simply plays nothing for such a pick, so playback
+/// skips it silently and only the checks report it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingClip(pub String);
+impl std::fmt::Display for MissingClip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sound not found: {}", self.0)
+    }
+}
+impl std::error::Error for MissingClip {}
 
 /// Decode without a device, also used by the headless asset check.
 pub fn decode(vfs: &Vfs, path: &str) -> Result<StaticSoundData> {
@@ -384,6 +399,8 @@ pub struct Audio<B: Backend = DefaultBackend> {
     manager: AudioManager<B>,
     pub catalog: Catalog,
     cache: BTreeMap<String, StaticSoundData>,
+    /// Clips that were picked but are not in the game data (`MissingClip`).
+    pub missing: std::collections::BTreeSet<String>,
     active: Vec<Voice>,
     listener: Listener,
     speech: speech::Speech,
@@ -408,6 +425,7 @@ impl<B: Backend> Audio<B> {
             manager,
             catalog,
             cache: BTreeMap::new(),
+            missing: Default::default(),
             active: vec![],
             sequence: BTreeMap::new(),
             rng: 0x91ab_3d57,
@@ -535,7 +553,15 @@ impl<B: Backend> Audio<B> {
         } else {
             &event.sounds[..]
         };
-        let (handle, gain) = self.segment(vfs, name, &event, clips, spatial, true)?;
+        let (handle, gain) = match self.segment(vfs, name, &event, clips, spatial, true) {
+            Ok(v) => v,
+            // A pick of a clip the data does not ship: silence, as the original.
+            Err(e) if e.is::<MissingClip>() => {
+                self.missing.insert(e.to_string());
+                return Ok(false);
+            }
+            Err(e) => return Err(e),
+        };
         if let Some(index) = victim {
             let mut old = self.active.remove(index);
             old.handle.stop(kira::Tween::default());

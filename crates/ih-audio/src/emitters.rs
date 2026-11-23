@@ -78,6 +78,10 @@ impl<B: Backend> Audio<B> {
                     voice.phase = phase;
                     self.active.push(voice);
                 }
+                // A clip the data does not ship ends this voice quietly.
+                Err(e) if e.is::<crate::MissingClip>() => {
+                    self.missing.insert(e.to_string());
+                }
                 Err(e) => {
                     if error.is_none() {
                         error = Some(e);
@@ -135,6 +139,9 @@ impl<B: Backend> Audio<B> {
                         voice.phase = Phase::Decay;
                         voice.emitter = None;
                         self.active.push(voice);
+                    }
+                    Err(e) if e.is::<crate::MissingClip>() => {
+                        self.missing.insert(e.to_string());
                     }
                     Err(e) => {
                         error = Some(e);

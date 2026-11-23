@@ -368,11 +368,28 @@ fn main() -> Result<()> {
             let defs = ih_ini::definitions::Definitions::load(&vfs, &language);
             let catalog = ih_audio::Catalog::load(&defs, &language);
             let names = if names.is_empty() { vec!["Shell".to_string()] } else { names.clone() };
+            let (mut missing, mut failed) = (0, 0);
             for name in &names {
-                let stream = catalog.music_data(&vfs, name)?;
-                println!("{name}: {:.3}s, streaming decoder ready", stream.duration().as_secs_f64());
+                match catalog.music_data(&vfs, name) {
+                    Ok(stream) => {
+                        println!("{name}: {:.3}s, streaming decoder ready", stream.duration().as_secs_f64())
+                    }
+                    // Placeholders such as stock's `NoFilename` track: silence in the game.
+                    Err(e) if e.is::<ih_audio::MissingClip>() => {
+                        missing += 1;
+                        println!("{name}: not in the game data: {e:#}");
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("{name}: {e:#}");
+                    }
+                }
             }
-            println!("{} music streams probed; no output device opened", names.len());
+            println!(
+                "{} music streams probed: {missing} not in the game data, {failed} failures; no output device opened",
+                names.len()
+            );
+            anyhow::ensure!(failed == 0, "music check failed");
         }
         Cmd::AudioCheck { names, fx, eva_side } => {
             let vfs = mount(&cli)?;
@@ -413,7 +430,7 @@ fn main() -> Result<()> {
                 names.iter().map(String::as_str).collect()
             };
             let mut checked = std::collections::BTreeSet::new();
-            let mut failed = 0;
+            let (mut failed, mut missing) = (0, 0);
             for name in &names {
                 if catalog.dialog.contains_key(*name) {
                     let data = catalog.dialog_data(&vfs, name)?;
@@ -438,14 +455,23 @@ fn main() -> Result<()> {
                         checked.insert(path);
                         Ok(())
                     });
-                    if let Err(e) = result {
-                        failed += 1;
-                        eprintln!("{name}: {e:#}");
+                    match result {
+                        // Named by the definitions but not shipped: the game plays
+                        // nothing for such a pick, so it is reported, not a failure.
+                        Err(e) if e.is::<ih_audio::MissingClip>() => {
+                            missing += 1;
+                            println!("{name}: not in the game data: {e:#}");
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            eprintln!("{name}: {e:#}");
+                        }
+                        Ok(()) => {}
                     }
                 }
             }
             println!(
-                "{} audio events: {} decoded clips, {failed} failures; no output device opened",
+                "{} audio events: {} decoded clips, {missing} clips not in the game data, {failed} failures; no output device opened",
                 names.len(),
                 checked.len()
             );

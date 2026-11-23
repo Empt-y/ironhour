@@ -238,3 +238,18 @@ fn map_registry_reload_releases_voices_and_does_not_reuse_old_samples() {
     assert!(audio.active.is_empty() && audio.cache.is_empty());
     assert!(audio.play_ui(&vfs, "Click").unwrap());
 }
+
+#[test]
+fn a_clip_missing_from_the_game_data_plays_nothing_without_an_error() {
+    // Retail Voice.ini names clips that were never shipped (irancl, vsupspe...).
+    let (_temp, vfs) = files(false);
+    let d = definitions("AudioEvent Gone\n Sounds = neverShipped\nEnd\n");
+    let manager = AudioManager::<kira::backend::mock::MockBackend>::new(AudioManagerSettings::default()).unwrap();
+    let mut audio = Audio::with_manager(Catalog::load(&d, "English"), manager);
+    assert!(!audio.play_ui(&vfs, "Gone").unwrap(), "silent, not an error");
+    assert!(audio.active.is_empty());
+    assert_eq!(audio.missing.len(), 1);
+    assert!(audio.missing.iter().next().unwrap().contains("neverShipped.wav"));
+    // A real decode or lookup problem is still an error.
+    assert!(audio.play_ui(&vfs, "NoSuchEvent").is_err());
+}
