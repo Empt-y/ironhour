@@ -2767,3 +2767,23 @@ From `ScriptEngine.cpp` (`update`, `executeScripts`, `executeScript`,
   definitions (`ScriptTeams`), and wiring the engine into skirmish starts in
   the game. Whether the civilian list should also stay with the civilian
   player once a human takes a copy needs checking against the original.
+
+### World conditions and faction construction
+
+World queries now resolve qualified player names and the This Player/Enemy/Local
+aliases, object-type lists, faction/count comparisons, named objects, credits,
+energy, upgrades, science and ready powers. Object-loss comparisons retain their
+previous counts in deterministic state. Object-list maintenance, money changes
+and base/unit construction toggles execute against real simulation state.
+
+`ScriptTeams` dictionaries are parsed from SCB files. The headless runner can
+dump assigned scripts and team dictionaries with `--dump`, and now creates the
+starting buildings/units, money and intrinsic science before running scripts.
+Faction construction reads AIData's SkirmishBuildList, transforms the plan about
+the starting command center, marks requested entries and uses real dozers,
+placement checks and paid construction. Frame-zero dozer orders are now valid.
+AI base requests and object-list/count state participate in the state hash.
+
+This is an implementation step, not M7 completion: production/recruitment of
+script teams, further script calls, native-game integration and completed-match
+verification against all generals/difficulties are still required.

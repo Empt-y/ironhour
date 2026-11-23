@@ -54,6 +54,48 @@ fn run(s: &mut Simulation, n: u32) {
 }
 
 #[test]
+fn script_requested_building_uses_a_dozer_and_pays_once() {
+    use ih_sim::script_engine::{
+        ScriptEngine,
+        building::{Base, Building},
+    };
+    let mut s = sim();
+    s.spawn("Dozer", [200.0, 200.0], 1).unwrap();
+    s.player(1).deposit(1000);
+    let mut engine = ScriptEngine::default();
+    engine.bases.insert(
+        1,
+        Base {
+            enabled: true,
+            buildings: vec![Building {
+                template: "Barracks".into(),
+                position: [400.0, 400.0],
+                angle: 0.0,
+                object: None,
+                priority: true,
+                automatic: false,
+                remaining: 1,
+            }],
+            ..Default::default()
+        },
+    );
+    s.start_scripts(engine);
+    run(&mut s, 1);
+    let id = building(&s, "Barracks").expect("AI placed a real construction site");
+    assert!(s.under_construction(id));
+    assert_eq!(s.money(1), 500);
+    run(&mut s, 700);
+    assert!(
+        !s.under_construction(id),
+        "builder {:?}; site {:?}",
+        s.objects.values().find(|o| o.dozer.is_some()),
+        s.objects[&id]
+    );
+    assert_eq!(s.money(1), 500);
+    assert_eq!(s.objects.values().filter(|o| o.template == "Barracks").count(), 1);
+}
+
+#[test]
 fn a_dozer_builds_a_barracks() {
     let mut s = sim();
     let d = s.spawn("Dozer", [200.0, 200.0], 1).unwrap();

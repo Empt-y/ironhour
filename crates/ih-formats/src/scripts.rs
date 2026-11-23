@@ -189,6 +189,7 @@ pub struct ScbPlayer {
 pub struct ScbFile {
     pub lists: Vec<ScriptList>,
     pub players: Vec<ScbPlayer>,
+    pub teams: Vec<crate::map::Dict>,
 }
 
 /// A `.scb` file (`SkirmishScripts.scb`), as `SidesList::prepareForMP_or_Skirmish`
@@ -210,6 +211,11 @@ pub fn parse_scb(raw: &[u8]) -> Result<ScbFile, MapError> {
                     let name = c.ascii()?;
                     let dict = if dicts { c.dict(&toc)? } else { Default::default() };
                     out.players.push(ScbPlayer { name, dict });
+                }
+            }
+            "ScriptTeams" => {
+                while c.remaining() > 0 {
+                    out.teams.push(c.dict(&toc)?);
                 }
             }
             _ => {}

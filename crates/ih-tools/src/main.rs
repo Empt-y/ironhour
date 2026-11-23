@@ -170,6 +170,9 @@ enum Cmd {
         difficulty: String,
         #[arg(long, default_value_t = 1800)]
         frames: u32,
+        /// Dump assigned script definitions and parameter values before running.
+        #[arg(long)]
+        dump: bool,
     },
     /// Read map files: describe one (name or path) or scan every map.
     Maps {
@@ -704,7 +707,7 @@ fn main() -> Result<()> {
         }
         Cmd::Models { name } => models(&mount(&cli)?, name.as_deref())?,
         Cmd::Wnd { name } => wnd(&mount(&cli)?, name.as_deref())?,
-        Cmd::SkirmishScripts { map, faction, difficulty, frames } => {
+        Cmd::SkirmishScripts { map, faction, difficulty, frames, dump } => {
             use ih_sim::script_engine::{Difficulty, ScriptEngine, SkirmishPlayer, skirmish_sides};
             let vfs = mount(&cli)?;
             let language = Installs::locate().language;
@@ -740,6 +743,14 @@ fn main() -> Result<()> {
                 },
             ];
             let sides = skirmish_sides(&parsed, scb.as_ref(), &players, &side_of, civilian);
+            if *dump {
+                println!("{sides:#?}");
+                if let Some(scb) = &scb {
+                    for team in &scb.teams {
+                        println!("SCB_TEAM {team:?}");
+                    }
+                }
+            }
             let summary: Vec<String> = sides
                 .iter()
                 .map(|s| {
@@ -756,11 +767,49 @@ fn main() -> Result<()> {
                 std::sync::Arc::new(ih_sim::templates::Templates::for_map(&defs, &parsed, &vfs, &language)?);
             let mut sim = ih_sim::Simulation::new(std::sync::Arc::new(parsed), templates, 1);
             sim.load_map_objects()?;
-            sim.start_scripts(ScriptEngine::new(sides));
+            sim.spawn_skirmish_armies(&defs, &players, 10000)?;
+            sim.start_scripts(ScriptEngine::new(sides).with_players(players.to_vec()));
+            sim.configure_script_bases(&defs);
             for _ in 0..*frames {
                 sim.step();
             }
             let e = sim.script_engine.as_ref().unwrap();
+            for player in &players {
+                let owned: Vec<_> = sim
+                    .objects
+                    .values()
+                    .filter(|o| o.owner == player.player && !o.dead)
+                    .map(|o| (&o.template, o.construction))
+                    .collect();
+                println!("player {}: ${}; objects {owned:?}", player.player, sim.money(player.player));
+            }
+            for (player, base) in &e.bases {
+                println!(
+                    "AI base {player}: {} entries, {} built/constructing, {} priority; enabled {}",
+                    base.buildings.len(),
+                    base.buildings.iter().filter(|b| b.object.is_some()).count(),
+                    base.buildings.iter().filter(|b| b.priority).count(),
+                    base.enabled
+                );
+                for b in base.buildings.iter().filter(|b| b.priority) {
+                    let builders: Vec<_> = sim
+                        .objects
+                        .values()
+                        .filter(|o| o.owner == *player && o.dozer.is_some())
+                        .map(|o| {
+                            (
+                                o.id,
+                                o.position,
+                                sim.grid.ground_kind((o.position[0] / 10.0) as i32, (o.position[1] / 10.0) as i32),
+                                sim.grid.ground_kind((b.position[0] / 10.0) as i32, (b.position[1] / 10.0) as i32),
+                                sim.can_make_unit(o.id, &b.template),
+                                sim.location_legal_to_build(&b.template, b.position, b.angle, Some(o.id)),
+                            )
+                        })
+                        .collect();
+                    println!("pending {} at {:?}: {builders:?}", b.template, b.position);
+                }
+            }
             let active: usize = e
                 .sides
                 .iter()

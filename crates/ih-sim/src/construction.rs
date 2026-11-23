@@ -107,7 +107,7 @@ impl Dozer {
         let mut best = None;
         let mut frame = 0;
         for (i, t) in self.tasks.iter().enumerate() {
-            if t.target.is_some() && t.order_frame > frame {
+            if t.target.is_some() && (best.is_none() || t.order_frame > frame) {
                 best = Some(i);
                 frame = t.order_frame;
             }

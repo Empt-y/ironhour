@@ -2510,6 +2510,47 @@ impl Simulation {
             h.u32(*f);
         }
         if let Some(e) = &self.script_engine {
+            for (player, base) in &e.bases {
+                h.u32(*player);
+                h.u32(base.enabled as u32);
+                h.u32(base.units as u32);
+                h.u32(base.next_frame);
+                h.u64(base.buildings.len() as u64);
+                for b in &base.buildings {
+                    h.text(&b.template);
+                    for p in b.position {
+                        h.float(p);
+                    }
+                    h.float(b.angle);
+                    h.u32(b.object.unwrap_or(0));
+                    h.u32(b.priority as u32);
+                    h.u32(b.automatic as u32);
+                    h.u32(b.remaining as u32);
+                }
+            }
+            for (name, player) in &e.player_names {
+                h.text(name);
+                h.u32(*player);
+            }
+            for player in &e.players {
+                h.u32(player.player);
+                h.text(&player.side);
+                h.u32(player.start);
+                h.u32(player.ai.map_or(0, |d| d as u32 + 1));
+                h.text(&player.name);
+            }
+            for (name, list) in &e.object_lists {
+                h.text(name);
+                h.u64(list.len() as u64);
+                for object in list {
+                    h.text(object);
+                }
+            }
+            for ((player, name), count) in &e.object_counts {
+                h.u32(*player);
+                h.text(name);
+                h.u32(*count as u32);
+            }
             for (n, c) in &e.counters {
                 h.text(n);
                 h.u32(c.value as u32);

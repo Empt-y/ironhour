@@ -17,7 +17,9 @@
 //! `ScriptActions`/`ScriptConditions`.
 use crate::Simulation;
 use ih_formats::scripts::{Call, Script, ScriptList};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+pub mod building;
+mod world;
 
 /// `GameDifficulty`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -75,6 +77,11 @@ pub struct ScriptEngine {
     pub flags: BTreeMap<String, bool>,
     /// Unported conditions and actions met, with how often.
     pub unhandled: BTreeMap<String, u64>,
+    pub players: Vec<SkirmishPlayer>,
+    pub player_names: BTreeMap<String, u32>,
+    pub object_lists: BTreeMap<String, BTreeSet<String>>,
+    pub object_counts: BTreeMap<(u32, String), i32>,
+    pub bases: BTreeMap<u32, building::Base>,
     /// The side whose scripts are running (`m_currentPlayer`).
     current: Option<usize>,
 }
@@ -125,6 +132,24 @@ impl ScriptEngine {
         Self { sides, ..Default::default() }
     }
 
+    pub fn with_players(mut self, players: Vec<SkirmishPlayer>) -> Self {
+        self.player_names.extend(players.iter().map(|p| (p.name.clone(), p.player)));
+        self.players = players;
+        self
+    }
+
+    fn player_named(&self, name: &str) -> Option<u32> {
+        match name {
+            "<This Player>" => self.current.map(|s| self.sides[s].player),
+            "<Local Player>" => self.players.iter().find(|p| p.ai.is_none()).map(|p| p.player),
+            "<This Player's Enemy>" => {
+                let current = self.current.map(|s| self.sides[s].player)?;
+                self.players.iter().find(|p| p.player != current).map(|p| p.player)
+            }
+            _ => self.player_names.get(name).copied(),
+        }
+    }
+
     fn scripts(&self) -> Vec<ScriptRef> {
         let mut out = vec![];
         for (si, side) in self.sides.iter().enumerate() {
@@ -167,6 +192,9 @@ impl Simulation {
     /// frame in the first two seconds, drawn in side and script order.
     pub fn start_scripts(&mut self, engine: ScriptEngine) {
         let mut engine = engine;
+        for (id, name) in crate::map_objects::players(&self.map).into_iter().enumerate() {
+            engine.player_names.insert(name, id as u32);
+        }
         for r in engine.scripts() {
             let delay = engine.get(r).script.delay_seconds;
             engine.get_mut(r).next_frame = if delay > 0 { self.rng.integer(0, 2 * 30) as u32 } else { 0 };
@@ -202,6 +230,7 @@ impl Simulation {
             }
             engine.current = None;
         }
+        self.update_script_buildings(&mut engine);
         self.script_engine = Some(engine);
     }
 
@@ -251,6 +280,9 @@ impl Simulation {
     }
 
     fn evaluate_condition(&mut self, engine: &mut ScriptEngine, c: &Call) -> bool {
+        if let Some(result) = self.script_world_condition(engine, c) {
+            return result;
+        }
         match name_of(c) {
             "CONDITION_TRUE" => true,
             "CONDITION_FALSE" => false,
@@ -279,6 +311,9 @@ impl Simulation {
     /// `executeActions`.
     fn execute_actions(&mut self, engine: &mut ScriptEngine, actions: &[Call]) {
         for a in actions {
+            if self.script_world_action(engine, a) {
+                continue;
+            }
             match name_of(a) {
                 "NO_OP" => {}
                 "SET_FLAG" => {

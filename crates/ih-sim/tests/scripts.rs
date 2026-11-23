@@ -49,6 +49,61 @@ fn engine(sim: &Simulation) -> &ScriptEngine {
 }
 
 #[test]
+fn world_conditions_use_qualified_players_lists_and_construction_state() {
+    let mut defs = Definitions::default();
+    defs.add_document(ih_ini::parse(b"Object Soldier\n KindOf = INFANTRY\nEnd\n"));
+    let mut sim = Simulation::new(sim().map.clone(), Arc::new(Templates::from_definitions(&defs)), 7);
+    let owned = sim.spawn("Soldier", [100.0, 100.0], 1).unwrap();
+    sim.spawn("Soldier", [200.0, 100.0], 2).unwrap();
+    sim.objects.get_mut(&owned).unwrap().construction = Some(25.0);
+    sim.objects.get_mut(&owned).unwrap().status |= ih_sim::construction::under_construction_bit();
+    let mut setup = script(
+        "Setup",
+        vec![call("CONDITION_TRUE", vec![])],
+        vec![
+            call("OBJECTLIST_ADDOBJECTTYPE", vec![s("Infantry"), s("Soldier")]),
+            call("PLAYER_GIVE_MONEY", vec![s("<This Player>"), i(500)]),
+        ],
+    );
+    setup.one_shot = true;
+    let completed = script(
+        "Completed",
+        vec![
+            call("SKIRMISH_PLAYER_FACTION", vec![s("player1"), s("America")]),
+            call("PLAYER_HAS_OBJECT_COMPARISON", vec![s("player1"), i(2), i(1), s("Infantry")]),
+            call("PLAYER_HAS_CREDITS", vec![i(400), i(0), s("player1")]),
+        ],
+        vec![call("SET_FLAG", vec![s("Completed"), i(1)])],
+    );
+    let lost = script(
+        "Lost",
+        vec![call("PLAYER_LOST_OBJECT_TYPE", vec![s("player1"), s("Infantry")])],
+        vec![call("INCREMENT_COUNTER", vec![i(1), s("Losses")])],
+    );
+    let list = ScriptList { scripts: vec![setup, completed, lost], ..Default::default() };
+    sim.start_scripts(ScriptEngine::new(vec![Side::new(1, Difficulty::Normal, &list)]).with_players(vec![
+        SkirmishPlayer {
+            player: 1,
+            side: "America".into(),
+            start: 0,
+            ai: Some(Difficulty::Normal),
+            name: "player1".into(),
+        },
+    ]));
+    run(&mut sim, 2);
+    assert_eq!(sim.money(1), 500);
+    assert!(!engine(&sim).flags.contains_key("Completed"));
+    sim.objects.get_mut(&owned).unwrap().construction = None;
+    sim.objects.get_mut(&owned).unwrap().status &= !ih_sim::construction::under_construction_bit();
+    run(&mut sim, 1);
+    assert!(engine(&sim).flags["Completed"]);
+    sim.remove(owned).unwrap();
+    run(&mut sim, 2);
+    assert_eq!(engine(&sim).counters["Losses"].value, 1);
+    assert!(engine(&sim).unhandled.is_empty());
+}
+
+#[test]
 fn flags_counters_timers_one_shots_and_disabling() {
     let mut start = script(
         "Start",
@@ -137,6 +192,7 @@ fn skirmish_players_get_qualified_copies_of_their_sides_scripts() {
         groups: vec![ScriptGroup { name: "Economy".into(), active: true, subroutine: false, scripts: vec![] }],
     };
     let scb = ih_formats::scripts::ScbFile {
+        teams: vec![],
         lists: vec![ScriptList::default(), template],
         players: vec![
             ih_formats::scripts::ScbPlayer { name: "PlyrCivilian".into(), dict: Dict::default() },
