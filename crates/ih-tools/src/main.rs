@@ -768,7 +768,9 @@ fn main() -> Result<()> {
             let mut sim = ih_sim::Simulation::new(std::sync::Arc::new(parsed), templates, 1);
             sim.load_map_objects()?;
             sim.spawn_skirmish_armies(&defs, &players, 10000)?;
-            sim.start_scripts(ScriptEngine::new(sides).with_players(players.to_vec()));
+            let mut engine = ScriptEngine::new(sides).with_players(players.to_vec());
+            engine.configure_teams(&sim.map, scb.as_ref(), &side_of);
+            sim.start_scripts(engine);
             sim.configure_script_bases(&defs);
             for _ in 0..*frames {
                 sim.step();

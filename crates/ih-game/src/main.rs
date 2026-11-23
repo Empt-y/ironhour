@@ -616,6 +616,63 @@ impl App {
         };
         st.scene = scene;
         st.simulation = simulation;
+        if let Some(sim) = &mut st.simulation {
+            use ih_sim::script_engine::{Difficulty, ScriptEngine, SkirmishPlayer, skirmish_sides};
+            use ih_ui::shell::SlotKind;
+            let starts = self
+                .world
+                .map
+                .objects
+                .iter()
+                .filter(|o| {
+                    o.properties
+                        .ascii("waypointName")
+                        .is_some_and(|n| n.starts_with("Player_") && n.ends_with("_Start"))
+                })
+                .count();
+            let positions = setup.assigned_starts(starts).context("invalid skirmish starts")?;
+            let base = ih_sim::map_objects::players(&sim.map).len() as u32;
+            let mut players = vec![];
+            for (i, slot) in setup.slots.iter().enumerate() {
+                if matches!(slot.kind, SlotKind::Open | SlotKind::Closed) {
+                    continue;
+                }
+                let player = base + i as u32;
+                let side = sim
+                    .objects
+                    .values()
+                    .find(|o| o.owner == player)
+                    .and_then(|o| sim.templates.objects[&o.template].values("Side").first())
+                    .cloned()
+                    .context("skirmish faction has no Side")?;
+                players.push(SkirmishPlayer {
+                    player,
+                    side,
+                    start: positions[i].context("missing start")? as u32,
+                    ai: match slot.kind {
+                        SlotKind::EasyAi => Some(Difficulty::Easy),
+                        SlotKind::MediumAi => Some(Difficulty::Normal),
+                        SlotKind::HardAi => Some(Difficulty::Hard),
+                        _ => None,
+                    },
+                    name: format!("player{i}"),
+                });
+            }
+            sim.clear_skirmish_start_positions(&players)?;
+            let scb = self
+                .vfs
+                .read(r"Data\Scripts\SkirmishScripts.scb")?
+                .map(|b| ih_formats::scripts::parse_scb(&b))
+                .transpose()?;
+            let side_of = |f: &str| self.defs.data.field("PlayerTemplate", f, "Side").and_then(|v| v.first().cloned());
+            let civilian =
+                ih_sim::map_objects::players(&sim.map).iter().position(|p| p == "PlyrCivilian").unwrap_or(1) as u32;
+            let mut engine = ScriptEngine::new(skirmish_sides(&sim.map, scb.as_ref(), &players, &side_of, civilian))
+                .with_players(players);
+            engine.configure_teams(&sim.map, scb.as_ref(), &side_of);
+            sim.start_scripts(engine);
+            sim.configure_script_bases(&self.defs.data);
+        }
         st.scores = Default::default();
         let base = ih_sim::map_objects::players(&self.world.map).len().max(1) as u32;
         for (i, slot) in setup.slots.iter().enumerate() {
@@ -846,6 +903,13 @@ impl State {
                 }
             }
             if let Some(draw) = &mut self.sim_draw {
+                if draw.has_missing(sim) {
+                    let mut assets = Assets::new(vfs, language);
+                    draw.load_missing(&mut self.renderer, &mut assets, sim);
+                    for warning in assets.warnings {
+                        eprintln!("asset: {warning}");
+                    }
+                }
                 draw.update(
                     &self.renderer,
                     &mut self.scene,

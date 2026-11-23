@@ -546,8 +546,10 @@ impl Simulation {
             }
             if !animated || p.doors[door as usize].wait_open != 0 {
                 p.queue.front_mut().unwrap().door = None;
-                if let Err(err) = self.exit_object(id, &unit) {
-                    self.events.push(format!("frame {now}: {err}"));
+                let production = self.objects[&id].production.as_ref().unwrap().queue.front().unwrap().id;
+                match self.exit_object(id, &unit) {
+                    Ok(unit) => self.script_produced_unit(id, production, unit),
+                    Err(err) => self.events.push(format!("frame {now}: {err}")),
                 }
                 let p = self.objects.get_mut(&id).unwrap().production.as_mut().unwrap();
                 p.queue.front_mut().unwrap().produced += 1;
@@ -561,7 +563,7 @@ impl Simulation {
     }
 
     /// Creates a produced unit and sends it out (`exitObjectViaDoor`).
-    fn exit_object(&mut self, factory: u32, unit: &str) -> Result<u32, SimError> {
+    pub(crate) fn exit_object(&mut self, factory: u32, unit: &str) -> Result<u32, SimError> {
         let f = &self.objects[&factory];
         let (position, angle, layer, owner) = (f.position, f.angle, f.layer, f.owner);
         let e = f.exit.clone().unwrap();

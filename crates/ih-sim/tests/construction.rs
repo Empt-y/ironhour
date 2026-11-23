@@ -96,6 +96,35 @@ fn script_requested_building_uses_a_dozer_and_pays_once() {
 }
 
 #[test]
+fn starting_dozer_inside_a_command_center_is_moved_to_passable_ground() {
+    use ih_sim::script_engine::SkirmishPlayer;
+    let mut defs = Definitions::default();
+    defs.add_document(ih_ini::parse(INI));
+    defs.add_document(ih_ini::parse(b"Object CommandCenter\nKindOf = STRUCTURE IMMOBILE COMMANDCENTER\nGeometry = BOX\nGeometryMajorRadius = 100\nGeometryMinorRadius = 80\nGeometryHeight = 40\nEnd\n"));
+    defs.add_document(ih_ini::parse(b"Object DecorativeWater\nKindOf = IMMOBILE NO_COLLIDE\nGeometry = BOX\nGeometryMajorRadius = 1000\nGeometryMinorRadius = 1000\nEnd\n"));
+    let mut s = Simulation::new(sim().map.clone(), Arc::new(Templates::from_definitions(&defs)), 9);
+    s.spawn("CommandCenter", [400.0, 400.0], 1).unwrap();
+    s.spawn("DecorativeWater", [400.0, 400.0], 0).unwrap();
+    let dozer = s.spawn("Dozer", [410.0, 410.0], 1).unwrap();
+    s.clear_skirmish_start_positions(&[SkirmishPlayer {
+        player: 1,
+        side: "America".into(),
+        start: 0,
+        ai: None,
+        name: "player1".into(),
+    }])
+    .unwrap();
+    let at = s.objects[&dozer].position;
+    assert_ne!([at[0], at[1]], [410.0, 410.0]);
+    assert!(s.grid.passable_on(
+        0,
+        (at[0] / 10.0) as i32,
+        (at[1] / 10.0) as i32,
+        s.templates.objects["Dozer"].collision_radius()
+    ));
+}
+
+#[test]
 fn a_dozer_builds_a_barracks() {
     let mut s = sim();
     let d = s.spawn("Dozer", [200.0, 200.0], 1).unwrap();

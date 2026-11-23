@@ -19,6 +19,7 @@ use crate::Simulation;
 use ih_formats::scripts::{Call, Script, ScriptList};
 use std::collections::{BTreeMap, BTreeSet};
 pub mod building;
+pub mod teams;
 mod world;
 
 /// `GameDifficulty`.
@@ -82,6 +83,11 @@ pub struct ScriptEngine {
     pub object_lists: BTreeMap<String, BTreeSet<String>>,
     pub object_counts: BTreeMap<(u32, String), i32>,
     pub bases: BTreeMap<u32, building::Base>,
+    pub prototypes: BTreeMap<String, teams::Prototype>,
+    pub teams: BTreeMap<u32, teams::Team>,
+    pub next_team: u32,
+    pub current_team: Option<u32>,
+    pub attack_priorities: BTreeMap<String, BTreeMap<String, i32>>,
     /// The side whose scripts are running (`m_currentPlayer`).
     current: Option<usize>,
 }
@@ -231,6 +237,8 @@ impl Simulation {
             engine.current = None;
         }
         self.update_script_buildings(&mut engine);
+        self.update_script_gatherers(&engine);
+        self.update_script_teams(&mut engine);
         self.script_engine = Some(engine);
     }
 

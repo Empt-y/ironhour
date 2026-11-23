@@ -83,12 +83,37 @@ impl SimDrawables {
             rings: BTreeMap::new(),
             rng: crate::condition::ClientRng::new(0x5eed),
         };
+        out.load_templates(renderer, assets, templates, names);
+        out
+    }
+
+    pub fn has_missing(&self, sim: &Simulation) -> bool {
+        sim.objects.values().any(|o| o.map_index.is_none() && !self.templates.contains_key(&o.template))
+    }
+
+    pub fn load_missing(&mut self, renderer: &mut Renderer, assets: &mut Assets, sim: &Simulation) {
+        let names: std::collections::BTreeSet<_> = sim
+            .objects
+            .values()
+            .filter(|o| o.map_index.is_none() && !self.templates.contains_key(&o.template))
+            .map(|o| o.template.clone())
+            .collect();
+        self.load_templates(renderer, assets, &sim.templates, names.into_iter());
+    }
+
+    fn load_templates(
+        &mut self,
+        renderer: &mut Renderer,
+        assets: &mut Assets,
+        templates: &Templates,
+        names: impl Iterator<Item = String>,
+    ) {
         for name in names {
-            if out.templates.contains_key(&name) {
+            if self.templates.contains_key(&name) {
                 continue;
             }
             let Some(t) = templates.objects.get(&name) else { continue };
-            out.rings.insert(name.clone(), renderer.prepare_model(assets, &ring(t.radius().max(4.0))));
+            self.rings.insert(name.clone(), renderer.prepare_model(assets, &ring(t.radius().max(4.0))));
             let (modules, trucks): (Vec<ModelDrawData>, Vec<_>) = t
                 .modules
                 .iter()
@@ -98,12 +123,12 @@ impl SimDrawables {
                 .unzip();
             for d in &modules {
                 for s in d.states.iter().chain(d.transitions.values()) {
-                    out.load_model(renderer, assets, &s.model);
+                    self.load_model(renderer, assets, &s.model);
                     for a in &s.animations {
-                        if !out.art.animations.contains_key(&a.name) {
+                        if !self.art.animations.contains_key(&a.name) {
                             match assets.animation(&a.name) {
                                 Some(anim) => {
-                                    out.art.animations.insert(a.name.clone(), Arc::new(anim));
+                                    self.art.animations.insert(a.name.clone(), Arc::new(anim));
                                 }
                                 None => assets.warnings.push(format!("{name}: animation {} not found", a.name)),
                             }
@@ -111,9 +136,8 @@ impl SimDrawables {
                     }
                 }
             }
-            out.templates.insert(name.clone(), TemplateDraws { modules, trucks, scale: t.number("Scale", 1.0) });
+            self.templates.insert(name.clone(), TemplateDraws { modules, trucks, scale: t.number("Scale", 1.0) });
         }
-        out
     }
 
     fn load_model(&mut self, renderer: &mut Renderer, assets: &mut Assets, model: &str) {

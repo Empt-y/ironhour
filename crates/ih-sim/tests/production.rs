@@ -45,6 +45,87 @@ fn sim() -> Simulation {
 fn soldiers(s: &Simulation) -> Vec<u32> {
     s.objects.values().filter(|o| o.template == "Soldier").map(|o| o.id).collect()
 }
+
+#[test]
+fn script_team_work_orders_use_factory_production_and_assign_members() {
+    use ih_formats::scripts::{Call, Parameter, Script, ScriptList};
+    use ih_sim::script_engine::{Difficulty, ScriptEngine, Side, teams::Prototype};
+    let mut s = sim();
+    s.spawn("Barracks", [300.0, 300.0], 1).unwrap();
+    s.spawn("PowerPlant", [500.0, 500.0], 1).unwrap();
+    s.player(1).deposit(1000);
+    let parameter = |string: &str| Parameter { kind: 3, int: 0, real: 0.0, string: string.into(), coord: None };
+    let build = Call { index: 0, name: Some("BUILD_TEAM".into()), params: vec![parameter("Attackers")] };
+    let truth = Call { index: 0, name: Some("CONDITION_TRUE".into()), params: vec![] };
+    let list = ScriptList {
+        scripts: vec![
+            Script {
+                active: true,
+                one_shot: true,
+                difficulty: [true; 3],
+                conditions: vec![vec![truth.clone()]],
+                actions: vec![build.clone(), build],
+                ..Default::default()
+            },
+            Script {
+                name: "Created".into(),
+                active: true,
+                one_shot: true,
+                subroutine: true,
+                difficulty: [true; 3],
+                conditions: vec![vec![truth]],
+                actions: vec![Call {
+                    index: 0,
+                    name: Some("INCREMENT_COUNTER".into()),
+                    params: vec![Parameter { int: 1, ..parameter("") }, parameter("Creations")],
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut engine = ScriptEngine::new(vec![Side::new(1, Difficulty::Normal, &list)]);
+    engine.prototypes.insert(
+        "Attackers".into(),
+        Prototype {
+            player: 1,
+            units: vec![("Soldier".into(), 2, 2)],
+            limit: 2,
+            on_create: "Created".into(),
+            ..Default::default()
+        },
+    );
+    s.start_scripts(engine);
+    for _ in 0..600 {
+        s.step();
+    }
+    assert_eq!(soldiers(&s).len(), 4);
+    assert_eq!(s.money(1), 200);
+    let engine = s.script_engine.as_ref().unwrap();
+    assert_eq!(engine.counters["Creations"].value, 2, "creation hooks have independent one-shot state");
+    assert!(engine.teams.values().all(|t| t.ready && t.pending.is_empty() && t.members.len() == 2));
+    assert!(engine.teams[&1].members.is_disjoint(&engine.teams[&2].members));
+}
+
+#[test]
+fn one_shot_supply_spawn_waits_for_construction_and_costs_nothing() {
+    let mut defs = Definitions::default();
+    defs.add_document(ih_ini::parse(INI));
+    defs.add_document(ih_ini::parse(b"Object SupplyFactory\nKindOf = STRUCTURE IMMOBILE\nBehavior = DefaultProductionExitUpdate Exit\nUnitCreatePoint = X:30 Y:0 Z:0\nNaturalRallyPoint = X:60 Y:0 Z:0\nEnd\nBehavior = SpawnBehavior Spawn\nSpawnNumber = 1\nSpawnTemplateName = Soldier\nOneShot = Yes\nSlavesHaveFreeWill = Yes\nEnd\nEnd\n"));
+    let mut s = Simulation::new(sim().map.clone(), Arc::new(Templates::from_definitions(&defs)), 1);
+    let factory = s.spawn("SupplyFactory", [300.0, 300.0], 1).unwrap();
+    s.objects.get_mut(&factory).unwrap().status |= ih_sim::construction::under_construction_bit();
+    for _ in 0..10 {
+        s.step();
+    }
+    assert!(soldiers(&s).is_empty());
+    s.objects.get_mut(&factory).unwrap().status &= !ih_sim::construction::under_construction_bit();
+    for _ in 0..100 {
+        s.step();
+    }
+    assert_eq!(soldiers(&s).len(), 1);
+    assert_eq!(s.money(1), 0);
+}
 /// Steps until a new soldier appears; returns the frame it was made on.
 fn until_soldier(s: &mut Simulation, limit: u32) -> Option<u32> {
     let n = soldiers(s).len();

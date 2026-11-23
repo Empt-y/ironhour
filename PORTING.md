@@ -2787,3 +2787,27 @@ AI base requests and object-list/count state participate in the state hash.
 This is an implementation step, not M7 completion: production/recruitment of
 script teams, further script calls, native-game integration and completed-match
 verification against all generals/difficulties are still required.
+
+### Team work orders and native skirmish integration
+
+Qualified SCB team prototypes now drive real recruitment and factory work
+orders, with production-condition/difficulty checks, priorities and instance
+limits. Produced objects join their requesting team; creation scripts run in
+that team's context. Guard, hunt, transport/garrison/exit, command-button power
+and upgrade actions are connected. Trigger polygons and skirmish perimeter
+aliases support area value/count checks and start-position conditions.
+
+AI supply requests find paid, legal construction sites near warehouses.
+Completed supply centers now run the one-shot free-unit SpawnBehavior path;
+other SpawnBehavior variants remain explicit stubs. Collector replacement uses
+AIData's difficulty-specific gatherer counts. Tests verify team production costs
+and membership, and that the free spawn waits for construction and runs once.
+
+Menu-started skirmishes now assign scripts, teams and faction build lists.
+Starting dozers are moved out of terrain/structure cells blocked for their
+radius. Newly constructed/produced templates load their draw assets as needed.
+Stock USA reached power, barracks, supply center, war factory, airfield and real
+infantry/vehicle production in headless checks; short China/GLA opening checks
+also progressed. This does not establish completed-match M7 verification.
+Sequential scripts, remaining reached calls, victory handling and all-general /
+all-difficulty completed-game checks remain to be implemented and verified.

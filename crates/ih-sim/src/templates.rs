@@ -325,6 +325,7 @@ pub struct Templates {
     pub upgrades: BTreeMap<String, crate::upgrades::UpgradeTemplate>,
     /// `CommandButton`s' `Upgrade` by button name.
     pub command_button_upgrades: BTreeMap<String, String>,
+    pub command_button_powers: BTreeMap<String, String>,
     /// `GameData` building placement values.
     pub build: BuildSettings,
     /// Bones of containers' pristine, damaged and really damaged models
@@ -515,6 +516,11 @@ impl Templates {
                     match f.name.as_str() {
                         "Command" => command = f.values().first().cloned().unwrap_or_default(),
                         "Object" => object = f.values().first().cloned().unwrap_or_default(),
+                        "SpecialPower" => {
+                            if let Some(power) = f.values().first() {
+                                out.command_button_powers.insert(name.clone(), power.clone());
+                            }
+                        }
                         "Upgrade" => {
                             if let Some(u) = f.values().first() {
                                 out.command_button_upgrades.insert(name.clone(), u.clone());

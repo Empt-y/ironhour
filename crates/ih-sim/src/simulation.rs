@@ -233,6 +233,8 @@ pub enum ModuleKind {
     DumbProjectile,
     /// `MissileAIUpdate` (`missiles`).
     Missile,
+    /// One-shot, free-willed supply unit (`SpawnBehavior`).
+    SupplySpawn,
 }
 #[derive(Clone, Debug)]
 pub struct Module {
@@ -603,6 +605,17 @@ impl Simulation {
                 ModuleKind::Physics
             } else if m.class == "ProductionUpdate" {
                 ModuleKind::Production
+            } else if m.class == "SpawnBehavior"
+                && m.block
+                    .fields()
+                    .any(|f| f.name == "OneShot" && f.values().first().is_some_and(|v| v.eq_ignore_ascii_case("yes")))
+                && m.block.fields().any(|f| {
+                    f.name == "SlavesHaveFreeWill" && f.values().first().is_some_and(|v| v.eq_ignore_ascii_case("yes"))
+                })
+                && m.block.fields().any(|f| f.name == "SpawnNumber" && f.values().first().is_some_and(|v| v == "1"))
+                && t.modules.iter().any(|m| crate::production::Exit::from_module(&m.class, &m.block).is_some())
+            {
+                ModuleKind::SupplySpawn
             } else if crate::supply::Dock::from_module(&m.class, &m.block).is_some() {
                 ModuleKind::Dock
             } else if crate::contain::ContainData::from_module(&m.class, &m.block).is_some() {
@@ -642,6 +655,7 @@ impl Simulation {
                 // Updated every frame from creation.
                 self.scheduler.insert((id, index), self.frame.max(1), Phase::Normal);
             } else if kind == ModuleKind::Production
+                || kind == ModuleKind::SupplySpawn
                 || kind == ModuleKind::Dock
                 || kind == ModuleKind::Contain
                 || kind == ModuleKind::ProductionExit && m.class == "QueueProductionExitUpdate"
@@ -1345,6 +1359,7 @@ impl Simulation {
                 | ModuleKind::Dock
                 | ModuleKind::Contain
                 | ModuleKind::Lifetime
+                | ModuleKind::SupplySpawn
                 | ModuleKind::SpecialPower
                 | ModuleKind::Collide => 0,
             };
@@ -1375,6 +1390,7 @@ impl Simulation {
                 ModuleKind::DumbProjectile => self.dumb_projectile_update(id, index),
                 ModuleKind::Missile => self.missile_update(id),
                 ModuleKind::Production => self.production_update(id),
+                ModuleKind::SupplySpawn => self.supply_spawn_update(id, index),
                 ModuleKind::ProductionExit => self.exit_update(id),
                 ModuleKind::Dock => self.dock_update(id),
                 ModuleKind::Contain => self.contain_update(id),
@@ -2510,11 +2526,13 @@ impl Simulation {
             h.u32(*f);
         }
         if let Some(e) = &self.script_engine {
+            e.hash_teams(&mut h);
             for (player, base) in &e.bases {
                 h.u32(*player);
                 h.u32(base.enabled as u32);
                 h.u32(base.units as u32);
                 h.u32(base.next_frame);
+                h.u32(base.gatherers);
                 h.u64(base.buildings.len() as u64);
                 for b in &base.buildings {
                     h.text(&b.template);
